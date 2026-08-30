@@ -8,7 +8,7 @@
 .live {
   max-width: 1440px;
   margin: 0 auto;
-  padding: 18px 0 0; /* 顶部留白，内容整体下移 */
+  padding: 34px 0 0; /* 顶部留白，内容整体下移，与导航栏分隔线保持间距 */
   font-family: 'Courier New', monospace;
 }
 
@@ -24,7 +24,7 @@
 .ticker-track {
   display: inline-flex;
   padding: 6px 20px;
-  animation: ticker-scroll 45s linear infinite;
+  animation: ticker-scroll var(--ticker-dur, 120s) linear infinite;
   will-change: transform;
 }
 

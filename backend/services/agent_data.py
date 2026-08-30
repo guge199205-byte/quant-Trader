@@ -249,9 +249,10 @@ def rebuild_closed_trades(
 ) -> tuple:
     """FIFO 重建已平仓逐笔（LAST 25 TRADES 表 + 汇总指标共用）。
 
-    返回 (closed, total_fee)：
+    返回 (closed, total_fee, open_lots)：
     - closed 每笔: {symbol, exit_date, qty, entry_price, exit_price, notional, fee, pnl, hold_days}
     - total_fee 含未平仓买单手续费（口径同历史 summary）
+    - open_lots: {symbol: {qty, entry_price}} 当前剩余持仓（加权成本）
     - 成交价/手续费模型同 tool_trade：滑点 ±0.05% + 双边费率 0.03%
     - pnl = 卖出名义×(1-卖费率) − 买入成本（含滑点）
     - 每笔 fee = 卖出手续费 + 所消耗买单的摊分手续费
@@ -314,7 +315,61 @@ def rebuild_closed_trades(
                         if buy_date else None
                     ),
                 })
-    return closed, total_fee
+    # 剩余持仓（FIFO 队列未消耗部分 = 当前持仓，加权成本）
+    open_lots: Dict[str, Dict[str, float]] = {}
+    for sym, stack in lots.items():
+        qty = sum(lot[0] for lot in stack)
+        if qty > 0:
+            cost = sum(lot[0] * lot[1] for lot in stack) / qty
+            open_lots[sym] = {"qty": round(qty, 4), "entry_price": round(cost, 4)}
+    return closed, total_fee, open_lots
+
+
+def compute_holdings(
+    config: dict, market: str, records: List[Dict[str, Any]], quotes: Dict[str, Dict[str, Any]]
+) -> Dict[str, Any]:
+    """当前持仓明细（ModelDetail 持仓 tab）：数量/成本/最新价/市值/浮动盈亏/占比。
+
+    - 成本来自 FIFO 剩余 lot（加权成本，含滑点）
+    - quotes 来自 load_latest_prices（最新收盘）
+    - 返回 {holdings: [...], cash, total_equity}
+    """
+    _, _, open_lots = rebuild_closed_trades(config, market, records)
+    holdings: List[Dict[str, Any]] = []
+    cash = 0.0
+    if records:
+        cash = float(records[-1].get("positions", {}).get("CASH", 0.0) or 0.0)
+    total_mv = 0.0
+    for sym, lot in open_lots.items():
+        qty = lot["qty"]
+        cost = lot["entry_price"]
+        quote = quotes.get(sym, {})
+        price = quote.get("price")
+        if price is None:
+            continue
+        mv = qty * price
+        cost_total = qty * cost
+        total_mv += mv
+        holdings.append({
+            "symbol": sym,
+            "qty": round(qty, 4),
+            "entry_price": round(cost, 4),
+            "price": round(price, 4),
+            "market_value": round(mv, 2),
+            "pnl": round(mv - cost_total, 2),
+            "pnl_pct": round((price - cost) / cost, 6) if cost else None,
+            "change_pct": quote.get("change_pct"),
+        })
+    holdings.sort(key=lambda h: h["market_value"], reverse=True)
+    total_equity = cash + total_mv
+    for h in holdings:
+        h["weight_pct"] = round(h["market_value"] / total_equity, 4) if total_equity else None
+    return {
+        "holdings": holdings,
+        "cash": round(cash, 2),
+        "total_market_value": round(total_mv, 2),
+        "total_equity": round(total_equity, 2),
+    }
 
 
 def compute_extended_summary(
@@ -346,7 +401,7 @@ def compute_extended_summary(
         out["sharpe"] = 0.0
 
     # ---- 2. 逐笔买卖重建（FIFO 平仓 + 价格文件重算成交价/费用） ----
-    closed, total_fee = rebuild_closed_trades(config, market, records)
+    closed, total_fee, _ = rebuild_closed_trades(config, market, records)
 
     first_buy: Dict[str, str] = {}      # symbol -> 首买日期
     last_hold: Dict[str, str] = {}      # symbol -> 最后持有日期

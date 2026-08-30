@@ -178,6 +178,30 @@ export const fetchTradeDetail = (agent: string, market: MarketId, limit = 25) =>
     api.get(`/agents/${encodeURIComponent(agent)}/trade-detail`, { params: { market, limit } }),
   );
 
+// ---------- 持仓明细（数量/成本/市值/盈亏） ----------
+
+export interface HoldingRow {
+  symbol: string;
+  qty: number;
+  entry_price: number;
+  price: number;
+  market_value: number;
+  pnl: number;
+  pnl_pct: number | null;
+  change_pct: number | null;
+  weight_pct: number | null;
+}
+
+export interface Holdings {
+  holdings: HoldingRow[];
+  cash: number;
+  total_market_value: number;
+  total_equity: number;
+}
+
+export const fetchHoldings = (agent: string, market: MarketId) =>
+  unwrap<Holdings>(api.get(`/agents/${encodeURIComponent(agent)}/holdings`, { params: { market } }));
+
 // ---------- 基准（指数） ----------
 
 export interface BenchPoint {

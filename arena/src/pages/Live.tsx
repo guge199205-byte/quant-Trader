@@ -343,9 +343,13 @@ export default function Live() {
         <MarketSwitcher market={market} onChange={switchMarket} />
       </div>
 
-      {/* 持仓股票滚动价格条（hover 暂停） */}
+      {/* 持仓股票滚动价格条（hover 暂停；速度随持仓数自适应） */}
       {tickerItems.length > 0 && (
-        <div className="ticker" aria-label="持仓股票最新价格">
+        <div
+          className="ticker"
+          aria-label="持仓股票最新价格"
+          style={{ ['--ticker-dur' as string]: `${Math.max(60, tickerItems.length * 4)}s` }}
+        >
           <div className="ticker-track">
             {[...tickerItems, ...tickerItems].map((t, i) => {
               const q = t.quote!;

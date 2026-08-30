@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import {
   MarketId,
   fetchBenchmark,
+  fetchHoldings,
   fetchLogs,
   fetchPerformance,
   fetchPositions,
@@ -14,7 +15,7 @@ import { usePolling } from '../hooks/usePolling';
 import EquityChart, { toBenchLine, toChartLine } from '../components/EquityChart';
 import { logoOf, shortName } from '../components/ModelCard';
 import StatCard from '../components/StatCard';
-import { LastTradesTable, PositionsTable, TradesTable } from '../components/Tables';
+import { HoldingsTable, LastTradesTable, PositionsTable, TradesTable } from '../components/Tables';
 import ModelChat from '../components/ModelChat';
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format';
 
@@ -33,6 +34,7 @@ export default function ModelDetail() {
   const [tab, setTab] = useState<'positions' | 'trades' | 'logs'>('positions');
 
   const perf = usePolling(() => fetchPerformance(name, m), [name, m], 30000);
+  const holdings = usePolling(() => fetchHoldings(name, m), [name, m], 30000);
   const positions = usePolling(() => fetchPositions(name, m), [name, m], 30000);
   const trades = usePolling(() => fetchTrades(name, m), [name, m], 30000);
   const tradeDetail = usePolling(() => fetchTradeDetail(name, m, 25), [name, m], 30000);
@@ -130,7 +132,13 @@ export default function ModelDetail() {
             决策日志
           </button>
         </div>
-        {tab === 'positions' && <PositionsTable records={positions.data ?? []} currency={meta.currency} />}
+        {tab === 'positions' && (
+          <>
+            <HoldingsTable data={holdings.data ?? null} currency={meta.currency} />
+            <div className="panel-title" style={{ marginTop: 18 }}>持仓历史快照</div>
+            <PositionsTable records={positions.data ?? []} currency={meta.currency} />
+          </>
+        )}
         {tab === 'trades' && (
           <>
             <div className="panel-title">LAST {tradeDetail.data?.length ?? 0} TRADES <span className="faint">FIFO 平仓明细</span></div>

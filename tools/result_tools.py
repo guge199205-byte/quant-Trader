@@ -207,7 +207,11 @@ def get_daily_portfolio_values(
                 if date in symbol_prices:
                     price_info = symbol_prices[date]
                     buy_price = price_info.get("1. buy price")
+                    if buy_price is None:
+                        buy_price = price_info.get("1. open")
                     sell_price = price_info.get("4. sell price")
+                    if sell_price is None:
+                        sell_price = price_info.get("4. close")
                     # Use closing (sell) price to calculate value
                     if sell_price is not None:
                         daily_prices[f"{symbol}_price"] = float(sell_price)

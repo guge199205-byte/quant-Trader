@@ -522,8 +522,12 @@ def get_open_prices(
                         break
 
             if isinstance(bar, dict):
+                # 兼容小时级（1. buy price）与日线（1. open）两种 merged 格式：
+                # sync_from_quantmind.py 生成的 A股 merged.jsonl 是 AlphaVantage 日线格式
                 open_val = bar.get("1. buy price")
-                
+                if open_val is None:
+                    open_val = bar.get("1. open")
+
                 try:
                     results[f"{sym}_price"] = float(open_val) if open_val is not None else None
                 except Exception:
@@ -584,8 +588,13 @@ def get_yesterday_open_and_close_price(
             # 尝试获取昨日买入价和卖出价
             bar = series.get(yesterday_date)
             if isinstance(bar, dict):
-                buy_val = bar.get("1. buy price")  # 买入价字段
-                sell_val = bar.get("4. sell price")  # 卖出价字段
+                # 兼容小时级（buy/sell price）与日线（open/close）两种 merged 格式
+                buy_val = bar.get("1. buy price")
+                if buy_val is None:
+                    buy_val = bar.get("1. open")
+                sell_val = bar.get("4. sell price")
+                if sell_val is None:
+                    sell_val = bar.get("4. close")
 
                 try:
                     buy_price = float(buy_val) if buy_val is not None else None

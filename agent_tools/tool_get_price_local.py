@@ -23,6 +23,22 @@ if project_root not in sys.path:
 from tools.general_tools import get_config_value
 
 
+def _open_val(day: Dict[str, Any]) -> Any:
+    """兼容两种 merged 格式：小时级（1. buy price）与日线（1. open）。"""
+    v = day.get("1. buy price")
+    if v is None:
+        v = day.get("1. open")
+    return v
+
+
+def _close_val(day: Dict[str, Any]) -> Any:
+    """兼容两种 merged 格式：小时级（4. sell price）与日线（4. close）。"""
+    v = day.get("4. sell price")
+    if v is None:
+        v = day.get("4. close")
+    return v
+
+
 def _workspace_data_path(filename: str, symbol: Optional[str] = None) -> Path:
     """Get data file path based on symbol (auto-detect market type).
 
@@ -137,7 +153,7 @@ def get_price_local_daily(symbol: str, date: str) -> Dict[str, Any]:
                     "symbol": symbol,
                     "date": date,
                     "ohlcv": {
-                        "open": day.get("1. buy price"),
+                        "open": _open_val(day),
                         "high": "You can not get the current high price",
                         "low": "You can not get the current low price", 
                         "close": "You can not get the next close price",
@@ -149,10 +165,10 @@ def get_price_local_daily(symbol: str, date: str) -> Dict[str, Any]:
                     "symbol": symbol,
                     "date": date,
                     "ohlcv": {
-                        "open": day.get("1. buy price"),
+                        "open": _open_val(day),
                         "high": day.get("2. high"),
                         "low": day.get("3. low"), 
-                        "close": day.get("4. sell price"),
+                        "close": _close_val(day),
                         "volume": day.get("5. volume"),
                     },
                 }
@@ -203,7 +219,7 @@ def get_price_local_hourly(symbol: str, date: str) -> Dict[str, Any]:
                     "symbol": symbol,
                     "date": date,
                     "ohlcv": {
-                        "open": day.get("1. buy price"),
+                        "open": _open_val(day),
                         "high": "You can not get the current high price",
                         "low": "You can not get the current low price", 
                         "close": "You can not get the next close price",
@@ -215,10 +231,10 @@ def get_price_local_hourly(symbol: str, date: str) -> Dict[str, Any]:
                     "symbol": symbol,
                     "date": date,
                     "ohlcv": {
-                        "open": day.get("1. buy price"),
+                        "open": _open_val(day),
                         "high": day.get("2. high"),
                         "low": day.get("3. low"), 
-                        "close": day.get("4. sell price"),
+                        "close": _close_val(day),
                         "volume": day.get("5. volume"),
                     },
                 }
@@ -267,10 +283,10 @@ def get_price_local_function(symbol: str, date: str, filename: str = "merged.jso
                 "symbol": symbol,
                 "date": date,
                 "ohlcv": {
-                    "buy price": day.get("1. buy price"),
+                    "buy price": _open_val(day),
                     "high": day.get("2. high"),
                     "low": day.get("3. low"),
-                    "sell price": day.get("4. sell price"),
+                    "sell price": _close_val(day),
                     "volume": day.get("5. volume"),
                 },
             }

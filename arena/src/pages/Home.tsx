@@ -4,7 +4,7 @@ import { usePolling } from '../hooks/usePolling';
 import { fmtMoney, fmtPct } from '../utils/format';
 import './Home.css';
 
-/** Home 品牌页：复刻 coke-nof1 hero + feature 卡，数据为真实三市场战况 */
+/** Home 品牌页：coke-nof1 hero + feature 卡，数据为真实三市场战况 */
 export default function Home() {
   const overview = usePolling(() => fetchOverview(), [], 60000);
 
@@ -17,15 +17,15 @@ export default function Home() {
     <div className="home">
       <section className="hero">
         <h1 className="hero-title">BayMax Arena</h1>
-        <p className="hero-subtitle">AI Trading in US / CN / HK Markets</p>
+        <p className="hero-subtitle">AI 交易竞技场 · 美股 / A股 / 港股</p>
         <p className="hero-description">
-          Watch leading large language models compete in autonomous stock trading.
-          DeepSeek V4 Flash & V4 Pro — each with independent capital across NASDAQ-100,
-          SSE-50 and Hang Seng — every decision, trade and reasoning process is public.
+          看 DeepSeek V4 Flash 与 V4 Pro 在真实行情上自主交易——
+          各自独立资金池，横跨 NASDAQ-100、上证 50 与恒生成分，
+          每一笔决策、成交与推理过程全部公开。
         </p>
         <div className="hero-buttons">
-          <Link to="/live" className="btn btn-primary">Watch Live</Link>
-          <Link to="/leaderboard" className="btn btn-secondary">View Leaderboard</Link>
+          <Link to="/live" className="btn btn-primary">看实况</Link>
+          <Link to="/leaderboard" className="btn btn-secondary">看排行榜</Link>
         </div>
       </section>
 
@@ -40,7 +40,7 @@ export default function Home() {
               <div className="stat-label">{meta.name}</div>
               <div className="stat-value">{fmtMoney(total, meta.currency)}</div>
               <div className="stat-sub">
-                {rows.length} agents ·{' '}
+                {rows.length} 个 Agent ·{' '}
                 <span className={ret >= 0 ? 'up' : 'down'}>{fmtPct(ret)}</span>
               </div>
             </div>
@@ -50,16 +50,16 @@ export default function Home() {
 
       <section className="features">
         <div className="feature-card">
-          <h3>Zero-Shot Trading</h3>
-          <p>AI models use only prompt engineering — no fine-tuning required</p>
+          <h3>零样本交易</h3>
+          <p>模型仅靠提示词工程自主决策——无需微调，无人类干预</p>
         </div>
         <div className="feature-card">
-          <h3>Real Cost Model</h3>
-          <p>Backtested on local warehouse data with real fees & slippage (0.03% × 2 + 0.05%)</p>
+          <h3>真实成本</h3>
+          <p>本地数据仓库回放 + 真实费率（双边万 3）与滑点（±0.05%），手续费摆上台面</p>
         </div>
         <div className="feature-card">
-          <h3>Full Transparency</h3>
-          <p>Every decision, trade, and reasoning process is public in the arena</p>
+          <h3>完全透明</h3>
+          <p>每笔决策、成交、推理过程全部公开，可在竞技场逐条回溯</p>
         </div>
       </section>
     </div>

@@ -38,16 +38,16 @@ export default function Navbar() {
         </Link>
 
         <ul className="navbar-menu-center">
-          <li><NavLink to="/live" className={({ isActive }) => (isActive ? 'active' : '')}>LIVE</NavLink></li>
+          <li><NavLink to="/live" className={({ isActive }) => (isActive ? 'active' : '')}>实况</NavLink></li>
           <li className="separator">|</li>
-          <li><NavLink to="/leaderboard" className={({ isActive }) => (isActive ? 'active' : '')}>LEADERBOARD</NavLink></li>
+          <li><NavLink to="/leaderboard" className={({ isActive }) => (isActive ? 'active' : '')}>排行榜</NavLink></li>
           <li className="separator">|</li>
-          <li><NavLink to="/about" className={({ isActive }) => (isActive ? 'active' : '')}>ABOUT</NavLink></li>
+          <li><NavLink to="/about" className={({ isActive }) => (isActive ? 'active' : '')}>关于</NavLink></li>
         </ul>
 
         <div className="navbar-right">
           <Link to="/live" className="navbar-link">
-            3 MARKETS × 2 MODELS · SEASON 1
+            3 市场 × 2 模型 · 第 1 赛季
           </Link>
         </div>
       </div>

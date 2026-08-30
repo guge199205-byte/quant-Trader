@@ -33,12 +33,12 @@ type Tab = 'all' | '5d' | 'completed' | 'chat' | 'positions' | 'readme';
 type TimeRange = 'all' | '5d';
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'all', label: 'ALL' },
-  { id: '5d', label: '5D' },
-  { id: 'completed', label: 'COMPLETED' },
-  { id: 'chat', label: 'MODELCHAT' },
-  { id: 'positions', label: 'POSITIONS' },
-  { id: 'readme', label: 'README' },
+  { id: 'all', label: '全部' },
+  { id: '5d', label: '近5日' },
+  { id: 'completed', label: '已平仓' },
+  { id: 'chat', label: '模型对话' },
+  { id: 'positions', label: '持仓' },
+  { id: 'readme', label: '说明' },
 ];
 
 interface TradeEvt {
@@ -186,17 +186,17 @@ export default function Live() {
 
     if (tab === 'positions') {
       const last = positions.data?.[positions.data.length - 1];
-      if (!last) return <div className="empty-state">NO POSITION DATA</div>;
+      if (!last) return <div className="empty-state">暂无持仓数据</div>;
       const entries = Object.entries(last.positions ?? {}).filter(([sym]) => sym !== 'CASH');
       const cash = Number(last.positions?.CASH ?? 0);
       return (
         <div style={{ padding: '8px 12px' }}>
           <div className="pos-row">
-            <span className="pos-sym">CASH</span>
+            <span className="pos-sym">现金 CASH</span>
             <span className="pos-cash">{fmtMoney(cash, meta.currency)}</span>
           </div>
           {entries.length === 0 && (
-            <div className="empty-state" style={{ padding: '24px 0' }}>FLAT — NO POSITIONS</div>
+            <div className="empty-state" style={{ padding: '24px 0' }}>空仓 — 无持仓</div>
           )}
           {entries.map(([sym, qty]) => (
             <div className="pos-row" key={sym}>
@@ -212,13 +212,13 @@ export default function Live() {
       const msgs = (logs.data ?? []).flatMap((l) =>
         (l.new_messages ?? []).map((m) => m.content).filter((c): c is string => !!c),
       );
-      if (!msgs.length) return <div className="empty-state">NO DECISION LOGS</div>;
+      if (!msgs.length) return <div className="empty-state">暂无决策日志</div>;
       return (
         <>
           {msgs.map((content, i) => (
             <div className="trade-list-item" key={i}>
               <div className="trade-item-header">
-                <span className="trade-side info">AI</span>
+                <span className="trade-side info">AI 决策</span>
                 <span className="trade-item-time">{logoOf(effectiveModel ?? '')}</span>
               </div>
               <div className="msg-content">{content}</div>
@@ -232,21 +232,21 @@ export default function Live() {
     let evts = tradeEvents;
     if (tab === '5d') evts = tradeEvents.filter((e) => recentDays.has(e.date));
     if (tab === 'completed') evts = tradeEvents.filter((e) => e.side === 'sell');
-    if (!evts.length) return <div className="empty-state">NO TRADES</div>;
+    if (!evts.length) return <div className="empty-state">暂无成交</div>;
     return (
       <>
         {evts.map((e, i) => (
           <div className="trade-list-item" key={`${e.date}-${i}`}>
             <div className="trade-item-header">
               <span className="trade-item-time">{e.date.slice(0, 10)}</span>
-              <span className={`trade-side ${e.side}`}>{e.side === 'buy' ? 'BUY' : 'SELL'}</span>
+              <span className={`trade-side ${e.side}`}>{e.side === 'buy' ? '买入' : '卖出'}</span>
             </div>
             <div className="trade-details">
               <span className="trade-symbol">{e.symbol}</span>
               <span className="trade-qty">× {e.amount}</span>
               <span className="trade-pnl">{fmtMoney(e.cash, meta.currency)}</span>
             </div>
-            <div className="trade-cash">CASH {fmtMoney(e.cash, meta.currency)}</div>
+            <div className="trade-cash">现金 {fmtMoney(e.cash, meta.currency)}</div>
           </div>
         ))}
       </>
@@ -269,15 +269,15 @@ export default function Live() {
       <div className="top-status-bar">
         <div className="status-group">
           <div className="price-item">
-            <span className="price-label">{benchLabelOf(market)} INDEX</span>
+            <span className="price-label">{benchLabelOf(market)} 指数</span>
             <span className="price-value">{benchStats.last != null ? fmtMoney(benchStats.last) : '—'}</span>
             <span className={`price-change ${benchStats.dayChange != null ? pnlClass(benchStats.dayChange) : 'dim'}`}>
-              {benchStats.dayChange != null ? fmtPct(benchStats.dayChange) : 'NO FEED'}
+              {benchStats.dayChange != null ? fmtPct(benchStats.dayChange) : '无行情'}
             </span>
           </div>
           <div className="performers">
             <div className="performer">
-              <span className="performer-label">HIGHEST</span>
+              <span className="performer-label">最高</span>
               <span className="performer-value">
                 {performers.highest ? (
                   <>{performers.highest.name} <b className="up">{fmtPct(performers.highest.ret)}</b></>
@@ -285,7 +285,7 @@ export default function Live() {
               </span>
             </div>
             <div className="performer">
-              <span className="performer-label">LOWEST</span>
+              <span className="performer-label">最低</span>
               <span className="performer-value">
                 {performers.lowest ? (
                   <>{performers.lowest.name} <b className="down">{fmtPct(performers.lowest.ret)}</b></>
@@ -301,18 +301,18 @@ export default function Live() {
         {/* 左：图表 + 模型卡 */}
         <div className="chart-area">
           <div className="chart-header">
-            <div className="chart-title">TOTAL ACCOUNT VALUE</div>
+            <div className="chart-title">总账户净值</div>
             <div className="chart-controls">
               <button className={`time-btn ${chartRange === 'all' ? 'active' : ''}`} onClick={() => setChartRange('all')}>
-                ALL
+                全部
               </button>
               <button className={`time-btn ${chartRange === '5d' ? 'active' : ''}`} onClick={() => setChartRange('5d')}>
-                5D
+                近5日
               </button>
             </div>
           </div>
           {overview.loading && !rows.length ? (
-            <div className="loading"><div className="spinner" />LOADING…</div>
+            <div className="loading"><div className="spinner" />加载中…</div>
           ) : (
             <>
               <EquityChart lines={lines} benchmark={benchLine} currency={meta.currency} timeRange={chartRange} />
@@ -343,7 +343,7 @@ export default function Live() {
                     }
                   />
                 ))}
-                {!perfs.data?.length && <div className="empty-state">NO AGENTS IN THIS MARKET</div>}
+                {!perfs.data?.length && <div className="empty-state">该市场暂无 Agent</div>}
               </div>
             </>
           )}
@@ -363,7 +363,7 @@ export default function Live() {
             ))}
           </div>
           <div className="filter-bar">
-            <span className="filter-label">MODEL</span>
+            <span className="filter-label">模型</span>
             <select
               className="filter-select"
               value={effectiveModel ?? ''}

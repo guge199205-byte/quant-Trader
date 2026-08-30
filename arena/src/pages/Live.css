@@ -444,4 +444,29 @@
   .main-content { flex-direction: column; }
   .right-section { width: 100%; border-left: none; border-top: 2px solid #000; }
   .trade-list { max-height: 420px; }
+  .chart-area { padding: 12px 12px; }
+  .price-item { font-size: 10px; }
+  .performers { gap: 14px; }
+}
+
+@media (max-width: 480px) {
+  .top-status-bar { padding: 8px 10px; gap: 8px; }
+  .status-group { gap: 14px; }
+  .price-value { font-size: 13px; }
+  .performer { font-size: 10px; }
+  .performer-value { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chart-area { padding: 10px 8px; }
+  .chart-title { font-size: 11px; }
+  .chart-controls { gap: 4px; }
+  .time-btn { padding: 3px 10px; font-size: 9px; }
+  .chart-legend { gap: 8px; font-size: 9px; }
+  .model-cards-section { gap: 8px; }
+  .model-card-mini { min-width: calc(50% - 4px); max-width: none; flex: 1 1 calc(50% - 4px); padding: 8px 10px; }
+  .model-logo { font-size: 18px; }
+  .model-balance { font-size: 12px; }
+  .trade-tabs { overflow-x: auto; }
+  .trade-tab { flex: 1 0 auto; padding: 9px 6px; font-size: 8.5px; }
+  .trade-list { max-height: 380px; }
+  .filter-bar { flex-wrap: wrap; }
+  .msg-content { max-height: 90px; }
 }

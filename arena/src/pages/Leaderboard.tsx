@@ -78,16 +78,21 @@ export default function Leaderboard() {
   return (
     <div className="page">
       <div className="leaderboard-header">
-        <h1 className="leaderboard-title">LEADERBOARD</h1>
+        <h1 className="leaderboard-title">排行榜</h1>
         <div className="market-chips">
-          {(['all', 'us', 'cn', 'hk'] as const).map((f) => (
+          {([
+            ['all', '全部'],
+            ['us', '美股'],
+            ['cn', 'A股'],
+            ['hk', '港股'],
+          ] as const).map(([f, label]) => (
             <button
               key={f}
               className={`chip ${f} ${filter === f ? 'active' : ''}`}
               style={{ borderRadius: 0 }}
               onClick={() => setFilter(f as MarketId | 'all')}
             >
-              {f === 'all' ? 'ALL' : f.toUpperCase()}
+              {label}
             </button>
           ))}
         </div>
@@ -95,12 +100,12 @@ export default function Leaderboard() {
 
       <div className="leaderboard-stats">
         <div className="stat-item">
-          <div className="stat-label">TOTAL POOL</div>
+          <div className="stat-label">总资金池</div>
           <div className="stat-value">{stats.pool != null ? `$${Math.round(stats.pool).toLocaleString('en-US')}` : '—'}</div>
-          <div className="stat-sub">3 MARKETS × 2 MODELS</div>
+          <div className="stat-sub">3 市场 × 2 模型</div>
         </div>
         <div className="stat-item">
-          <div className="stat-label">BEST MODEL</div>
+          <div className="stat-label">最佳模型</div>
           <div className="stat-value" style={{ fontSize: 16 }}>
             {stats.best ? (
               <>
@@ -117,14 +122,14 @@ export default function Leaderboard() {
           </div>
         </div>
         <div className="stat-item">
-          <div className="stat-label">TOTAL TRADES</div>
+          <div className="stat-label">总成交</div>
           <div className="stat-value">{stats.trades}</div>
-          <div className="stat-sub">CLOSED POSITIONS</div>
+          <div className="stat-sub">已平仓笔数</div>
         </div>
         <div className="stat-item">
-          <div className="stat-label">AVG RETURN</div>
+          <div className="stat-label">平均收益</div>
           <div className={`stat-value ${pnlClass(stats.avgRet)}`}>{fmtPct(stats.avgRet)}</div>
-          <div className="stat-sub">ACROSS ALL AGENTS</div>
+          <div className="stat-sub">全部 Agent 均值</div>
         </div>
       </div>
 
@@ -136,15 +141,15 @@ export default function Leaderboard() {
             <thead>
               <tr>
                 <th>#</th>
-                <th>MODEL</th>
-                <th>MARKET</th>
-                <th>BALANCE</th>
-                <th onClick={() => handleSort('pnl')}>PNL{sortArrow('pnl')}</th>
-                <th onClick={() => handleSort('total_return')}>RETURN%{sortArrow('total_return')}</th>
-                <th onClick={() => handleSort('sharpe')}>SHARPE{sortArrow('sharpe')}</th>
-                <th onClick={() => handleSort('win_rate')}>WIN RATE{sortArrow('win_rate')}</th>
-                <th onClick={() => handleSort('closed_trades')}>TRADES{sortArrow('closed_trades')}</th>
-                <th>STATUS</th>
+                <th>模型</th>
+                <th>市场</th>
+                <th>余额</th>
+                <th onClick={() => handleSort('pnl')}>盈亏{sortArrow('pnl')}</th>
+                <th onClick={() => handleSort('total_return')}>收益率{sortArrow('total_return')}</th>
+                <th onClick={() => handleSort('sharpe')}>夏普{sortArrow('sharpe')}</th>
+                <th onClick={() => handleSort('win_rate')}>胜率{sortArrow('win_rate')}</th>
+                <th onClick={() => handleSort('closed_trades')}>成交{sortArrow('closed_trades')}</th>
+                <th>状态</th>
               </tr>
             </thead>
             <tbody>
@@ -175,7 +180,7 @@ export default function Leaderboard() {
                     <td className="dim">{s.closed_trades ?? 0}</td>
                     <td>
                       <span className={`status-badge ${s.records > 0 ? 'active' : 'stopped'}`}>
-                        {s.records > 0 ? 'LIVE' : 'PENDING'}
+                        {s.records > 0 ? '运行中' : '待启动'}
                       </span>
                     </td>
                   </tr>
@@ -190,7 +195,7 @@ export default function Leaderboard() {
       )}
 
       <div className="leaderboard-footer">
-        Updated every 30 seconds · Season 1 · DeepSeek V4 Flash vs V4 Pro
+        每 30 秒刷新 · 第 1 赛季 · DeepSeek V4 Flash vs V4 Pro
       </div>
     </div>
   );

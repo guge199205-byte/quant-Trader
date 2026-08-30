@@ -124,3 +124,12 @@
   .logo-alpha { font-size: 16px; }
   .logo-arena { font-size: 12px; }
 }
+
+@media (max-width: 480px) {
+  .navbar-container { padding: 6px 10px; }
+  .navbar-menu-center { gap: 8px; }
+  .navbar-menu-center li a { font-size: 9px; }
+  .navbar-link { font-size: 7px; }
+  .logo-alpha { font-size: 15px; }
+  .logo-arena { font-size: 11px; }
+}

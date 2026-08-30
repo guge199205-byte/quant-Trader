@@ -364,3 +364,23 @@ table.data tbody tr.top-performer { background-color: rgba(0, 0, 0, 0.03); }
 ::-webkit-scrollbar-track { background: #f1f1f1; }
 ::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #555; }
+
+/* ---------- 响应式（手机/窄屏） ---------- */
+
+@media (max-width: 768px) {
+  .page { padding: 12px 10px; }
+  table.data td { padding: 10px 8px; font-size: 10px; }
+  table.data th { padding: 10px 8px; font-size: 8.5px; }
+  .stat-item { padding: 12px; }
+  .stat-value { font-size: 18px; }
+  .tabs { overflow-x: auto; }
+  .tabs .tab { padding: 10px 12px; white-space: nowrap; }
+}
+
+@media (max-width: 480px) {
+  .page { padding: 10px 8px; }
+  .btn { padding: 10px 24px; font-size: 14px; width: 100%; justify-content: center; }
+  .stat-value { font-size: 16px; }
+  .panel-title { font-size: 9px; }
+  table.data td { font-size: 9px; }
+}

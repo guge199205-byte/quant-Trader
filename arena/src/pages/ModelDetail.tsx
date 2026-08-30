@@ -74,7 +74,7 @@ export default function ModelDetail() {
     <div className="page">
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
         <Link to={`/leaderboard`} className="btn" style={{ border: '2px solid #000', borderRadius: 0, fontSize: 12, padding: '8px 16px', background: '#fff', color: '#000', textDecoration: 'none', fontFamily: "'Courier New', monospace" }}>
-          ← BACK
+          ← 返回
         </Link>
         <span style={{ fontSize: 26, lineHeight: 1 }}>{logoOf(name)}</span>
         <h1 style={{ fontSize: 20, textTransform: 'uppercase', letterSpacing: '0.5px', fontFamily: "'Courier New', monospace" }}>
@@ -83,37 +83,37 @@ export default function ModelDetail() {
         <span className="chip" style={{ borderRadius: 0 }}>{meta.label}</span>
         <span style={{ flex: 1 }} />
         <span className="faint" style={{ fontSize: 10, letterSpacing: '0.12em', fontFamily: "'Courier New', monospace" }}>
-          {meta.name} · 30s AUTO REFRESH
+          {meta.name} · 30 秒自动刷新
         </span>
       </div>
 
       <div className="stat-grid" style={{ marginBottom: 20 }}>
-        <StatCard k="EQUITY" v={fmtMoney(s?.end_equity, meta.currency)} sub={`START ${fmtMoney(s?.start_equity, meta.currency)}`} />
-        <StatCard k="TOTAL RETURN" v={fmtPct(s?.total_return)} className={pnlClass(s?.total_return)} />
-        <StatCard k="MAX DRAWDOWN" v={fmtPct(s?.max_drawdown, 2, false)} className="down" />
-        <StatCard k="SHARPE" v={fmtNum(s?.sharpe)} sub="DAILY × √252" />
-        <StatCard k="WIN RATE" v={s?.win_rate != null ? fmtPct(s.win_rate, 1, false) : '—'} sub={`CLOSED ${s?.closed_trades ?? 0} TRADES`} />
-        <StatCard k="PROFIT FACTOR" v={s?.profit_factor != null ? fmtNum(s.profit_factor) : '—'} sub="GROSS WIN / LOSS" />
-        <StatCard k="TOTAL FEE" v={s?.total_fee != null ? fmtMoney(s.total_fee, meta.currency, 1) : '—'} sub={s?.fee_ratio != null ? `${fmtPct(s.fee_ratio, 3, false)} OF CAPITAL` : ''} />
-        <StatCard k="AVG HOLD" v={s?.avg_hold_days != null ? `${fmtNum(s.avg_hold_days, 1)}D` : '—'} sub={`IN POSITION ${s?.position_time_ratio != null ? fmtPct(s.position_time_ratio, 1, false) : '—'}`} />
-        <StatCard k="RECORDS" v={s?.records ?? 0} sub={`LATEST ${perf.data?.points[perf.data.points.length - 1]?.date?.slice(0, 10) ?? '—'}`} />
+        <StatCard k="当前权益" v={fmtMoney(s?.end_equity, meta.currency)} sub={`起始 ${fmtMoney(s?.start_equity, meta.currency)}`} />
+        <StatCard k="总收益率" v={fmtPct(s?.total_return)} className={pnlClass(s?.total_return)} />
+        <StatCard k="最大回撤" v={fmtPct(s?.max_drawdown, 2, false)} className="down" />
+        <StatCard k="夏普比率" v={fmtNum(s?.sharpe)} sub="日频 × √252" />
+        <StatCard k="胜率" v={s?.win_rate != null ? fmtPct(s.win_rate, 1, false) : '—'} sub={`已平仓 ${s?.closed_trades ?? 0} 笔`} />
+        <StatCard k="盈亏比" v={s?.profit_factor != null ? fmtNum(s.profit_factor) : '—'} sub="盈利合计 / 亏损合计" />
+        <StatCard k="累计费用" v={s?.total_fee != null ? fmtMoney(s.total_fee, meta.currency, 1) : '—'} sub={s?.fee_ratio != null ? `占本金 ${fmtPct(s.fee_ratio, 3, false)}` : ''} />
+        <StatCard k="平均持仓" v={s?.avg_hold_days != null ? `${fmtNum(s.avg_hold_days, 1)} 天` : '—'} sub={`持仓占比 ${s?.position_time_ratio != null ? fmtPct(s.position_time_ratio, 1, false) : '—'}`} />
+        <StatCard k="净值记录" v={s?.records ?? 0} sub={`最新 ${perf.data?.points[perf.data.points.length - 1]?.date?.slice(0, 10) ?? '—'}`} />
       </div>
 
       <div className="panel" style={{ marginBottom: 20 }}>
-        <div className="panel-title">ACCOUNT VALUE <span className="faint">DASHED = BENCHMARK</span></div>
+        <div className="panel-title">账户净值 <span className="faint">虚线 = 基准指数</span></div>
         <EquityChart lines={chartLine ? [chartLine] : []} benchmark={benchLine} currency={meta.currency} height={340} />
       </div>
 
       <div className="panel">
         <div className="tabs">
           <button className={`tab ${tab === 'positions' ? 'active' : ''}`} onClick={() => setTab('positions')}>
-            POSITIONS
+            持仓
           </button>
           <button className={`tab ${tab === 'trades' ? 'active' : ''}`} onClick={() => setTab('trades')}>
-            TRADES ({trades.data?.length ?? 0})
+            成交 ({trades.data?.length ?? 0})
           </button>
           <button className={`tab ${tab === 'logs' ? 'active' : ''}`} onClick={() => setTab('logs')}>
-            DECISIONS
+            决策日志
           </button>
         </div>
         {tab === 'positions' && <PositionsTable records={positions.data ?? []} currency={meta.currency} />}

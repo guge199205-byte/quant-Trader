@@ -33,6 +33,15 @@
   .leaderboard-stats { grid-template-columns: repeat(2, 1fr); }
 }
 
+@media (max-width: 560px) {
+  .leaderboard-stats { grid-template-columns: 1fr; }
+  .leaderboard-title { font-size: 20px; }
+  .leaderboard-table td { padding: 10px 8px; font-size: 10px; }
+  .leaderboard-table th { padding: 10px 8px; font-size: 8.5px; }
+  .market-cell { font-size: 8px; padding: 1px 6px; }
+  .model-logo-cell { font-size: 13px; }
+}
+
 /* 表格 */
 .leaderboard-table-wrap {
   border: 2px solid #000;

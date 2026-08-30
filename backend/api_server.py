@@ -223,6 +223,16 @@ def get_performance(agent: str, market: str = Query("us")):
     }
 
 
+@app.get("/api/agents/{agent}/trade-detail")
+def get_trade_detail(agent: str, market: str = Query("us"), limit: int = Query(25, ge=1, le=200)):
+    """FIFO 重建已平仓逐笔明细（LAST 25 TRADES 表用），最新平仓在前。"""
+    cfg = config()
+    records = agent_data.load_position_records(cfg, agent, market, limit=5000)
+    closed, _ = agent_data.rebuild_closed_trades(cfg, market, records)
+    closed.sort(key=lambda t: t["exit_date"], reverse=True)
+    return {"success": True, "data": closed[:limit]}
+
+
 @app.get("/api/agents/{agent}/logs")
 def get_logs(agent: str, market: str = Query("us"), date: Optional[str] = None):
     cfg = config()
@@ -313,6 +323,14 @@ def get_stock_names(market: str = Query("us")):
 
     table = {"cn": CN_STOCK_NAMES, "hk": HK_STOCK_NAMES, "us": US_STOCK_NAMES}.get(market, {})
     return {"success": True, "data": table}
+
+
+# ---------- 最新价格（Live 滚动价格条） ----------
+
+@app.get("/api/prices")
+def get_latest_prices(market: str = Query("us")):
+    cfg = config()
+    return {"success": True, "data": agent_data.load_latest_prices(cfg, market)}
 
 
 # ---------- 总控聚合 ----------

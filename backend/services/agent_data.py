@@ -184,6 +184,55 @@ def _load_price_lookup(config: dict, market: str) -> Dict[str, Dict[str, float]]
     return lookup
 
 
+def load_latest_prices(config: dict, market: str) -> Dict[str, Dict[str, Any]]:
+    """每只股票最新收盘价 + 昨收 + 涨跌幅（Live 滚动价格条用）。
+
+    - 收盘价优先 `4. sell price`（US/HK）/`4. close`（CN），回退开盘价
+    - 返回 {symbol: {price, date, prev_close, change_pct}}，无昨收时 change_pct 为 None
+    """
+    market_cfg = config.get("markets", {}).get(market, {})
+    if market == "cn":
+        merged = get_data_root(config) / "A_stock" / "merged.jsonl"
+    elif market == "hk":
+        merged = get_data_root(config) / "HK_stock" / "merged.jsonl"
+    else:
+        merged = get_data_root(config) / "merged.jsonl"
+    per_symbol: Dict[str, List[tuple]] = {}
+    if merged.exists():
+        for line in _read_raw_lines(merged):
+            doc = json.loads(line) if line else None
+            if not doc:
+                continue
+            symbol = (doc.get("Meta Data") or {}).get("2. Symbol")
+            if not symbol:
+                continue
+            for key, value in doc.items():
+                if not key.startswith("Time Series") or not isinstance(value, dict):
+                    continue
+                for ts_key, bar in value.items():
+                    close = bar.get("4. sell price")
+                    if close is None:
+                        close = bar.get("4. close")
+                    if close is None:
+                        close = bar.get("1. buy price") or bar.get("1. open")
+                    if close is None:
+                        continue
+                    per_symbol.setdefault(symbol, []).append((ts_key[:10], float(close)))
+    out: Dict[str, Dict[str, Any]] = {}
+    for symbol, rows in per_symbol.items():
+        rows.sort()
+        latest = rows[-1]
+        prev = rows[-2] if len(rows) >= 2 else None
+        date, price = latest  # rows 元素为 (date_str, price_float)
+        out[symbol] = {
+            "price": round(price, 4),
+            "date": date,
+            "prev_close": round(prev[1], 4) if prev else None,
+            "change_pct": round((price - prev[1]) / prev[1], 6) if prev and prev[1] else None,
+        }
+    return out
+
+
 def _read_raw_lines(path: Path):
     try:
         with path.open("r", encoding="utf-8") as f:
@@ -193,6 +242,79 @@ def _read_raw_lines(path: Path):
                     yield line
     except OSError:
         return
+
+
+def rebuild_closed_trades(
+    config: dict, market: str, records: List[Dict[str, Any]]
+) -> tuple:
+    """FIFO 重建已平仓逐笔（LAST 25 TRADES 表 + 汇总指标共用）。
+
+    返回 (closed, total_fee)：
+    - closed 每笔: {symbol, exit_date, qty, entry_price, exit_price, notional, fee, pnl, hold_days}
+    - total_fee 含未平仓买单手续费（口径同历史 summary）
+    - 成交价/手续费模型同 tool_trade：滑点 ±0.05% + 双边费率 0.03%
+    - pnl = 卖出名义×(1-卖费率) − 买入成本（含滑点）
+    - 每笔 fee = 卖出手续费 + 所消耗买单的摊分手续费
+    """
+    fees = config.get("trading", {}).get("fees", {})
+    buy_rate = float(fees.get("buy_rate", 0.0003))
+    sell_rate = float(fees.get("sell_rate", 0.0003))
+    slippage = float(fees.get("slippage", 0.0005))
+    prices = _load_price_lookup(config, market)
+
+    lots: Dict[str, List[list]] = {}  # symbol -> [[qty, cost, buy_fee, buy_date]]
+    closed: List[Dict[str, Any]] = []
+    total_fee = 0.0
+    for rec in records:
+        date = rec.get("date", "")[:10]
+        action = rec.get("this_action") or {}
+        sym = action.get("symbol", "")
+        qty = action.get("amount", 0) or 0
+        kind = action.get("action")
+        price = prices.get(date, {}).get(sym)
+        if not price:
+            continue
+        if kind == "buy" and qty > 0 and sym:
+            ex = float(price) * (1 + slippage)
+            total_fee += ex * qty * buy_rate
+            lots.setdefault(sym, []).append([qty, ex, ex * qty * buy_rate, date])
+        elif kind == "sell" and qty > 0 and sym:
+            ex = float(price) * (1 - slippage)
+            total_fee += ex * qty * sell_rate
+            remain, cost, buy_fees, buy_date = qty, 0.0, 0.0, None
+            stack = lots.get(sym, [])
+            while remain > 0 and stack:
+                lot = stack[0]
+                lq, lp, lf, ld = lot
+                take = min(lq, remain)
+                cost += take * lp
+                if lq:
+                    buy_fees += lf * (take / lq)
+                if buy_date is None:
+                    buy_date = ld
+                remain -= take
+                if take >= lq:
+                    stack.pop(0)
+                else:
+                    lot[0] = lq - take
+            sold = qty - remain
+            if sold > 0:
+                notional = ex * qty
+                closed.append({
+                    "symbol": sym,
+                    "exit_date": date,
+                    "qty": qty,
+                    "entry_price": round(cost / qty, 4),
+                    "exit_price": round(ex, 4),
+                    "notional": round(notional, 2),
+                    "fee": round(buy_fees + ex * qty * sell_rate, 2),
+                    "pnl": round(notional * (1 - sell_rate) - cost, 2),
+                    "hold_days": (
+                        (datetime.strptime(date, "%Y-%m-%d") - datetime.strptime(buy_date, "%Y-%m-%d")).days
+                        if buy_date else None
+                    ),
+                })
+    return closed, total_fee
 
 
 def compute_extended_summary(
@@ -223,16 +345,9 @@ def compute_extended_summary(
     else:
         out["sharpe"] = 0.0
 
-    # ---- 2. 逐笔买卖重建（成本/费用用价格文件重算） ----
-    fees = config.get("trading", {}).get("fees", {})
-    buy_rate = float(fees.get("buy_rate", 0.0003))
-    sell_rate = float(fees.get("sell_rate", 0.0003))
-    slippage = float(fees.get("slippage", 0.0005))
-    prices = _load_price_lookup(config, market)
+    # ---- 2. 逐笔买卖重建（FIFO 平仓 + 价格文件重算成交价/费用） ----
+    closed, total_fee = rebuild_closed_trades(config, market, records)
 
-    lots: Dict[str, List[tuple]] = {}   # symbol -> [(qty, cost_price)] FIFO 队列
-    realized: List[float] = []          # 每笔平仓 PnL（扣费用）
-    total_fee = 0.0
     first_buy: Dict[str, str] = {}      # symbol -> 首买日期
     last_hold: Dict[str, str] = {}      # symbol -> 最后持有日期
     held_days = set()                   # 有持仓的日期
@@ -240,34 +355,8 @@ def compute_extended_summary(
         date = rec.get("date", "")[:10]
         action = rec.get("this_action") or {}
         sym = action.get("symbol", "")
-        qty = action.get("amount", 0) or 0
-        kind = action.get("action")
-        day_prices = prices.get(date, {})
-        price = day_prices.get(sym)
-        if not price:
-            continue
-        if kind == "buy" and qty > 0 and sym:
-            ex = float(price) * (1 + slippage)
-            total_fee += ex * qty * buy_rate
-            lots.setdefault(sym, []).append((qty, ex))
-            first_buy.setdefault(sym, date)
-        elif kind == "sell" and qty > 0 and sym:
-            ex = float(price) * (1 - slippage)
-            total_fee += ex * qty * sell_rate
-            remain, cost = qty, 0.0
-            stack = lots.get(sym, [])
-            while remain > 0 and stack:
-                lq, lp = stack[0]
-                take = min(lq, remain)
-                cost += take * lp
-                remain -= take
-                if take >= lq:
-                    stack.pop(0)
-                else:
-                    stack[0] = (lq - take, lp)
-            if qty - remain > 0:
-                realized.append(ex * qty * (1 - sell_rate) - cost)
-        # 持仓日统计（该日任意非 CASH 持股 > 0）
+        if action.get("action") == "buy" and sym and sym not in first_buy:
+            first_buy[sym] = date
         pos = rec.get("positions", {})
         if any(k != "CASH" and v for k, v in pos.items()):
             held_days.add(date)
@@ -275,19 +364,34 @@ def compute_extended_summary(
                 if pos.get(sym, 0) > 0:
                     last_hold[sym] = date
 
-    # ---- 3. 胜率 / 盈亏比 ----
-    wins = [r for r in realized if r > 0]
-    losses = [r for r in realized if r <= 0]
-    if realized:
-        out["win_rate"] = round(len(wins) / len(realized), 4)
-        avg_win = sum(wins) / len(wins) if wins else 0.0
-        avg_loss = abs(sum(losses) / len(losses)) if losses else 0.0
+    # ---- 3. 胜率 / 盈亏比 / 极值 / 期望 / 规模 ----
+    wins = [t for t in closed if t["pnl"] > 0]
+    losses = [t for t in closed if t["pnl"] <= 0]
+    if closed:
+        win_rate = len(wins) / len(closed)
+        out["win_rate"] = round(win_rate, 4)
+        avg_win = sum(t["pnl"] for t in wins) / len(wins) if wins else 0.0
+        avg_loss = abs(sum(t["pnl"] for t in losses) / len(losses)) if losses else 0.0
         out["profit_factor"] = (
             round(avg_win / avg_loss, 3) if avg_loss > 0 else (None if not wins else 999.0)
         )
-        out["closed_trades"] = len(realized)
+        out["closed_trades"] = len(closed)
+        out["biggest_win"] = round(max(t["pnl"] for t in wins), 2) if wins else None
+        out["biggest_loss"] = round(min(t["pnl"] for t in losses), 2) if losses else None
+        out["avg_trade_pnl"] = round(sum(t["pnl"] for t in closed) / len(closed), 2)
+        out["expectancy"] = round(avg_win * win_rate - avg_loss * (1 - win_rate), 2)
+        sizes = sorted(t["notional"] for t in closed)
+        out["avg_trade_size"] = round(sum(sizes) / len(sizes), 2)
+        out["median_trade_size"] = round(sizes[len(sizes) // 2], 2)
+        holds = sorted(t["hold_days"] for t in closed if t["hold_days"] is not None)
+        out["median_hold_days"] = round(holds[len(holds) // 2], 1) if holds else None
     else:
-        out["win_rate"], out["profit_factor"], out["closed_trades"] = None, None, 0
+        out.update({
+            "win_rate": None, "profit_factor": None, "closed_trades": 0,
+            "biggest_win": None, "biggest_loss": None, "avg_trade_pnl": None,
+            "expectancy": None, "avg_trade_size": None, "median_trade_size": None,
+            "median_hold_days": None,
+        })
 
     # ---- 4. 费用 ----
     initial = series[0]["equity"] if series else 0.0

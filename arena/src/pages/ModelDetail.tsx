@@ -6,6 +6,7 @@ import {
   fetchLogs,
   fetchPerformance,
   fetchPositions,
+  fetchTradeDetail,
   fetchTrades,
   marketMeta,
 } from '../api/client';
@@ -13,7 +14,7 @@ import { usePolling } from '../hooks/usePolling';
 import EquityChart, { toBenchLine, toChartLine } from '../components/EquityChart';
 import { logoOf, shortName } from '../components/ModelCard';
 import StatCard from '../components/StatCard';
-import { PositionsTable, TradesTable } from '../components/Tables';
+import { LastTradesTable, PositionsTable, TradesTable } from '../components/Tables';
 import ModelChat from '../components/ModelChat';
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format';
 
@@ -34,6 +35,7 @@ export default function ModelDetail() {
   const perf = usePolling(() => fetchPerformance(name, m), [name, m], 30000);
   const positions = usePolling(() => fetchPositions(name, m), [name, m], 30000);
   const trades = usePolling(() => fetchTrades(name, m), [name, m], 30000);
+  const tradeDetail = usePolling(() => fetchTradeDetail(name, m, 25), [name, m], 30000);
   const logs = usePolling(() => fetchLogs(name, m), [name, m], 30000);
   const bench = usePolling(() => fetchBenchmark(m), [m], 300000);
 
@@ -102,6 +104,15 @@ export default function ModelDetail() {
         <StatCard k="净值记录" v={s?.records ?? 0} sub={`最新 ${perf.data?.points[perf.data.points.length - 1]?.date?.slice(0, 10) ?? '—'}`} />
       </div>
 
+      <div className="stat-grid" style={{ marginBottom: 20 }}>
+        <StatCard k="最大单笔盈利" v={s?.biggest_win != null ? fmtMoney(s.biggest_win, meta.currency, 1) : '—'} className="up" sub={`平均盈利 ${s?.avg_trade_pnl != null && s.avg_trade_pnl > 0 ? fmtMoney(s.avg_trade_pnl, meta.currency, 1) : '—'}`} />
+        <StatCard k="最大单笔亏损" v={s?.biggest_loss != null ? fmtMoney(s.biggest_loss, meta.currency, 1) : '—'} className="down" sub="已平仓单笔最大亏损" />
+        <StatCard k="平均单笔盈亏" v={s?.avg_trade_pnl != null ? fmtMoney(s.avg_trade_pnl, meta.currency, 1) : '—'} className={pnlClass(s?.avg_trade_pnl)} sub={`共 ${s?.closed_trades ?? 0} 笔`} />
+        <StatCard k="期望值" v={s?.expectancy != null ? fmtMoney(s.expectancy, meta.currency, 1) : '—'} className={pnlClass(s?.expectancy)} sub="赢率×平均盈 − 输率×平均亏" />
+        <StatCard k="平均单笔规模" v={s?.avg_trade_size != null ? fmtMoney(s.avg_trade_size, meta.currency, 0) : '—'} sub={`中位 ${s?.median_trade_size != null ? fmtMoney(s.median_trade_size, meta.currency, 0) : '—'}`} />
+        <StatCard k="持仓中位数" v={s?.median_hold_days != null ? `${fmtNum(s.median_hold_days, 1)} 天` : '—'} sub="平仓笔数中位持仓" />
+      </div>
+
       <div className="panel" style={{ marginBottom: 20 }}>
         <div className="panel-title">账户净值 <span className="faint">虚线 = 基准指数</span></div>
         <EquityChart lines={chartLine ? [chartLine] : []} benchmark={benchLine} currency={meta.currency} height={340} />
@@ -120,7 +131,14 @@ export default function ModelDetail() {
           </button>
         </div>
         {tab === 'positions' && <PositionsTable records={positions.data ?? []} currency={meta.currency} />}
-        {tab === 'trades' && <TradesTable records={trades.data ?? []} currency={meta.currency} />}
+        {tab === 'trades' && (
+          <>
+            <div className="panel-title">LAST {tradeDetail.data?.length ?? 0} TRADES <span className="faint">FIFO 平仓明细</span></div>
+            <LastTradesTable trades={tradeDetail.data ?? []} currency={meta.currency} />
+            <div className="panel-title" style={{ marginTop: 18 }}>原始成交记录</div>
+            <TradesTable records={trades.data ?? []} currency={meta.currency} />
+          </>
+        )}
         {tab === 'logs' && (
           <ModelChat
             logs={logs.data ?? []}

@@ -42,6 +42,13 @@ export interface Summary {
   fee_ratio: number | null;
   avg_hold_days: number | null;
   position_time_ratio: number | null;
+  biggest_win: number | null;
+  biggest_loss: number | null;
+  avg_trade_pnl: number | null;
+  expectancy: number | null;
+  avg_trade_size: number | null;
+  median_trade_size: number | null;
+  median_hold_days: number | null;
 }
 
 export interface EquityPoint {
@@ -133,6 +140,43 @@ export const fetchTrades = (agent: string, market: MarketId) =>
 
 export const fetchLogs = (agent: string, market: MarketId) =>
   unwrap<LogLine[]>(api.get(`/agents/${encodeURIComponent(agent)}/logs`, { params: { market } }));
+
+// ---------- 最新价格（滚动价格条） ----------
+
+export interface PriceQuote {
+  price: number;
+  date: string; // YYYY-MM-DD
+  prev_close: number | null;
+  change_pct: number | null; // 涨跌幅（昨收基准），无昨收为 null
+}
+
+/** 每只股票最新收盘价（键 = symbol，如 "600028.SH"） */
+export const fetchPrices = (market: MarketId) =>
+  unwrap<Record<string, PriceQuote>>(api.get('/prices', { params: { market } }));
+
+/** 股票中文名表（键 = symbol） */
+export const fetchStockNames = (market: MarketId) =>
+  unwrap<Record<string, string>>(api.get('/stock-names', { params: { market } }));
+
+// ---------- 平仓明细（LAST 25 TRADES） ----------
+
+export interface ClosedTradeDetail {
+  symbol: string;
+  exit_date: string; // YYYY-MM-DD
+  qty: number;
+  entry_price: number;
+  exit_price: number;
+  notional: number;
+  fee: number;
+  pnl: number;
+  hold_days: number | null;
+}
+
+/** FIFO 重建已平仓逐笔，最新在前（最多 limit 笔） */
+export const fetchTradeDetail = (agent: string, market: MarketId, limit = 25) =>
+  unwrap<ClosedTradeDetail[]>(
+    api.get(`/agents/${encodeURIComponent(agent)}/trade-detail`, { params: { market, limit } }),
+  );
 
 // ---------- 基准（指数） ----------
 

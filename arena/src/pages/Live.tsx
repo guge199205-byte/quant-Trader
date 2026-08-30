@@ -12,6 +12,8 @@ import {
   fetchOverview,
   fetchPerformance,
   fetchPositions,
+  fetchPrices,
+  fetchStockNames,
   fetchTrades,
   marketMeta,
 } from '../api/client';
@@ -127,6 +129,34 @@ export default function Live() {
     () => (effectiveModel ? fetchLogs(effectiveModel, market) : Promise.resolve([])),
     [effectiveModel, market],
     30000,
+  );
+
+  // ---------- 滚动价格条（当前市场全部 agent 持仓股票最新价） ----------
+  const prices = usePolling(() => fetchPrices(market), [market], 30000);
+  const stockNames = usePolling(() => fetchStockNames(market), [market], 600000);
+  const marketPositions = usePolling(
+    () =>
+      Promise.all(
+        rows.map((r) => fetchPositions(r.name, market).catch(() => [] as PositionRecord[])),
+      ).then((lists) => lists.flat()),
+    [market, agentsKey],
+    30000,
+  );
+  const heldSymbols = useMemo(() => {
+    const set = new Set<string>();
+    for (const rec of marketPositions.data ?? []) {
+      for (const [sym, qty] of Object.entries(rec.positions ?? {})) {
+        if (sym !== 'CASH' && Number(qty) > 0) set.add(sym);
+      }
+    }
+    return [...set];
+  }, [marketPositions.data]);
+  const tickerItems = useMemo(
+    () =>
+      heldSymbols
+        .map((sym) => ({ sym, quote: prices.data?.[sym] ?? null, name: stockNames.data?.[sym] }))
+        .filter((t) => t.quote != null),
+    [heldSymbols, prices.data, stockNames.data],
   );
 
   // ---------- 事件流（成交，/trades 顶层字段） ----------
@@ -312,6 +342,27 @@ export default function Live() {
         </div>
         <MarketSwitcher market={market} onChange={switchMarket} />
       </div>
+
+      {/* 持仓股票滚动价格条（hover 暂停） */}
+      {tickerItems.length > 0 && (
+        <div className="ticker" aria-label="持仓股票最新价格">
+          <div className="ticker-track">
+            {[...tickerItems, ...tickerItems].map((t, i) => {
+              const q = t.quote!;
+              return (
+                <span className="ticker-item" key={`${t.sym}-${i}`}>
+                  <span className="ticker-sym">{t.sym}</span>
+                  {t.name && <span className="ticker-name">{t.name}</span>}
+                  <span className="ticker-price">{fmtMoney(q.price, meta.currency)}</span>
+                  <span className={`ticker-chg ${q.change_pct != null ? pnlClass(q.change_pct) : 'dim'}`}>
+                    {q.change_pct != null ? fmtPct(q.change_pct) : '—'}
+                  </span>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="main-content">
         {/* 左：图表 + 模型卡 */}

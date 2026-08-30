@@ -1,5 +1,50 @@
-import { PositionRecord, TradeRecord } from '../api/client';
-import { fmtDate } from '../utils/format';
+import { ClosedTradeDetail, PositionRecord, TradeRecord } from '../api/client';
+import { fmtDate, fmtNum } from '../utils/format';
+
+/** LAST 25 TRADES 平仓明细表：FIFO 重建逐笔（entry/exit/hold/notional/fee/pnl）。 */
+export function LastTradesTable({ trades, currency = '$' }: { trades: ClosedTradeDetail[]; currency?: string }) {
+  return (
+    <div className="table-wrap">
+      <table className="data">
+        <thead>
+          <tr>
+            <th>方向</th>
+            <th>证券</th>
+            <th>平仓日</th>
+            <th>买入价</th>
+            <th>卖出价</th>
+            <th>数量</th>
+            <th>持仓</th>
+            <th>名义</th>
+            <th>费用</th>
+            <th>净盈亏</th>
+          </tr>
+        </thead>
+        <tbody>
+          {trades.length === 0 && (
+            <tr><td colSpan={10} className="faint">暂无已平仓记录</td></tr>
+          )}
+          {trades.map((t, i) => (
+            <tr key={`${t.exit_date}-${t.symbol}-${i}`}>
+              <td className="up">LONG</td>
+              <td>{t.symbol}</td>
+              <td className="faint">{fmtDate(t.exit_date)}</td>
+              <td>{fmtNum(t.entry_price)}</td>
+              <td>{fmtNum(t.exit_price)}</td>
+              <td>{t.qty.toLocaleString('en-US')}</td>
+              <td className="faint">{t.hold_days != null ? `${t.hold_days}d` : '—'}</td>
+              <td>{fmtNum(t.notional, 0)}</td>
+              <td className="faint">{fmtNum(t.fee, 2)}</td>
+              <td className={t.pnl >= 0 ? 'up' : 'down'}>
+                {t.pnl >= 0 ? '+' : ''}{currency}{Math.abs(t.pnl).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 /** 持仓记录表：{date, positions}；positions: {CASH: number, SYMBOL: qty}。 */
 export function PositionsTable({ records, currency = '$' }: { records: PositionRecord[]; currency?: string }) {

@@ -12,6 +12,56 @@
   font-family: 'Courier New', monospace;
 }
 
+/* ---------- 持仓滚动价格条 ---------- */
+
+.ticker {
+  border-bottom: 2px solid #000;
+  background: #fafafa;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.ticker-track {
+  display: inline-flex;
+  padding: 6px 20px;
+  animation: ticker-scroll 45s linear infinite;
+  will-change: transform;
+}
+
+.ticker:hover .ticker-track {
+  animation-play-state: paused;
+}
+
+.ticker-item {
+  display: inline-flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-right: 40px;
+  font-size: 11px;
+}
+
+.ticker-sym {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.ticker-name {
+  color: #888;
+}
+
+.ticker-price {
+  font-weight: 700;
+}
+
+.ticker-chg {
+  font-weight: 700;
+}
+
+@keyframes ticker-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
 /* ---------- 顶部状态条 ---------- */
 
 .top-status-bar {

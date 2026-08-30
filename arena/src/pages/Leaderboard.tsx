@@ -181,6 +181,9 @@ export default function Leaderboard() {
                 <th onClick={() => handleSort('closed_trades')}>成交{sortArrow('closed_trades')}</th>
                 <th>费用</th>
                 <th>平均持仓</th>
+                <th>最大盈</th>
+                <th>最大亏</th>
+                <th>平均盈亏</th>
                 <th>状态</th>
               </tr>
             </thead>
@@ -214,6 +217,9 @@ export default function Leaderboard() {
                     <td className="dim">{s.closed_trades ?? 0}</td>
                     <td className="dim">{s.total_fee != null ? fmtMoney(s.total_fee, meta.currency, 1) : '—'}</td>
                     <td className="dim">{s.avg_hold_days != null ? `${fmtNum(s.avg_hold_days, 1)}d` : '—'}</td>
+                    <td className="up">{s.biggest_win != null ? fmtMoney(s.biggest_win, meta.currency, 1) : '—'}</td>
+                    <td className="down">{s.biggest_loss != null ? fmtMoney(s.biggest_loss, meta.currency, 1) : '—'}</td>
+                    <td className={pnlClass(s.avg_trade_pnl)}>{s.avg_trade_pnl != null ? fmtMoney(s.avg_trade_pnl, meta.currency, 1) : '—'}</td>
                     <td>
                       <span className={`status-badge ${s.records > 0 ? 'active' : 'stopped'}`}>
                         {s.records > 0 ? '运行中' : '待启动'}
@@ -223,7 +229,7 @@ export default function Leaderboard() {
                 );
               })}
               {!sorted.length && (
-                <tr><td colSpan={12} className="dim" style={{ textAlign: 'center', padding: 30 }}>NO DATA</td></tr>
+                <tr><td colSpan={15} className="dim" style={{ textAlign: 'center', padding: 30 }}>NO DATA</td></tr>
               )}
             </tbody>
           </table>

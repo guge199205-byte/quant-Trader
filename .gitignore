@@ -103,3 +103,4 @@ node_modules/
 arena/node_modules/
 arena/dist/
 data/benchmark_nasdaq100.json
+dsh/proxy/dsh.htpasswd

@@ -140,6 +140,7 @@ services:
   # ---- dsh（DeepSeek Harness，挂 mcp-us 的 5 个工具）----
   # dsh 拒绝绑 0.0.0.0（防 RCE 外露），用 host 网络绑宿主 127.0.0.1:3081，
   # cordis 里 localhost:8100-8104 正好指向宿主上发布的 mcp-us 端口
+  # 局域网访问走 dsh-proxy（nginx 绑 192.168.31.68:3081 + basic auth → 127.0.0.1:3081）
   dsh:
     build:
       context: .
@@ -150,9 +151,21 @@ services:
       - .env
       - .service.env
     restart: unless-stopped
-    command: dsh --profile web --patch /app/dsh/baymax.cordis.yml --port 3081 --no-open
+    command: dsh --profile web --patch /app/dsh/baymax.cordis.yml --port 3081 --no-open --trusted-host 192.168.31.68:3081
     volumes:
       - ./dsh:/app/dsh
+
+  # ---- dsh 局域网代理（nginx，basic auth）----
+  # dsh 本身只绑 127.0.0.1；此容器 host 网络绑 192.168.31.68:3081 与 dsh 的
+  # 127.0.0.1:3081 不冲突。本机 localhost:3081 直连不受影响。
+  dsh-proxy:
+    image: nginx:alpine
+    container_name: baymax-dsh-proxy
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./dsh/proxy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./dsh/proxy/dsh.htpasswd:/etc/nginx/dsh.htpasswd:ro
 
   # ---- nof0 主题界面（原 start_nof0.sh 的 8080）----
   ui-nof0:

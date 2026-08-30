@@ -66,7 +66,8 @@ docker compose down
 | api | 8091 | FastAPI 后端 API（数据/鉴权，双前端共用） |
 | ui-nof0 | 8080 | Quant-Agent-Trader 实时看板（原 start_nof0.sh 端口） |
 | ui-arena | 8092 | Arena 竞技场（nginx 反代 8091 + envsubst token 注入） |
-| dsh | 3081 | DeepSeek Harness（绑定宿主 127.0.0.1） |
+| dsh | 3081 | DeepSeek Harness（绑定宿主 127.0.0.1，本机直连） |
+| dsh-proxy | 3081 (LAN IP) | dsh 局域网代理（nginx basic auth，密码在 `dsh/proxy/dsh.htpasswd`，改完重启容器） |
 | ui | 8887 | docs 静态快照（8888/8889 被占） |
 
 与 `scripts/alert.sh` 的探活端口一致（api:8091 mcp_us:8100 mcp_cn:8200 mcp_hk:8300 dsh:3081），宿主 cron 告警无需改动。
@@ -79,6 +80,7 @@ docker compose down
 - `config/backend.yaml` — api 配置
 - `runtime_env.json / _cn / _hk` — 各市场运行时环境（改 TODAY_DATE 等直接生效）
 - `docs/` `nof0/` — 前端静态文件
+- `dsh/proxy/` — dsh 局域网代理配置（nginx.conf + dsh.htpasswd，htpasswd 已 gitignore）
 - `.env` / `.service.env` — 密钥不打包进镜像，仅以 env_file 注入
 
 ## 相对原 systemd 的改动

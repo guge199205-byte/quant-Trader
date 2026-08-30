@@ -7,10 +7,13 @@
 """
 
 import json
+import logging
 import os
 import shutil
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -392,6 +395,84 @@ async def quantmind_proxy(path: str, request: Request):
     from backend.services import quantmind_proxy as qm
 
     return await qm.proxy_to_quantmind(request, path)
+
+
+# ---------- 数据平台（/api/data-platform：多市场 parquet 仓库浏览/预览） ----------
+
+_DP_MARKETS = {"quantdb", "quantus", "quanthk", "quantfutures"}
+
+
+@app.get("/api/data-platform/markets")
+def dp_markets():
+    from backend.services import data_platform as dp
+
+    return {"success": True, "data": dp.MARKETS}
+
+
+@app.get("/api/data-platform/{market}/catalog")
+def dp_catalog(market: str):
+    if market not in _DP_MARKETS:
+        raise HTTPException(status_code=400, detail=f"未知市场: {market}")
+    from backend.services import data_platform as dp
+
+    return {"success": True, "data": dp.build_catalog(market)}
+
+
+@app.get("/api/data-platform/{market}/preview")
+def dp_preview(
+    market: str,
+    dataset: str = Query(...),
+    symbol: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    if market not in _DP_MARKETS:
+        raise HTTPException(status_code=400, detail=f"未知市场: {market}")
+    from backend.services import data_platform as dp
+
+    try:
+        return {"success": True, "data": dp.preview_dataset(market, dataset, symbol, limit)}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        from fastapi.responses import JSONResponse as _JR
+
+        logger.error("data-platform preview failed (%s/%s): %s", market, dataset, exc, exc_info=True)
+        return _JR(status_code=500, content={"success": False, "error": f"预览失败: {exc}"})
+
+
+@app.get("/api/data-platform/{market}/root")
+def dp_root(market: str):
+    if market not in _DP_MARKETS:
+        raise HTTPException(status_code=400, detail=f"未知市场: {market}")
+    from backend.services import data_platform as dp
+
+    return {"success": True, "data": {"market": market, "root": dp.data_root(market)}}
+
+
+@app.post("/api/data-platform/{market}/root")
+async def dp_set_root(market: str, request: Request):
+    """设置数据根目录（只影响展示/预览读取位置，不复制不移动数据）。"""
+    if market not in _DP_MARKETS:
+        raise HTTPException(status_code=400, detail=f"未知市场: {market}")
+    from backend.services import data_platform as dp
+
+    body = await request.json()
+    root = str(body.get("root", "")).strip()
+    if not root:
+        raise HTTPException(status_code=400, detail="root 不能为空")
+    if not dp.Path(root).is_dir():
+        raise HTTPException(status_code=404, detail=f"目录不存在: {root}")
+    return {"success": True, "data": {"market": market, "root": dp.set_data_root(market, root)}}
+
+
+@app.get("/api/data-platform/{market}/scan")
+def dp_scan(market: str, root: Optional[str] = Query(None)):
+    """文件夹预检：识别 root 下的数据集（文件数/大小），不改变当前根。"""
+    if market not in _DP_MARKETS:
+        raise HTTPException(status_code=400, detail=f"未知市场: {market}")
+    from backend.services import data_platform as dp
+
+    return {"success": True, "data": dp.scan_folder(market, root or "")}
 
 
 # ---------- 静态托管（8090 直接出页面：index / 子页面 / data 快照） ----------

@@ -82,6 +82,11 @@ services:
       - ./config:/app/config
       - ./nof0:/app/nof0
       - ./trade_cache.sqlite:/app/trade_cache.sqlite
+      # 数据平台：quantmind 仓库 parquet 只读直挂（宿主 /home/zbox/projects/quantmind/data/*）
+      - /home/zbox/projects/quantmind/data/quantdb:/data/quantdb:ro
+      - /home/zbox/projects/quantmind/data/quantus:/data/quantus:ro
+      - /home/zbox/projects/quantmind/data/quanthk:/data/quanthk:ro
+      - /home/zbox/projects/quantmind/data/quantfutures:/data/quantfutures:ro
     ports:
       - "8091:8091"
 

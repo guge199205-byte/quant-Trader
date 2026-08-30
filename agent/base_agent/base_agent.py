@@ -350,7 +350,7 @@ class BaseAgent:
                     base_url=self.openai_base_url,
                     api_key=self.openai_api_key,
                     max_retries=3,
-                    timeout=30,
+                    timeout=120,
                 )
             else:
                 self.model = ChatOpenAI(
@@ -358,7 +358,7 @@ class BaseAgent:
                     base_url=self.openai_base_url,
                     api_key=self.openai_api_key,
                     max_retries=3,
-                    timeout=30,
+                    timeout=120,
                 )
         except Exception as e:
             raise RuntimeError(f"❌ Failed to initialize AI model: {e}")

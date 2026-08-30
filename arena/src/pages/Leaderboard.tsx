@@ -167,9 +167,11 @@ export default function Leaderboard() {
                     <td>
                       <span className={`rank-badge ${rank <= 3 ? 'top3' : ''}`}>{rank}</span>
                     </td>
-                    <td className="model-cell">
-                      <span className="model-logo-cell">{logoOf(r.agent)}</span>
-                      <span className="model-name-cell">{r.agent.replace('deepseek-v4-', 'DeepSeek V4 ')}</span>
+                    <td>
+                      <div className="model-cell">
+                        <span className="model-logo-cell">{logoOf(r.agent)}</span>
+                        <span className="model-name-cell">{r.agent.replace('deepseek-v4-', 'DeepSeek V4 ')}</span>
+                      </div>
                     </td>
                     <td><span className="market-cell">{meta.label}</span></td>
                     <td>{fmtMoney(s.end_equity, meta.currency)}</td>

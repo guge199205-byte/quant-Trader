@@ -24,9 +24,17 @@
       - quantmind 数据平台：http://127.0.0.1:8000（局域网
         192.168.31.68:8000，管理 API：/api/v1/admin/data-platform/*、
         数据目录 /api/v1/admin/data-platform/*/catalog 等）。
-      - MCP 工具（已挂载）：baymax_math 计算 / baymax_search 市场信息 /
-        baymax_trade 下单 / baymax_price 行情 / baymax_memory 记忆
-        （8100-8104；A股 8200-8204、港股 8300-8304 是另两组实例）。
+      - MCP 工具（已挂载，三市场）：
+        · 美股（通用计算/搜索 + 交易/行情/记忆）：baymax_math 8100 /
+          baymax_search 8101 / baymax_trade 8102 / baymax_price 8103 /
+          baymax_memory 8104
+        · A股：baymax_cn_trade 8202 / baymax_cn_price 8203 /
+          baymax_cn_memory 8204
+        · 港股：baymax_hk_trade 8302 / baymax_hk_price 8303 /
+          baymax_hk_memory 8304
+        math/search 为市场无关工具，A股/港股复用 baymax_math/baymax_search。
+        交易标的与市场必须匹配对应市场工具：A股只能走 baymax_cn_trade，
+        港股只能走 baymax_hk_trade，美股走 baymax_trade。
 
       【已挂载的文件系统（本容器实测）】
       - /root/.dsh/skills —— 12 个交易技能（本工作区技能列表同源）：
@@ -64,7 +72,8 @@
         market-analysis（市场快照）→ daily-review（复盘）→ stock-picks
         （推荐）→ stock-research（个股深研），报告落盘 /data/reports，
         聊天里回复速览。
-      - 交易：下单必须走 baymax_trade 工具（buy/sell），直接输出指令不
+      - 交易：下单必须走对应市场工具（A股 baymax_cn_trade、港股
+        baymax_hk_trade、美股 baymax_trade，buy/sell），直接输出指令不
         被记录；分批建仓单标的不超可投资金 20%；止损 -8%、止盈 +15%；
         收盘后总结持仓/现金/当日盈亏并 append_memory 沉淀。
       - 完成标准：决策完成时输出交易总结（买卖明细、当前持仓、现金余额、
@@ -112,5 +121,61 @@
         serverName: baymax_memory
         transport: streamable-http
         url: http://localhost:8104/mcp
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false
+
+    # ---- A股（mcp-cn，8200-8204）：交易/行情/记忆三件套 ----
+    - id: mcp-cn-trade
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: baymax_cn_trade
+        transport: streamable-http
+        url: http://localhost:8202/mcp
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false
+
+    - id: mcp-cn-price
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: baymax_cn_price
+        transport: streamable-http
+        url: http://localhost:8203/mcp
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false
+
+    - id: mcp-cn-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: baymax_cn_memory
+        transport: streamable-http
+        url: http://localhost:8204/mcp
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false
+
+    # ---- 港股（mcp-hk，8300-8304）：交易/行情/记忆三件套 ----
+    - id: mcp-hk-trade
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: baymax_hk_trade
+        transport: streamable-http
+        url: http://localhost:8302/mcp
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false
+
+    - id: mcp-hk-price
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: baymax_hk_price
+        transport: streamable-http
+        url: http://localhost:8303/mcp
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false
+
+    - id: mcp-hk-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: baymax_hk_memory
+        transport: streamable-http
+        url: http://localhost:8304/mcp
         toolCallTimeoutMs: 30000
         failOnStartupError: false

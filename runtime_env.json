@@ -1,8 +1,0 @@
-{
-    "SIGNATURE": "deepseek-v4-flash",
-    "IF_TRADE": true,
-    "MARKET": "us",
-    "LOG_PATH": "./data/agent_data",
-    "TODAY_DATE": "2026-08-28",
-    "LOG_FILE": "./data/agent_data/deepseek-v4-flash/log/2026-08-28/log.jsonl"
-}

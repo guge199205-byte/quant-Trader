@@ -96,3 +96,4 @@ data/market_memory.md
 *.sqlite
 data/merged.jsonl
 data/hsi_daily.json
+runtime_env*.json

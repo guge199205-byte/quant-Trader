@@ -31,3 +31,25 @@ server {
         proxy_read_timeout 60s;
     }
 }
+
+# 交易智能体（AI-HARNESS 嵌入）：独立端口 8093，与 8092 同站点（同 host 不同端口），
+# iframe 内 localStorage 不受第三方存储隔离 → dsh settings 可用。
+# 本身要求 basic auth（与 3081 同一 htpasswd），并把浏览器凭据透传给上游 dsh-proxy。
+server {
+    listen 8093;
+    server_name _;
+
+    auth_basic "dsh - Quant Agent Trader";
+    auth_basic_user_file /etc/nginx/dsh.htpasswd;
+
+    location / {
+        proxy_pass http://192.168.31.68:3081;
+        proxy_set_header Host $http_host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}

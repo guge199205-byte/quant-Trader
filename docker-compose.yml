@@ -156,9 +156,18 @@ services:
       - .env
       - .service.env
     restart: unless-stopped
-    command: dsh --profile web --patch /app/dsh/baymax.cordis.yml --port 3081 --no-open --trusted-host 192.168.31.68:3081
+    command: dsh --profile web --patch /app/dsh/baymax.cordis.yml --port 3081 --no-open --trusted-host 192.168.31.68:3081 --trusted-host 192.168.31.68:8093
     volumes:
       - ./dsh:/app/dsh
+      # 交易技能（quantdb 分析/复盘/推荐/新闻情绪/券商 OpenAPI 等 12 个，
+      # 来自 quantmind/skills 的规范副本；dsh 用户级技能根目录 = ~/.dsh/skills）
+      - ./dsh/skills:/root/.dsh/skills
+      # 总管技能执行环境：
+      #   ① /quantmind 只读挂载 → 技能契约脚本源 `/quantmind/skills/<name>/scripts/`
+      #   ② /data 读写 → 报告落盘（quantmind 股票报告页可见）
+      # （docker exec quantmind 跑重依赖脚本需挂 docker.sock，默认不挂，见 README.docker.md）
+      - /home/zbox/projects/quantmind:/quantmind:ro
+      - /home/zbox/projects/quantmind/data:/data:rw
 
   # ---- dsh 局域网代理（nginx，basic auth）----
   # dsh 本身只绑 127.0.0.1；此容器 host 网络绑 192.168.31.68:3081 与 dsh 的
@@ -196,10 +205,12 @@ services:
       API_TOKEN: ${API_TOKEN}
     ports:
       - "8092:8092"
+      - "8093:8093"  # 交易智能体（AI-HARNESS 嵌入，同站点端口，basic auth）
     volumes:
       - ./arena/dist:/usr/share/nginx/html:ro
       - ./arena/nginx.conf.tpl:/etc/nginx/arena.conf.tpl:ro
       - ./arena/docker-entrypoint.d.sh:/docker-entrypoint.d/05-arena-envsubst.sh:ro
+      - ./dsh/proxy/dsh.htpasswd:/etc/nginx/dsh.htpasswd:ro
     depends_on:
       - api
 

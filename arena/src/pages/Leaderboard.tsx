@@ -58,9 +58,9 @@ export default function Leaderboard() {
 
   const sortArrow = (k: SortKey) => (sortKey === k ? (sortDesc ? ' ▲' : ' ▼') : '');
 
-  // 顶部统计（4 卡，coke leaderboard-stats）
+  // 顶部统计（6 卡，coke leaderboard-stats）
   const stats = useMemo(() => {
-    if (!rows.length) return { pool: null, best: null, trades: 0, avgRet: null };
+    if (!rows.length) return { pool: null, best: null, trades: 0, avgRet: null, bestSharpe: null, bestWin: null, totalFee: null };
     const pool = rows.reduce((s, r) => s + (r.summary.end_equity ?? 0), 0);
     const best = [...rows].sort(
       (a, b) => (b.summary.total_return ?? -Infinity) - (a.summary.total_return ?? -Infinity),
@@ -68,7 +68,14 @@ export default function Leaderboard() {
     const trades = rows.reduce((s, r) => s + (r.summary.closed_trades ?? 0), 0);
     const avgRet =
       rows.reduce((s, r) => s + (r.summary.total_return ?? 0), 0) / rows.length;
-    return { pool, best, trades, avgRet };
+    const bestSharpe = [...rows].sort(
+      (a, b) => (b.summary.sharpe ?? -Infinity) - (a.summary.sharpe ?? -Infinity),
+    )[0];
+    const bestWin = [...rows].sort(
+      (a, b) => (b.summary.win_rate ?? -Infinity) - (a.summary.win_rate ?? -Infinity),
+    )[0];
+    const totalFee = rows.reduce((s, r) => s + (r.summary.total_fee ?? 0), 0);
+    return { pool, best, trades, avgRet, bestSharpe, bestWin, totalFee };
   }, [rows]);
 
   if (overview.error) {
@@ -131,6 +138,29 @@ export default function Leaderboard() {
           <div className={`stat-value ${pnlClass(stats.avgRet)}`}>{fmtPct(stats.avgRet)}</div>
           <div className="stat-sub">全部 Agent 均值</div>
         </div>
+        <div className="stat-item">
+          <div className="stat-label">最高夏普</div>
+          <div className="stat-value" style={{ fontSize: 16 }}>
+            {stats.bestSharpe?.summary.sharpe != null ? fmtNum(stats.bestSharpe.summary.sharpe) : '—'}
+          </div>
+          <div className="stat-sub">
+            {stats.bestSharpe?.summary.sharpe != null ? stats.bestSharpe.agent.replace('deepseek-v4-', '') : ''}
+          </div>
+        </div>
+        <div className="stat-item">
+          <div className="stat-label">最高胜率</div>
+          <div className="stat-value" style={{ fontSize: 16 }}>
+            {stats.bestWin?.summary.win_rate != null ? fmtPct(stats.bestWin.summary.win_rate, 1, false) : '—'}
+          </div>
+          <div className="stat-sub">
+            {stats.bestWin?.summary.win_rate != null ? stats.bestWin.agent.replace('deepseek-v4-', '') : ''}
+          </div>
+        </div>
+        <div className="stat-item">
+          <div className="stat-label">累计费用</div>
+          <div className="stat-value" style={{ fontSize: 16 }}>{fmtMoney(stats.totalFee ?? 0, '$', 0)}</div>
+          <div className="stat-sub">双边 0.03% + 滑点</div>
+        </div>
       </div>
 
       {overview.loading && !rows.length ? (
@@ -149,6 +179,8 @@ export default function Leaderboard() {
                 <th onClick={() => handleSort('sharpe')}>夏普{sortArrow('sharpe')}</th>
                 <th onClick={() => handleSort('win_rate')}>胜率{sortArrow('win_rate')}</th>
                 <th onClick={() => handleSort('closed_trades')}>成交{sortArrow('closed_trades')}</th>
+                <th>费用</th>
+                <th>平均持仓</th>
                 <th>状态</th>
               </tr>
             </thead>
@@ -180,6 +212,8 @@ export default function Leaderboard() {
                     <td className="dim">{fmtNum(s.sharpe)}</td>
                     <td className="dim">{s.win_rate != null ? fmtPct(s.win_rate, 1, false) : '—'}</td>
                     <td className="dim">{s.closed_trades ?? 0}</td>
+                    <td className="dim">{s.total_fee != null ? fmtMoney(s.total_fee, meta.currency, 1) : '—'}</td>
+                    <td className="dim">{s.avg_hold_days != null ? `${fmtNum(s.avg_hold_days, 1)}d` : '—'}</td>
                     <td>
                       <span className={`status-badge ${s.records > 0 ? 'active' : 'stopped'}`}>
                         {s.records > 0 ? '运行中' : '待启动'}
@@ -189,7 +223,7 @@ export default function Leaderboard() {
                 );
               })}
               {!sorted.length && (
-                <tr><td colSpan={10} className="dim" style={{ textAlign: 'center', padding: 30 }}>NO DATA</td></tr>
+                <tr><td colSpan={12} className="dim" style={{ textAlign: 'center', padding: 30 }}>NO DATA</td></tr>
               )}
             </tbody>
           </table>

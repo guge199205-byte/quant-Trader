@@ -1,0 +1,189 @@
+/* ModelChat —— nof1.ai 风格模型对话卡（coke 终端风：白底/黑描边/无圆角/Courier） */
+
+.mc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mc-card {
+  border: 2px solid #000;
+  background: #fff;
+}
+
+.mc-card.open {
+  background: #fafafa;
+}
+
+.mc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #000;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mc-head:hover {
+  background: #f0f0f0;
+}
+
+.mc-logo {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.mc-model {
+  font-family: 'Courier New', monospace;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.mc-status {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  background: #000;
+  color: #fff;
+  padding: 1px 6px;
+  letter-spacing: 0.08em;
+}
+
+.mc-date {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  color: #666;
+  margin-left: auto;
+}
+
+.mc-expand {
+  font-size: 10px;
+  color: #10a37f;
+  transition: transform 0.12s;
+}
+
+.mc-expand.open {
+  color: #000;
+}
+
+.mc-summary {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #333;
+  padding: 8px 10px;
+}
+
+.mc-body {
+  border-top: 1px dashed #999;
+}
+
+.mc-section {
+  border-top: 1px solid #000;
+}
+
+.mc-section:first-child {
+  border-top: none;
+}
+
+.mc-section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  background: #fff;
+}
+
+.mc-section-head:hover {
+  background: #f0f0f0;
+}
+
+.mc-caret {
+  font-size: 10px;
+  color: #10a37f;
+}
+
+.mc-code {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #222;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+  background: #fafafa;
+}
+
+.mc-thought {
+  border-top: 1px dashed #ccc;
+}
+
+.mc-trades {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #fafafa;
+}
+
+.mc-decision {
+  border: 2px solid #000;
+  background: #fff;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+}
+
+.mc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #ddd;
+  border-right: 1px solid #ddd;
+  min-width: 0;
+}
+
+.mc-field:nth-child(2n) {
+  border-right: none;
+}
+
+.mc-field:nth-last-child(-n + 2) {
+  border-bottom: none;
+}
+
+.mc-key {
+  font-family: 'Courier New', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: #888;
+  text-transform: uppercase;
+}
+
+.mc-val {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.mc-val.na {
+  color: #bbb;
+  font-weight: 400;
+}
+
+.mc-no-trade {
+  padding: 10px;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: #888;
+}

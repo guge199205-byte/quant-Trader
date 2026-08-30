@@ -17,7 +17,8 @@ import {
 } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
 import EquityChart, { toBenchLine, toChartLine } from '../components/EquityChart';
-import ModelCard, { logoOf } from '../components/ModelCard';
+import ModelCard from '../components/ModelCard';
+import ModelChat from '../components/ModelChat';
 import { MarketSwitcher } from '../components/Navbar';
 import { fmtMoney, fmtPct, pnlClass } from '../utils/format';
 import './Live.css';
@@ -231,22 +232,15 @@ export default function Live() {
     }
 
     if (tab === 'chat') {
-      const msgs = (logs.data ?? []).flatMap((l) =>
-        (l.new_messages ?? []).map((m) => m.content).filter((c): c is string => !!c),
-      );
-      if (!msgs.length) return <div className="empty-state">暂无决策日志</div>;
+      if (!effectiveModel) return <div className="empty-state">暂无 Agent</div>;
       return (
-        <>
-          {msgs.map((content, i) => (
-            <div className="trade-list-item" key={i}>
-              <div className="trade-item-header">
-                <span className="trade-side info">AI 决策</span>
-                <span className="trade-item-time">{logoOf(effectiveModel ?? '')}</span>
-              </div>
-              <div className="msg-content">{content}</div>
-            </div>
-          ))}
-        </>
+        <ModelChat
+          logs={logs.data ?? []}
+          trades={trades.data ?? []}
+          positions={positions.data ?? []}
+          model={effectiveModel}
+          currency={meta.currency}
+        />
       );
     }
 

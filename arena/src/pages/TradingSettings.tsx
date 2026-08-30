@@ -403,6 +403,27 @@ export default function TradingSettings() {
               </div>
             )}
 
+            {/* 桥地址 / Token（可编辑，保存后即时生效） */}
+            <div className="ts-cfg" style={{ borderBottom: '2px solid #000' }}>
+              <div className="ts-cfg-title">桥地址与 Token（留空保持现有值）</div>
+              <div className="ts-cfg-fields">
+                <label className="ts-field" style={{ flex: 1, minWidth: 240 }}>
+                  <span className="ts-field-label">桥地址</span>
+                  <input className="ts-input wide" type="text" placeholder="http://192.168.31.31:8550"
+                    value={newUrl} onChange={(e) => setNewUrl(e.target.value)} />
+                </label>
+                <label className="ts-field" style={{ flex: 1, minWidth: 240 }}>
+                  <span className="ts-field-label">桥 Token（64位 hex，与 Windows 侧一致）</span>
+                  <input className="ts-input wide" type="text" placeholder="输入新 token（留空则保持现有）"
+                    value={newToken} onChange={(e) => setNewToken(e.target.value)} />
+                </label>
+                <button className="ts-btn dark" onClick={() => void saveBridge()} disabled={!newUrl.trim() && !newToken.trim()}>
+                  保存配置
+                </button>
+              </div>
+              {tdxMsg && <div className={`ts-msg ${tdxMsg.ok ? 'ok' : 'err'}`}>{tdxMsg.text}</div>}
+            </div>
+
             {overview.data?.available && (
               <>
                 {/* 操作行 */}
@@ -611,26 +632,6 @@ export default function TradingSettings() {
             {overview.data && !overview.data.available && (
               <div className="ts-health warn">局域网桥信息暂不可用: {overview.data.error || '未知原因'}</div>
             )}
-
-            {/* 桥地址 / Token */}
-            <div className="ts-cfg" style={{ borderBottom: 'none' }}>
-              <div className="ts-cfg-fields">
-                <label className="ts-field" style={{ flex: 1, minWidth: 240 }}>
-                  <span className="ts-field-label">桥地址</span>
-                  <input className="ts-input wide" type="text" placeholder="http://192.168.31.31:8550"
-                    value={newUrl} onChange={(e) => setNewUrl(e.target.value)} />
-                </label>
-                <label className="ts-field" style={{ flex: 1, minWidth: 240 }}>
-                  <span className="ts-field-label">桥 Token（64位 hex，与 Windows 侧一致）</span>
-                  <input className="ts-input wide" type="text" placeholder="输入新 token（留空则保持现有）"
-                    value={newToken} onChange={(e) => setNewToken(e.target.value)} />
-                </label>
-                <button className="ts-btn dark" onClick={() => void saveBridge()} disabled={!newUrl.trim() && !newToken.trim()}>
-                  保存配置
-                </button>
-              </div>
-              {tdxMsg && <div className={`ts-msg ${tdxMsg.ok ? 'ok' : 'err'}`}>{tdxMsg.text}</div>}
-            </div>
           </>
         )}
       </section>

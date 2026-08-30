@@ -210,7 +210,13 @@ async def main(config_path=None):
             from tools.general_tools import _resolve_runtime_env_path
             runtime_env_path = _resolve_runtime_env_path()
             if os.path.exists(runtime_env_path):
-                os.remove(runtime_env_path)
+                try:
+                    os.remove(runtime_env_path)
+                except OSError as e:
+                    # Container bind-mount: the mount point cannot be unlinked,
+                    # truncate the file instead (same "clear for fresh start" effect)
+                    open(runtime_env_path, "w").close()
+                    print(f"⚠️  runtime_env is a bind-mount, truncated instead of removed ({e})")
                 print(f"🔄 Position file not found, cleared config for fresh start from {INIT_DATE}")
         
         # Write config values to shared config file (from .env RUNTIME_ENV_PATH)

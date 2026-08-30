@@ -211,12 +211,20 @@ async def main(config_path=None):
             runtime_env_path = _resolve_runtime_env_path()
             if os.path.exists(runtime_env_path):
                 try:
+                    # docker bind-mount 源缺失时会把路径建为目录，需先清成文件
+                    if os.path.isdir(runtime_env_path):
+                        import shutil
+                        shutil.rmtree(runtime_env_path)
                     os.remove(runtime_env_path)
                 except OSError as e:
                     # Container bind-mount: the mount point cannot be unlinked,
                     # truncate the file instead (same "clear for fresh start" effect)
-                    open(runtime_env_path, "w").close()
-                    print(f"⚠️  runtime_env is a bind-mount, truncated instead of removed ({e})")
+                    try:
+                        open(runtime_env_path, "w").close()
+                        print(f"⚠️  runtime_env is a bind-mount, truncated instead of removed ({e})")
+                    except OSError as e2:
+                        print(f"❌ runtime_env 无法清除（{e2}），手动删除该路径后重试")
+                        raise
                 print(f"🔄 Position file not found, cleared config for fresh start from {INIT_DATE}")
         
         # Write config values to shared config file (from .env RUNTIME_ENV_PATH)

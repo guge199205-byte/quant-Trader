@@ -97,3 +97,8 @@ data/market_memory.md
 data/merged.jsonl
 data/hsi_daily.json
 runtime_env*.json
+
+# Node
+node_modules/
+arena/node_modules/
+arena/dist/

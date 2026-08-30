@@ -204,6 +204,8 @@ def get_performance(agent: str, market: str = Query("us")):
             max_drawdown = min(max_drawdown, (v - peak) / peak)
     first, last = equity_values[0], equity_values[-1]
     total_return = (last - first) / first if first else 0.0
+    records = agent_data.load_position_records(cfg, agent, market)
+    extended = agent_data.compute_extended_summary(series, records, cfg, market)
     return {
         "success": True,
         "data": {
@@ -215,6 +217,7 @@ def get_performance(agent: str, market: str = Query("us")):
                 "total_return": round(total_return, 6),
                 "max_drawdown": round(abs(max_drawdown), 6),
                 "records": len(series),
+                **extended,
             },
         },
     }
@@ -334,12 +337,14 @@ def get_overview():
                     if peak > 0:
                         dd = min(dd, (v - peak) / peak)
                 first, last = vals[0], vals[-1]
+                records = agent_data.load_position_records(cfg, a["name"], market)
                 summary = {
                     "start_equity": first,
                     "end_equity": last,
                     "total_return": round((last - first) / first, 6) if first else 0.0,
                     "max_drawdown": round(abs(dd), 6),
                 }
+                summary.update(agent_data.compute_extended_summary(series, records, cfg, market))
             rows.append({
                 "name": a["name"],
                 "latest_date": a["latest_date"],

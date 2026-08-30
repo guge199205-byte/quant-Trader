@@ -167,6 +167,24 @@ services:
     ports:
       - "8080:8080"
 
+  # ---- Arena 竞技场前端（React 静态产物 + nginx，8092）----
+  # API token 由 nginx 经 envsubst 注入反代头，浏览器无需持 token。
+  # 构建产物：cd arena && npm run build（dist/ 已 gitignore）
+  ui-arena:
+    image: nginx:alpine
+    container_name: baymax-ui-arena
+    restart: unless-stopped
+    environment:
+      API_TOKEN: ${API_TOKEN}
+    ports:
+      - "8092:8092"
+    volumes:
+      - ./arena/dist:/usr/share/nginx/html:ro
+      - ./arena/nginx.conf.tpl:/etc/nginx/arena.conf.tpl:ro
+      - ./arena/docker-entrypoint.d.sh:/docker-entrypoint.d/05-arena-envsubst.sh:ro
+    depends_on:
+      - api
+
   # ---- 静态 UI（docs 快照）----
   ui:
     <<: *python-app

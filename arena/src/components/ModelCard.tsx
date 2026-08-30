@@ -1,7 +1,7 @@
 import { MarketId, marketMeta } from '../api/client';
 import { fmtMoney, fmtPct, pnlClass } from '../utils/format';
 
-/** 模型 emoji 标识（coke-nof1 风格色块映射） */
+/** 模型 emoji 标识（终端风色块映射） */
 export const MODEL_LOGOS: Record<string, string> = {
   'deepseek-v4-flash': '🟠',
   'deepseek-v4-pro': '🔵',
@@ -16,7 +16,7 @@ export const shortName = (name: string): string =>
     .replace('deepseek', 'DS')
     .toUpperCase();
 
-/** mini 模型卡：logo + 名称 + 余额 + 收益% —— 复刻 coke-nof1 model-card-mini。
+/** mini 模型卡：logo + 名称 + 余额 + 收益% —— 终端风 model-card-mini。
  *  点击触发选中（右栏 filter 联动）。 */
 export default function ModelCard({
   market,

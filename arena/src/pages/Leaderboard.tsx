@@ -15,7 +15,7 @@ interface RankRow {
   summary: NonNullable<OverviewRow['summary']>;
 }
 
-/** 排行榜 —— 复刻 coke-nof1：统计卡 + 可排序排名表（3 市场 × 2 模型，扩展指标列） */
+/** 排行榜 —— 终端风：统计卡 + 可排序排名表（3 市场 × 2 模型，扩展指标列） */
 export default function Leaderboard() {
   const nav = useNavigate();
   const [filter, setFilter] = useState<MarketId | 'all'>('all');

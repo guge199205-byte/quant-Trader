@@ -1,4 +1,4 @@
-# 🤖 BayMax-Trader — AI 自主交易竞技场
+# 🤖 Quant-Agent-Trader — AI 智能体自主交易竞技场
 
 > AI 模拟交易平台：多个 AI 模型以独立资金池在 **美股（US）**、**A股（CN）**、**港股（HK）** 三个市场自主分析、决策、买卖，无人工干预。
 > Docker 化部署，行情数据来自**本机 quantmind 数据仓库**（不再依赖免费行情 API）。
@@ -16,7 +16,7 @@
 | 📝 **交易记忆系统** | 每市场独立记忆文件，agent 开盘读心得、收盘写经验，超 200 行自动归档 |
 | 🛡️ **风控网关** | 单笔/持仓限额、日亏熔断（权益口径）、现金保留、黑名单，三条交易路径单点拦截 |
 | 🔌 **Broker 可插拔** | sandbox（模拟盘）/ tdx（通达信桥，下单待移植）/ futu / tiger / ibkr（规划中） |
-| ⚡ **双前端实时化** | AI-agent 实时看板（8080，四页：实盘/排行榜/模型/总控）+ Arena 竞技场（8092，coke-nof1 终端风：实况/排行榜/模型/总控/关于），同接 FastAPI 8091，交易结果即时可见 |
+| ⚡ **双前端实时化** | Quant-Agent-Trader 实时看板（8080，四页：实盘/排行榜/模型/总控）+ Arena 竞技场（8092，终端风：实况/排行榜/模型/总控/关于），同接 FastAPI 8091，交易结果即时可见 |
 | 🤖 **双模型对决** | DeepSeek V4 Flash · V4 Pro 零样本竞技：同一数据、同一工具集、同一起点资金公平对决 |
 
 ---
@@ -26,7 +26,7 @@
 这不是一个"写死买卖规则的量化脚本"，而是 **LLM 智能体自主交易框架**——
 每个 agent 是完整推理主体：读行情 → 分析推理 → 调工具下单，全程零人工干预。
 
-| 维度 | 传统量化 | BayMax 智能体 |
+| 维度 | 传统量化 | Quant-Agent 智能体 |
 |------|---------|--------------|
 | **决策方式** | 人先研究规律 → 写成死代码（如"金叉买入"）→ 机械执行 | LLM 实时推理：读行情、算指标、看新闻，自己决定买什么 |
 | **换市场** | 每个市场重新写策略、重新回测 | 同一套 agent 能力，美股/A股/港股直接跑，零迁移成本 |
@@ -62,7 +62,7 @@
 **交易路径**（main.py agent / dsh agent / broker API）→ 全部经 `tool_trade.buy/sell` 落盘
 → **风控网关单点拦截** → position.jsonl 写入 → 前端实时读取。
 
-**数据链路**：本机 `/home/zbox/projects/quantmind/data/`（Hive 分区 parquet）
+**数据链路**：本机量化数据仓库（Hive 分区 parquet）
 → `scripts/sync_from_quantmind.py` → `data/` 下的 AlphaVantage 格式价格文件 → agent 与前端共用。
 
 ---
@@ -76,7 +76,7 @@
 OPENAI_API_BASE="https://api.deepseek.com/v1"
 OPENAI_API_KEY="你的Key"
 JINA_API_KEY="你的Key"
-RUNTIME_ENV_PATH="/home/zbox/BayMax-Trader/runtime_env.json"
+RUNTIME_ENV_PATH="/path/to/quant-agent-trader/runtime_env.json"
 ```
 
 ### 启动
@@ -101,8 +101,8 @@ docker compose logs -f mcp-cn
 
 | 服务 | 地址 | 说明 |
 |------|------|------|
-| AI-agent 实时看板 | http://192.168.31.68:8080 | 实盘（净值/持仓/成交/分析）/ 排行榜 / 模型 / 总控，三市场切换 |
-| Arena 竞技场 | http://192.168.31.68:8092 | coke 终端风：实况 / 排行榜 / 模型 / 总控 / 关于（nginx 同源反代 8091，token 自动注入） |
+| Quant-Agent-Trader 实时看板 | http://192.168.31.68:8080 | 实盘（净值/持仓/成交/分析）/ 排行榜 / 模型 / 总控，三市场切换 |
+| Arena 竞技场 | http://192.168.31.68:8092 | 终端风：实况 / 排行榜 / 模型 / 总控 / 关于（nginx 同源反代 8091，token 自动注入） |
 | API | http://192.168.31.68:8091 | `/api/overview` `/api/metrics` `/api/agents?market=` `/api/data/*` |
 | dsh Web | http://localhost:3081 | agent 会话/工具调用可视化（绑宿主 127.0.0.1） |
 
@@ -110,7 +110,7 @@ docker compose logs -f mcp-cn
 
 ## 📊 数据源：本地 quantmind 仓库
 
-价格数据**全部来自本机 quantmind 数据仓库**（`/home/zbox/projects/quantmind/data/`），
+价格数据**全部来自本机自建量化数据仓库**（Hive 分区 parquet，无需外部行情 API），
 覆盖前自动备份到 `/tmp/baymax_quantmind_backup_<ts>/`：
 
 ```bash
@@ -195,9 +195,9 @@ class MySource(DataSource):
 ### 生产级持久化（宿主 cron，防交易中断）
 
 ```cron
-* * * * * bash /home/zbox/BayMax-Trader/scripts/status-probe.sh   # 探活写 logs/service_status.json
-* * * * * bash /home/zbox/BayMax-Trader/scripts/auto-heal.sh      # 常驻容器掉线自动拉起（agent 除外）
-*/5 * * * * bash /home/zbox/BayMax-Trader/scripts/alert.sh        # 告警（联动 status-probe）
+* * * * * bash /path/to/quant-agent-trader/scripts/status-probe.sh   # 探活写 logs/service_status.json
+* * * * * bash /path/to/quant-agent-trader/scripts/auto-heal.sh      # 常驻容器掉线自动拉起（agent 除外）
+*/5 * * * * bash /path/to/quant-agent-trader/scripts/alert.sh        # 告警（联动 status-probe）
 ```
 
 ### 常用脚本
@@ -230,7 +230,7 @@ config/backend.yaml   # 后端总配置（server/markets/broker/datasource/risk�
 configs/              # agent 配置（default_config.json US / astock_config.json CN / deepseek_*_test.json）
 scripts/              # sync_from_quantmind.py / backfill_us_agent.sh / serve_nof0.py / 探活自愈
 dsh/                  # DeepSeek Harness 集成（persona + MCP 挂载）
-nof0/                 # AI-agent 实时看板前端（8080，中文化，响应式，浏览器带 token）
+nof0/                 # Quant-Agent-Trader 实时看板前端（8080，中文化，响应式，浏览器带 token）
 arena/                # Arena 竞技场前端（8092，coke-nof1 终端风复刻，React+Vite，nginx 注入 token）
 data/                 # 交易数据（gitignore；价格文件 + agent_data/ US + agent_data_astock/ CN）
 docs/                 # 规划与架构文档
@@ -262,7 +262,7 @@ docs/                 # 规划与架构文档
 - [x] 风控网关（单笔/持仓/熔断/黑名单）
 - [x] Broker + 数据源抽象层
 - [x] 双模型对决（DeepSeek V4 Flash / V4 Pro 零样本竞技）
-- [x] 双前端（AI-agent 看板 8080 + Arena 竞技场 8092）
+- [x] 双前端（Quant-Agent-Trader 看板 8080 + Arena 竞技场 8092）
 - [x] summary 扩展指标（夏普/胜率/盈亏比/费用/平均持仓）
 - [ ] TDX 实盘下单移植（风控已就位）
 - [ ] 富途 OpenD / 老虎 / IBKR adapter
@@ -270,6 +270,11 @@ docs/                 # 规划与架构文档
 - [ ] 每日自动调度（daily_trade.sh + cron）
 
 ---
+
+## 🙏 致谢
+
+- **DeepSeek Harness**（[github.com/deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)）—— 本项目的 agent 执行链路与交易引擎基于 DeepSeek Harness 开发，感谢 DeepSeek 团队开源！
+- **上游开源框架**（MIT License）—— 本项目的 agent/数据/前端体系在其基础上二次开发，版权归原作者所有。
 
 ## 📄 License
 

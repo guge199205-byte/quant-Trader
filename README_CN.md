@@ -1,11 +1,11 @@
 <div align="center">
 
-# 🚀 BayMax-Trader: 大白交易员
+# 🚀 Quant-Agent-Trader: 量化智能体交易员
 ### *AI 智能体自主交易竞技场 · 美股 / A股 / 港股三市场并行*
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![GitHub](https://img.shields.io/badge/GitHub-BayMax--Trader-blue?style=flat&logo=github)](https://github.com/jwangkun/BayMax-Trader)
+[![GitHub](https://img.shields.io/badge/GitHub-Quant--Agent--Trader-blue?style=flat&logo=github)](https://github.com/guge199205-byte/quant-agent-trader)
 
 **LLM 智能体自主交易框架：DeepSeek V4 Flash / V4 Pro 以独立资金池在美股（NASDAQ 100）、A股（SSE 50）、港股（恒指成分）三市场完全自主分析、决策、买卖，零人工干预，公平对决。**
 
@@ -62,7 +62,7 @@
 
 ## 🌟 项目介绍
 
-> **BayMax-Trader基于AI-Trader项目优化而来，让五个不同的AI模型，每个都采用独特的投资策略，在同一个市场中完全自主决策、竞争，看谁能在纳斯达克100或上证50交易中赚得最多！**
+> **Quant-Agent-Trader 基于开源 AI 交易框架二次开发（MIT），升级为三市场并行（美股 / A股 / 港股）× 双模型对决（DeepSeek V4 Flash / V4 Pro），同一数据、同一工具集、同一起点资金公平竞争，看谁赚得最多！**
 
 ### 🎯 BayMax-Trader特色
 - 🎨 **nof0现代化主题**: 全新设计的Web界面，采用现代化设计语言
@@ -149,7 +149,7 @@ AIAgent完全自主运行，在没有任何人工编程、指导或干预的情�
 
 ## ⏰ 历史回放架构
 
-AI-Trader Bench的核心创新是其**完全可重放**的交易环境，确保AIAgent在历史市场数据上的性能评估具有科学严谨性和可重复性。
+本项目的核心创新是其**完全可重放**的交易环境，确保AIAgent在历史市场数据上的性能评估具有科学严谨性和可重复性。
 
 ### 🔄 时间控制框架
 
@@ -306,8 +306,8 @@ BayMax-Trader/
 
 #### 📊 数据系统
 - **📈 价格数据**: 
-  - 🇺🇸 纳斯达克100成分股的完整OHLCV数据（Alpha Vantage）
-  - 🇨🇳 A股市场数据（上证50指数）通过Tushare API
+  - 🇺🇸 纳斯达克100成分股的完整OHLCV数据（本地数据仓库）
+  - 🇨🇳 A股市场数据（上证50指数，本地数据仓库）
   - 📁 统一JSONL格式，便于高效读取
 - **📝 交易记录**: 
   - 每个AI模型的详细交易历史
@@ -325,17 +325,16 @@ BayMax-Trader/
 
 - **Python 3.10+** 
 - **API密钥**: 
-  - OpenAI（用于AI模型）
-  - Alpha Vantage（用于纳斯达克100数据）
+  - LLM API（OpenAI 兼容接口，如 DeepSeek）
   - Jina AI（用于市场信息搜索）
-  - Tushare（用于A股市场数据，可选）
+  - 本机量化数据仓库（价格数据，无需外部行情 API）
 
 
 ### ⚡ 一键安装
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/jwangkun/BayMax-Trader.git
+git clone https://github.com/guge199205-byte/quant-agent-trader.git
 cd BayMax-Trader
 
 # 2. 安装依赖
@@ -487,9 +486,15 @@ python main.py configs/astock_config.json
   },
   "models": [
     {
-      "name": "claude-3.7-sonnet",
-      "basemodel": "anthropic/claude-3.7-sonnet",
-      "signature": "claude-3.7-sonnet",
+      "name": "deepseek-v4-flash",
+      "basemodel": "deepseek/deepseek-v4-flash",
+      "signature": "deepseek-v4-flash",
+      "enabled": true
+    },
+    {
+      "name": "deepseek-v4-pro",
+      "basemodel": "deepseek/deepseek-v4-pro",
+      "signature": "deepseek-v4-pro",
       "enabled": true
     }
   ],
@@ -510,9 +515,15 @@ python main.py configs/astock_config.json
   },
   "models": [
     {
-      "name": "claude-3.7-sonnet",
-      "basemodel": "anthropic/claude-3.7-sonnet",
-      "signature": "claude-3.7-sonnet",
+      "name": "deepseek-v4-flash",
+      "basemodel": "deepseek/deepseek-v4-flash",
+      "signature": "deepseek-v4-flash",
+      "enabled": true
+    },
+    {
+      "name": "deepseek-v4-pro",
+      "basemodel": "deepseek/deepseek-v4-pro",
+      "signature": "deepseek-v4-pro",
       "enabled": true
     }
   ],
@@ -608,9 +619,15 @@ nof0主题使用 `config.yaml` 文件进行配置，支持：
   },
   "models": [
     {
-      "name": "claude-3.7-sonnet",
-      "basemodel": "anthropic/claude-3.7-sonnet",
-      "signature": "claude-3.7-sonnet",
+      "name": "deepseek-v4-flash",
+      "basemodel": "deepseek/deepseek-v4-flash",
+      "signature": "deepseek-v4-flash",
+      "enabled": true
+    },
+    {
+      "name": "deepseek-v4-pro",
+      "basemodel": "deepseek/deepseek-v4-pro",
+      "signature": "deepseek-v4-pro",
       "enabled": true
     }
   ],
@@ -687,21 +704,20 @@ nof0主题使用 `config.yaml` 文件进行配置，支持：
 
 ```
 data/agent_data/
-├── claude-3.7-sonnet/
+├── deepseek-v4-flash/
 │   ├── position/
 │   │   └── position.jsonl      # 📝 持仓记录
 │   └── log/
-│       └── 2025-01-20/
+│       └── 2026-08-25/
 │           └── log.jsonl       # 📊 交易日志
-├── gpt-4o/
+├── deepseek-v4-pro/
 │   └── ...
-└── qwen3-max/
-    └── ...
+└── ...
 ```
 
 ## 🔌 第三方策略集成
 
-AI-Trader Bench采用模块化设计，支持轻松集成第三方策略和自定义AIAgent。
+本项目采用模块化设计，支持轻松集成第三方策略和自定义AIAgent。
 
 ### 🛠️ 集成方式
 
@@ -783,8 +799,8 @@ class CustomTool:
 
 ## 📞 支持与社区
 
-- **💬 讨论**: [GitHub Discussions](https://github.com/jwangkun/BayMax-Trader/discussions)
-- **🐛 问题**: [GitHub Issues](https://github.com/jwangkun/BayMax-Trader/issues)
+- **💬 讨论**: [GitHub Discussions](https://github.com/guge199205-byte/quant-agent-trader/discussions)
+- **🐛 问题**: [GitHub Issues](https://github.com/guge199205-byte/quant-agent-trader/issues)
 - **📧 联系**: 如有合作或技术交流需求，欢迎联系
 
 ## 📄 许可证
@@ -828,7 +844,7 @@ class CustomTool:
 </div>
 
 <div align="center">
-  <a href="https://github.com/jwangkun/BayMax-Trader/graphs/contributors">
+  <a href="https://github.com/guge199205-byte/quant-agent-trader/graphs/contributors">
     <img src="https://contrib.rocks/image?repo=jwangkun/BayMax-Trader" style="border-radius: 15px; box-shadow: 0 0 20px rgba(0, 217, 255, 0.3);" />
   </a>
 </div>
@@ -843,8 +859,8 @@ AI-Trader项目所提供的资料仅供研究之用，并不构成任何投资�
 
 **🌟 如果这个项目对你有帮助，请给我们一个Star！**
 
-[![GitHub stars](https://img.shields.io/github/stars/jwangkun/BayMax-Trader?style=social)](https://github.com/jwangkun/BayMax-Trader)
-[![GitHub forks](https://img.shields.io/github/forks/jwangkun/BayMax-Trader?style=social)](https://github.com/jwangkun/BayMax-Trader)
+[![GitHub stars](https://img.shields.io/github/stars/jwangkun/BayMax-Trader?style=social)](https://github.com/guge199205-byte/quant-agent-trader)
+[![GitHub forks](https://img.shields.io/github/forks/jwangkun/BayMax-Trader?style=social)](https://github.com/guge199205-byte/quant-agent-trader)
 
 **🤖 BayMax-Trader: 让AI在金融市场中完全自主决策、一展身手！**  
 **🎨 全新nof0主题界面，更优雅的交易体验！**  
@@ -874,3 +890,9 @@ AI-Trader项目所提供的资料仅供研究之用，并不构成任何投资�
   <em> ❤️ 感谢访问 ✨ BayMax-Trader!</em><br><br>
   <img src="https://visitor-badge.laobi.icu/badge?page_id=jwangkun.BayMax-Trader&style=for-the-badge&color=00d4ff" alt="Views">
 </p>
+---
+
+## 🙏 致谢
+
+- **DeepSeek Harness**（[github.com/deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)）—— 本项目的 agent 执行链路与交易引擎基于 DeepSeek Harness 开发，感谢 DeepSeek 团队开源！
+- **上游开源框架**（MIT License）—— 本项目的 agent/数据/前端体系在其基础上二次开发，版权归原作者所有。

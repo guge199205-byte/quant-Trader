@@ -1,4 +1,4 @@
-# BayMax-Trader Docker 部署
+# Quant-Agent-Trader Docker 部署
 
 容器化编排，替代原 systemd user 服务 + 手动启动 agent 的方式。
 
@@ -29,7 +29,7 @@ agent-us / agent-cn / agent-hk：按市场独立容器，profile: agents
 ## 常用命令
 
 ```bash
-cd /home/zbox/BayMax-Trader
+cd /home/zbox/Quant-Agent-Trader
 
 # 启动全部常驻服务（mcp×3 + api + dsh + ui）
 docker compose up -d
@@ -91,11 +91,11 @@ docker compose down
 
 ```cron
 # 每分钟：宿主侧探活（写 logs/service_status.json，api /api/metrics 读它）
-* * * * * bash /home/zbox/BayMax-Trader/scripts/status-probe.sh
+* * * * * bash /home/zbox/Quant-Agent-Trader/scripts/status-probe.sh
 # 每分钟：常驻容器掉线自动 docker compose up -d 拉起（agent 是按需任务不自动拉起）
-* * * * * bash /home/zbox/BayMax-Trader/scripts/auto-heal.sh
+* * * * * bash /home/zbox/Quant-Agent-Trader/scripts/auto-heal.sh
 # 每 5 分钟：告警（含 status-probe 联动，掉线立即知道）
-*/5 * * * * bash /home/zbox/BayMax-Trader/scripts/alert.sh
+*/5 * * * * bash /home/zbox/Quant-Agent-Trader/scripts/alert.sh
 ```
 
 - `status-probe.sh`：宿主侧 socket 探活 api/mcp×3/dsh（容器内探不到宿主回环上的 dsh），结果 JSON 写 `logs/service_status.json`（bind-mount 进 api 容器，360s 新鲜度）

@@ -158,12 +158,8 @@ class ConfigLoader {
                     time_granularity: "hourly",
                     enabled: true,
                     agents: [
-                        { folder: "gemini-2.5-flash", display_name: "Gemini 2.5 Flash", icon: "./figs/google.svg", color: "#8A2BE2", enabled: true },
-                        { folder: "qwen3-max", display_name: "Qwen3 Max", icon: "./figs/qwen.svg", color: "#0066ff", enabled: true },
-                        { folder: "deepseek-chat-v3.1", display_name: "DeepSeek Chat v3.1", icon: "./figs/deepseek.svg", color: "#4a90e2", enabled: true },
-                        { folder: "gpt-5", display_name: "GPT-5", icon: "./figs/openai.svg", color: "#10a37f", enabled: true },
-                        { folder: "claude-3.7-sonnet", display_name: "Claude 3.7 Sonnet", icon: "./figs/claude-color.svg", color: "#cc785c", enabled: true },
-                        { folder: "MiniMax-M2", display_name: "MiniMax M2", icon: "./figs/minimax.svg", color: "#ff0000", enabled: true }
+                        { folder: "deepseek-v4-flash", display_name: "DeepSeek V4 Flash", icon: "./figs/deepseek.svg", color: "#4d6bfe", enabled: true },
+                        { folder: "deepseek-v4-pro", display_name: "DeepSeek V4 Pro", icon: "./figs/deepseek.svg", color: "#8b5cf6", enabled: true }
                     ]
                 },
                 cn: {
@@ -179,12 +175,8 @@ class ConfigLoader {
                     time_granularity: "daily",
                     enabled: true,
                     agents: [
-                        { folder: "gemini-2.5-flash", display_name: "Gemini 2.5 Flash", icon: "./figs/google.svg", color: "#8A2BE2", enabled: true },
-                        { folder: "qwen3-max", display_name: "Qwen3 Max", icon: "./figs/qwen.svg", color: "#0066ff", enabled: true },
-                        { folder: "deepseek-chat-v3.1", display_name: "DeepSeek Chat v3.1", icon: "./figs/deepseek.svg", color: "#4a90e2", enabled: true },
-                        { folder: "gpt-5", display_name: "GPT-5", icon: "./figs/openai.svg", color: "#10a37f", enabled: true },
-                        { folder: "claude-3.7-sonnet", display_name: "Claude 3.7 Sonnet", icon: "./figs/claude-color.svg", color: "#cc785c", enabled: true },
-                        { folder: "MiniMax-M2", display_name: "MiniMax M2", icon: "./figs/minimax.svg", color: "#ff0000", enabled: true }
+                        { folder: "deepseek-v4-flash", display_name: "DeepSeek V4 Flash", icon: "./figs/deepseek.svg", color: "#4d6bfe", enabled: true },
+                        { folder: "deepseek-v4-pro", display_name: "DeepSeek V4 Pro", icon: "./figs/deepseek.svg", color: "#8b5cf6", enabled: true }
                     ]
                 }
             },

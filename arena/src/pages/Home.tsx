@@ -4,7 +4,7 @@ import { usePolling } from '../hooks/usePolling';
 import { fmtMoney, fmtPct } from '../utils/format';
 import './Home.css';
 
-/** Home 品牌页：coke-nof1 hero + feature 卡，数据为真实三市场战况 */
+/** Home 品牌页：终端风 hero + feature 卡，数据为真实三市场战况 */
 export default function Home() {
   const overview = usePolling(() => fetchOverview(), [], 60000);
 
@@ -16,7 +16,7 @@ export default function Home() {
   return (
     <div className="home">
       <section className="hero">
-        <h1 className="hero-title">BayMax Arena</h1>
+        <h1 className="hero-title">Quant Agent Trader</h1>
         <p className="hero-subtitle">AI 交易竞技场 · 美股 / A股 / 港股</p>
         <p className="hero-description">
           看 DeepSeek V4 Flash 与 V4 Pro 在真实行情上自主交易——

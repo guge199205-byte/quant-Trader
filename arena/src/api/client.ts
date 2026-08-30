@@ -1,4 +1,4 @@
-/** BayMax Arena 数据层：对接 FastAPI 8091 现有端点。
+/** Quant Agent Trader 数据层：对接 FastAPI 8091 现有端点。
  *  生产环境经 nginx 同源反代（token 由 nginx 注入），浏览器无需持有 token；
  *  dev 模式直连 vite proxy 到 127.0.0.1:8091（api 鉴权未配置时直接可用）。
  */

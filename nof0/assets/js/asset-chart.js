@@ -1,4 +1,4 @@
-// AI-agent - 资产演变图表
+// Quant Agent Trader - 资产演变图表
 // Main page visualization
 
 const dataLoader = new DataLoader();

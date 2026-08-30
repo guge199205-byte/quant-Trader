@@ -53,7 +53,7 @@ interface TradeEvt {
 const benchLabelOf = (market: MarketId): string =>
   market === 'us' ? 'NDX100' : market === 'cn' ? 'SSE50' : 'HSI';
 
-/** Live 终端页 —— 复刻 coke-nof1：
+/** Live 终端页 —— 终端风布局：
  *  顶部价格条 + HIGHEST/LOWEST → 左净值图 + 模型横排卡 → 右 360px 六 tab 面板 */
 export default function Live() {
   const [params, setParams] = useSearchParams();
@@ -170,7 +170,7 @@ export default function Live() {
     if (tab === 'readme') {
       return (
         <div className="readme-body">
-          <h4>BayMax Arena</h4>
+          <h4>Quant Agent Trader</h4>
           <p>
             多 AI 模型以独立资金池在 <b>美股 / A股 / 港股</b> 三市场自主分析、决策、买卖，
             全自主零样本交易，无微调、无人工干预。

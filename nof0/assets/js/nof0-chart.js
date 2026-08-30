@@ -8,22 +8,12 @@ class Nof0ChartManager {
         this.iconCache = {};
         this.selectedAgent = null; // 当前选中的Agent
         this.colors = {
-            'claude-3.7-sonnet': '#ff6b35',
             'deepseek-v4-flash': '#4d6bfe',
-            'deepseek-chat-v3.1': '#4d6bfe',
-            'gemini-2.5-flash': '#4285f4',
-            'gpt-5': '#10a37f',
-            'MiniMax-M2': '#8b5cf6',
-            'qwen3-max': '#f59e0b'
+            'deepseek-v4-pro': '#8b5cf6'
         };
         this.iconPaths = {
-            'claude-3.7-sonnet': 'figs/claude-color.svg',
-            'deepseek-chat-v3.1': 'figs/deepseek.svg',
-            'gemini-2.5-flash': 'figs/google.svg',
-            'gpt-5': 'figs/openai.svg',
-            'MiniMax-M2': 'figs/minimax.svg',
-            'qwen3-max': 'figs/qwen.svg',
-            'deepseek-v4-flash': 'figs/deepseek.svg'
+            'deepseek-v4-flash': 'figs/deepseek.svg',
+            'deepseek-v4-pro': 'figs/deepseek.svg'
         };
     }
 

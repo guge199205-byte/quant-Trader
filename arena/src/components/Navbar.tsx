@@ -2,7 +2,7 @@ import { Link, NavLink } from 'react-router-dom';
 import { MarketId } from '../api/client';
 import './Navbar.css';
 
-/** 复刻 coke-nof1 导航：黑 2px 底边 + 居中菜单 + 右侧外链 */
+/** 终端风导航：黑 2px 底边 + 居中菜单 + 右侧外链 */
 const MARKET_LABELS: Record<MarketId, string> = {
   us: '🇺🇸 美股',
   cn: '🇨🇳 A股',
@@ -38,8 +38,8 @@ export default function Navbar() {
       <div className="navbar-container">
         <Link to="/" className="navbar-logo">
           <div className="logo-text">
-            <span className="logo-alpha">BayMax</span>
-            <span className="logo-arena">Arena</span>
+            <span className="logo-alpha">Quant Agent</span>
+            <span className="logo-arena">Trader</span>
           </div>
         </Link>
 

@@ -6,7 +6,7 @@ class DataLoader {
         this.agentData = {};
         this.priceCache = {};
         this.config = null;
-        this.baseDataPath = 'data'; // AI-agent 数据路径
+        this.baseDataPath = 'data'; // Quant Agent Trader 数据路径
         this.currentMarket = 'us'; // 'us' or 'cn'
     }
 
@@ -721,12 +721,8 @@ class DataLoader {
 
         // Fallback to legacy icons
         const icons = {
-            'gemini-2.5-flash': './figs/google.svg',
-            'qwen3-max': './figs/qwen.svg',
-            'MiniMax-M2': './figs/minimax.svg',
-            'gpt-5': './figs/openai.svg',
-            'claude-3.7-sonnet': './figs/claude-color.svg',
-            'deepseek-chat-v3.1': './figs/deepseek.svg',
+            'deepseek-v4-flash': './figs/deepseek.svg',
+            'deepseek-v4-pro': './figs/deepseek.svg',
             'QQQ Invesco': './figs/stock.svg',
             'SSE 50 Index': './figs/stock.svg'
         };

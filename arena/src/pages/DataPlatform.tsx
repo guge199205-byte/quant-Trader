@@ -110,6 +110,51 @@ export const fetchDpScan = (market: string, root?: string) =>
 export const setDpRoot = (market: string, root: string) =>
   unwrap<{ market: string; root: string }>(api.post(`/data-platform/${market}/root`, { root }));
 
+// ---------- 数据获取方式 + 同步（经 quantmind 代理，后端零改动） ----------
+
+export interface DpSource {
+  source: string;
+  label: string;
+  enabled: boolean;
+}
+
+export interface DpSyncJob {
+  job_id: string;
+  status: string;
+  stage?: string;
+  datasets: string[];
+  days?: number;
+  total: number;
+  done: number;
+  error?: string;
+  cancel_requested?: boolean;
+  started_at: string;
+  finished_at?: string;
+  started_by?: string;
+}
+
+export const fetchDpSources = (market: string) =>
+  unwrap<{ sources: DpSource[] }>(
+    api.get(`/quantmind/admin/data-platform/${market}/data-sources`),
+  );
+export const setDpSources = (market: string, sources: Record<string, boolean>) =>
+  unwrap<{ sources: Record<string, boolean> }>(
+    api.post(`/quantmind/admin/data-platform/${market}/data-sources`, { sources }),
+  );
+export const startDpSync = (
+  market: string,
+  payload: { datasets: string[]; days?: number; with_pg?: boolean; with_qlib?: boolean },
+) =>
+  unwrap<{ job: DpSyncJob }>(
+    api.post(`/quantmind/admin/data-platform/${market}/sync-datasets`, payload),
+  );
+export const fetchDpSyncJobs = (market: string) =>
+  unwrap<{ jobs: DpSyncJob[] }>(api.get(`/quantmind/admin/data-platform/${market}/sync-jobs`));
+export const cancelDpSync = (market: string, jobId: string) =>
+  unwrap<{ job_id: string; status: string }>(
+    api.post(`/quantmind/admin/data-platform/${market}/sync-jobs/${jobId}/cancel`),
+  );
+
 // ---------- 格式化 ----------
 
 const LAYOUT_LABEL: Record<string, string> = {
@@ -203,6 +248,9 @@ export default function DataPlatform() {
       {/* QuantDB SDK 云端直供（仅 A股）：输入 key 获取流量 */}
       {market === 'quantdb' && <QuantDbSdkCard />}
 
+      {/* 数据获取方式（勾选启用的数据源，同步时生效） */}
+      <SourcesCard market={market} />
+
       {/* 目录卡 */}
       <div className="dp-card">
         <div className="dp-card-head">
@@ -231,6 +279,9 @@ export default function DataPlatform() {
           );
         })}
       </div>
+
+      {/* 数据同步（复刻 quantmind：按数据集触发 + 任务列表/进度/取消） */}
+      <SyncCard market={market} datasets={catalog.data?.datasets ?? []} />
 
       {/* 预览弹层 */}
       {previewDataset && (
@@ -391,6 +442,275 @@ function QuantDbSdkCard() {
 }
 
 /* ============================================================
+   数据获取方式（复刻 quantmind：勾选启用的数据源，同步时生效）
+   AKShare / 雅虎 / 北向 / 南向 / CCASS 等，经 quantmind 数据平台
+   ============================================================ */
+
+function SourcesCard({ market }: { market: string }) {
+  const [sources, setSources] = useState<DpSource[]>([]);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetchDpSources(market);
+      setSources(r.sources);
+    } catch (err) {
+      setMsg({ ok: false, text: `获取数据源失败：${err instanceof Error ? err.message : String(err)}` });
+    }
+  }, [market]);
+
+  useEffect(() => {
+    setSources([]);
+    setMsg(null);
+    load();
+  }, [load]);
+
+  const toggle = async (s: DpSource) => {
+    setBusy(s.source);
+    setMsg(null);
+    const next = sources.map((x) => (x.source === s.source ? { ...x, enabled: !x.enabled } : x));
+    try {
+      await setDpSources(
+        market,
+        Object.fromEntries(next.map((x) => [x.source, x.enabled])),
+      );
+      setSources(next);
+      setMsg({ ok: true, text: `已保存：${s.label} ${s.enabled ? '停用' : '启用'}` });
+    } catch (err) {
+      setMsg({ ok: false, text: `保存失败：${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="dp-card">
+      <div className="dp-card-head">
+        <div>
+          <div className="dp-card-title">数据获取方式</div>
+          <div className="dp-card-desc">
+            勾选启用的数据源（quantmind 数据平台，同步时生效）· AKShare / 雅虎 / 北向 / 南向 / CCASS 等
+          </div>
+        </div>
+        <button className="dp-btn" onClick={load} disabled={busy !== null}>刷新</button>
+      </div>
+      {msg && <div className={msg.ok ? 'dp-ok' : 'dp-error'}>{msg.text}</div>}
+      <div className="dp-sdk-body">
+        {sources.length === 0 && <div className="dp-loading">加载数据源…</div>}
+        {sources.map((s) => (
+          <button
+            key={s.source}
+            className={`dp-chip ${s.enabled ? 'dp-chip-on' : ''}`}
+            disabled={busy !== null}
+            onClick={() => toggle(s)}
+            title={s.enabled ? '点击停用' : '点击启用'}
+          >
+            <span className="dp-chip-dot">{s.enabled ? '●' : '○'}</span>
+            {s.label}
+            <span className="dp-dim">{s.source}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   数据同步（复刻 quantmind：按数据集触发 + 任务列表/进度/取消）
+   quantdb：with_pg / with_qlib；其余市场：days + with_qlib
+   ============================================================ */
+
+const SYNC_STATUS_LABEL: Record<string, string> = {
+  running: '同步中',
+  completed: '完成',
+  failed: '失败',
+  cancelled: '已取消',
+};
+
+function SyncCard({ market, datasets }: { market: string; datasets: DpDataset[] }) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [days, setDays] = useState(5);
+  const [withPg, setWithPg] = useState(false);
+  const [withQlib, setWithQlib] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const jobs = usePolling(() => fetchDpSyncJobs(market), [market], 8000);
+
+  const jobList = jobs.data?.jobs ?? [];
+  const runningCount = jobList.filter((j) => j.status === 'running').length;
+
+  const toggleSelect = (dataset: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(dataset)) next.delete(dataset);
+      else next.add(dataset);
+      return next;
+    });
+  };
+
+  const start = async () => {
+    if (selected.size === 0) return;
+    setStarting(true);
+    setMsg(null);
+    try {
+      const payload =
+        market === 'quantdb'
+          ? { datasets: [...selected], with_pg: withPg, with_qlib: withQlib }
+          : { datasets: [...selected], days, with_qlib: withQlib };
+      const r = await startDpSync(market, payload);
+      setMsg({ ok: true, text: `同步任务已触发：${r.job.job_id}` });
+      setSelected(new Set());
+      jobs.refresh();
+    } catch (err) {
+      setMsg({ ok: false, text: `触发失败：${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const cancel = async (jobId: string) => {
+    try {
+      const r = await cancelDpSync(market, jobId);
+      setMsg({ ok: true, text: `${jobId} ${r.status}（当前数据集完成后停止）` });
+      jobs.refresh();
+    } catch (err) {
+      setMsg({ ok: false, text: `取消失败：${err instanceof Error ? err.message : String(err)}` });
+    }
+  };
+
+  return (
+    <div className="dp-card">
+      <div className="dp-card-head">
+        <div>
+          <div className="dp-card-title">数据同步</div>
+          <div className="dp-card-desc">
+            按数据集触发同步（后台任务，写入本机共享仓库）· 任务历史最多保留 20 条
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {runningCount > 0 && <span className="dp-warn">{runningCount} 个任务运行中</span>}
+          <button className="dp-btn" onClick={() => jobs.refresh()} disabled={jobs.loading}>刷新</button>
+        </div>
+      </div>
+
+      {msg && <div className={msg.ok ? 'dp-ok' : 'dp-error'}>{msg.text}</div>}
+
+      {/* 数据集多选 */}
+      <div className="dp-toolbar" style={{ alignItems: 'flex-start' }}>
+        <div className="dp-field dp-field-wide">
+          <span className="dp-field-label">选择数据集（可多选）</span>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {datasets.map((d) => (
+              <button
+                key={d.dataset}
+                className={`dp-chip ${selected.has(d.dataset) ? 'dp-chip-on' : ''}`}
+                onClick={() => toggleSelect(d.dataset)}
+                title={d.note}
+              >
+                {d.name}
+                <span className="dp-dim">{d.dataset}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* 参数 + 触发 */}
+      <div className="dp-toolbar" style={{ alignItems: 'flex-end' }}>
+        {market !== 'quantdb' && (
+          <label className="dp-field">
+            <span className="dp-field-label">最近交易日（天）</span>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={days}
+              onChange={(e) => setDays(Number(e.target.value) || 5)}
+              className="dp-input dp-input-num"
+            />
+          </label>
+        )}
+        <label className="dp-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <input type="checkbox" checked={withQlib} onChange={(e) => setWithQlib(e.target.checked)} />
+          <span className="dp-field-label" style={{ fontSize: 10 }}>同步后重建 Qlib 缓存</span>
+        </label>
+        {market === 'quantdb' && (
+          <label className="dp-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <input type="checkbox" checked={withPg} onChange={(e) => setWithPg(e.target.checked)} />
+            <span className="dp-field-label" style={{ fontSize: 10 }}>回填 PG stock_daily_latest</span>
+          </label>
+        )}
+        <button
+          className="dp-btn dp-btn-primary"
+          onClick={start}
+          disabled={starting || selected.size === 0}
+        >
+          {starting ? '触发中…' : `开始同步${selected.size > 0 ? `（${selected.size} 个数据集）` : ''}`}
+        </button>
+      </div>
+
+      {/* 任务列表 */}
+      <div className="table-wrap" style={{ marginTop: 12 }}>
+        {jobList.length === 0 && !jobs.loading && <div className="dp-empty">暂无同步任务</div>}
+        {jobList.length > 0 && (
+          <table className="data">
+            <thead>
+              <tr>
+                <th>任务</th>
+                <th>数据集</th>
+                <th>状态</th>
+                <th>进度</th>
+                <th>开始时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {jobList.map((j) => {
+                const pct = j.total > 0 ? Math.round((j.done / j.total) * 100) : 0;
+                return (
+                  <tr key={j.job_id}>
+                    <td>
+                      <span style={{ fontWeight: 700 }}>{j.job_id}</span>
+                      <div className="dp-dim">{j.started_by ? `发起：${j.started_by}` : ''}</div>
+                    </td>
+                    <td className="dp-dim">{j.datasets.join(', ')}</td>
+                    <td>
+                      <span className={`dp-dot ${j.status === 'completed' ? 'dp-on' : j.status === 'running' ? 'dp-on' : 'dp-off'}`}>
+                        {SYNC_STATUS_LABEL[j.status] ?? j.status}
+                      </span>
+                      {j.cancel_requested && <span className="dp-warn"> 取消中</span>}
+                    </td>
+                    <td style={{ minWidth: 140 }}>
+                      <div className="dp-meter" style={{ height: 7, margin: 0 }}>
+                        <div className="dp-meter-fill" style={{ width: `${pct}%` }} />
+                      </div>
+                      <div className="dp-dim">
+                        {j.done}/{j.total}
+                        {j.stage ? ` · ${j.stage}` : ''}
+                        {j.error ? ` · ${j.error}` : ''}
+                      </div>
+                    </td>
+                    <td className="dp-dim">{fmtTime(j.started_at)}</td>
+                    <td>
+                      {j.status === 'running' && (
+                        <button className="dp-btn dp-btn-mini" onClick={() => cancel(j.job_id)}>
+                          取消
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    分组折叠
    ============================================================ */
 
@@ -437,7 +757,13 @@ function GroupSection({
             </thead>
             <tbody>
               {datasets.map((d) => (
-                <tr key={d.dataset}>
+                <tr
+                  key={d.dataset}
+                  className="dp-row"
+                  style={{ cursor: d.synced ? 'pointer' : 'default' }}
+                  title={d.synced ? '点击直接预览' : undefined}
+                  onClick={() => d.synced && onPreview(d)}
+                >
                   <td>
                     <div style={{ fontWeight: 700 }}>{d.name}</div>
                     <div className="dp-dim">{d.dataset}</div>
@@ -458,7 +784,10 @@ function GroupSection({
                     <button
                       className="dp-btn dp-btn-mini"
                       disabled={!d.synced}
-                      onClick={() => d.synced && onPreview(d)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (d.synced) onPreview(d);
+                      }}
                     >
                       预览
                     </button>

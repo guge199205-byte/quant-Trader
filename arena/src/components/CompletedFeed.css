@@ -1,0 +1,100 @@
+/* COMPLETED —— nof1 风格平仓消息卡流 */
+.completed-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.feed-card {
+  border: 1.5px solid #000;
+  background: #fff;
+  padding: 10px 12px;
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.12);
+  font-family: 'Courier New', monospace;
+}
+
+.feed-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.feed-logo {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.feed-msg {
+  flex: 1;
+}
+
+.feed-agent {
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.feed-symbol {
+  letter-spacing: 0.03em;
+}
+
+.feed-date {
+  font-size: 10px;
+  color: #888;
+  flex-shrink: 0;
+}
+
+.feed-price {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.feed-arrow {
+  color: #888;
+}
+
+.feed-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.6fr 1fr;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.feed-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.feed-k {
+  color: #888;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.feed-v {
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.feed-pnl {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #ccc;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.feed-pnl.up {
+  color: #0a7d3d;
+}
+
+.feed-pnl.down {
+  color: #c0281f;
+}

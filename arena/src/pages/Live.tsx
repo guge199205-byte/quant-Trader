@@ -21,6 +21,7 @@ import { usePolling } from '../hooks/usePolling';
 import EquityChart, { toBenchLine, toChartLine } from '../components/EquityChart';
 import ModelCard from '../components/ModelCard';
 import ModelChat from '../components/ModelChat';
+import CompletedFeed from '../components/CompletedFeed';
 import { MarketSwitcher } from '../components/Navbar';
 import { fmtMoney, fmtPct, pnlClass } from '../utils/format';
 import './Live.css';
@@ -33,16 +34,17 @@ const MODEL_COLORS: Record<string, string> = {
 const FALLBACK_COLOR = '#5a5a5a';
 const BENCH_COLOR = '#10a37f';
 
-type Tab = 'all' | '5d' | 'completed' | 'chat' | 'positions' | 'readme';
+type Tab = 'completed' | 'trades' | 'chat' | 'positions' | 'comp' | 'details';
 type TimeRange = 'all' | '5d';
 
+/** 右侧 tab：已完成交易 / 成交 / 模型对话 / 持仓 / 比赛配置 / 详情 */
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'all', label: '全部' },
-  { id: '5d', label: '近5日' },
-  { id: 'completed', label: '已平仓' },
+  { id: 'completed', label: '已完成' },
+  { id: 'trades', label: '成交' },
   { id: 'chat', label: '模型对话' },
   { id: 'positions', label: '持仓' },
-  { id: 'readme', label: '说明' },
+  { id: 'comp', label: '比赛配置' },
+  { id: 'details', label: '详情' },
 ];
 
 interface TradeEvt {
@@ -70,7 +72,7 @@ export default function Live() {
   );
   const meta = marketMeta(market);
 
-  const [tab, setTab] = useState<Tab>('all');
+  const [tab, setTab] = useState<Tab>('completed');
   const [chartRange, setChartRange] = useState<TimeRange>('all');
   const [chartMode, setChartMode] = useState<'pct' | 'dollar'>('pct');
   const [selectedModel, setSelectedModel] = useState<string>('all');
@@ -174,11 +176,6 @@ export default function Live() {
     [trades.data],
   );
 
-  const recentDays = useMemo(() => {
-    const dates = [...new Set(tradeEvents.map((e) => e.date))].sort();
-    return new Set(dates.slice(-5));
-  }, [tradeEvents]);
-
   // ---------- 顶部价格条（基准 + 最高/最低表演者） ----------
   const benchStats = useMemo(() => {
     const pts: BenchPoint[] = bench.data ?? [];
@@ -198,34 +195,25 @@ export default function Live() {
 
   // ---------- 右侧列表渲染 ----------
   const renderList = () => {
-    if (tab === 'readme') {
+    if (tab === 'comp') {
       return (
         <div className="readme-body">
-          <h4>Quant Agent Trader</h4>
+          <h4>比赛配置 — 第 1 赛季</h4>
           <p>
-            多 AI 模型以独立资金池在 <b>美股 / A股 / 港股</b> 三市场自主分析、决策、买卖，
-            全自主零样本交易，无微调、无人工干预。
+            <b>New Baseline</b>（当前配置）—— 数据管道与交易能力基线。
           </p>
-          <h4>模型对决</h4>
-          <p>
-            <b>DeepSeek V4 Flash</b> · <b>DeepSeek V4 Pro</b> —— 同一数据、同一工具集、
-            同一起点资金，公平竞技。
-          </p>
-          <h4>市场</h4>
-          <p>US 等权 NDX100 · CN SSE50 · HK 恒指成分 · 数据更新至 {rows[0]?.latest_date ?? '—'}</p>
-          <h4>成本模型</h4>
-          <p>双边费率 0.03% × 2 + 滑点 ±0.05%，成交价取自本地数据仓库日线。</p>
-          <h4>风控</h4>
+          <h4>1 · 数据管道</h4>
+          <p>三市场本地数据仓库（后复权日线），历史回放逐日推进，防未来函数。</p>
+          <h4>2 · 交易能力</h4>
+          <p>全自主零样本，LLM 推理决策；支持加仓；A股一手 100 股 / T+1 / 涨跌停约束。</p>
+          <h4>3 · 成本模型</h4>
+          <p>双边费率 0.03% × 2 + 滑点 ±0.05%，成交价取自本地日线数据。</p>
+          <h4>4 · 风控护栏</h4>
           <p>单笔/持仓限额、日亏熔断、现金保留、黑名单，三条交易路径单点拦截。</p>
-          <h4>Fair Play</h4>
-          <p>同起点资金、同一数据切片、同一工具集；历史回放防未来函数。</p>
-          <h4>vs 传统量化</h4>
-          <p>
-            <b>规则脚本</b>：写死的买卖信号，换市场重写策略，黑盒难解释。<br />
-            <b>智能体</b>：LLM 推理决策，每笔交易有决策日志可回看，三市场一套能力零迁移。
-          </p>
-          <h4>记忆与进化</h4>
-          <p>每市场独立交易记忆：开盘读心得、收盘写经验，agent 自己沉淀策略，越用越好用。</p>
+          <h4>5 · Fair Play</h4>
+          <p>同起点资金、同一数据切片、同一工具集，公平竞技。</p>
+          <h4>6 · 记忆与进化</h4>
+          <p>每市场独立交易记忆：开盘读心得、收盘写经验，agent 自我沉淀。</p>
           <div className="readme-links">
             <Link to="/leaderboard">排行榜</Link>
             <span>·</span>
@@ -233,6 +221,28 @@ export default function Live() {
             <span>·</span>
             <Link to="/control">总控</Link>
           </div>
+        </div>
+      );
+    }
+
+    if (tab === 'details') {
+      return (
+        <div className="readme-body">
+          <h4>详情 — 数据管线</h4>
+          <p>
+            <b>行情</b>：本地数据仓库，后复权日线收盘成交（US/HK 小时格式与 CN 日线格式双兼容）。
+          </p>
+          <p>
+            <b>市场</b>：US 等权 NDX100 · CN SSE50 · HK 恒指成分 · 数据更新至 {rows[0]?.latest_date ?? '—'}
+          </p>
+          <p><b>基准</b>：NDX100 / SSE50 指数虚线叠加对比。</p>
+          <h4>模型</h4>
+          <p>
+            <b>DeepSeek V4 Flash</b> · <b>DeepSeek V4 Pro</b> —— 同数据、同工具集、同起点资金。
+          </p>
+          <p>LLM 推理决策，每笔交易有决策日志可回看（MODELCHAT 面板）。</p>
+          <h4>实时性</h4>
+          <p>30 秒自动刷新；行情 / 持仓 / 成交 / FIFO 平仓明细实时重建。</p>
         </div>
       );
     }
@@ -274,14 +284,22 @@ export default function Live() {
       );
     }
 
-    // ALL / 5D / COMPLETED
-    let evts = tradeEvents;
-    if (tab === '5d') evts = tradeEvents.filter((e) => recentDays.has(e.date));
-    if (tab === 'completed') evts = tradeEvents.filter((e) => e.side === 'sell');
-    if (!evts.length) return <div className="empty-state">暂无成交</div>;
+    // COMPLETED —— 当前市场全部模型平仓消息流（nof1 风格）
+    if (tab === 'completed') {
+      return (
+        <CompletedFeed
+          agents={rows.map((r) => r.name)}
+          market={market}
+          currency={meta.currency}
+        />
+      );
+    }
+
+    // TRADES —— 原始成交流（选中模型的全部成交）
+    if (!tradeEvents.length) return <div className="empty-state">暂无成交</div>;
     return (
       <>
-        {evts.map((e, i) => (
+        {tradeEvents.map((e, i) => (
           <div className="trade-list-item" key={`${e.date}-${i}`}>
             <div className="trade-item-header">
               <span className="trade-item-time">{e.date.slice(0, 10)}</span>
@@ -449,25 +467,27 @@ export default function Live() {
           </div>
           <div className="filter-bar">
             <span className="filter-label">模型</span>
-            <select
-              className="filter-select"
-              value={effectiveModel ?? ''}
-              onChange={(e) => setSelectedModel(e.target.value)}
-            >
-              {rows.map((r) => (
-                <option key={r.name} value={r.name}>{r.name}</option>
-              ))}
-            </select>
+            {tab === 'trades' || tab === 'chat' || tab === 'positions' ? (
+              <select
+                className="filter-select"
+                value={effectiveModel ?? ''}
+                onChange={(e) => setSelectedModel(e.target.value)}
+              >
+                {rows.map((r) => (
+                  <option key={r.name} value={r.name}>{r.name}</option>
+                ))}
+              </select>
+            ) : (
+              <span className="filter-static">全部模型</span>
+            )}
             <span className="filter-count">
-              {tab === 'chat'
-                ? (logs.data ?? []).length
-                : tab === 'positions'
-                  ? Object.keys(positions.data?.[positions.data.length - 1]?.positions ?? {}).length
-                  : (tab === '5d'
-                      ? tradeEvents.filter((e) => recentDays.has(e.date)).length
-                      : tab === 'completed'
-                        ? tradeEvents.filter((e) => e.side === 'sell').length
-                        : tradeEvents.length)}
+              {tab === 'trades'
+                ? tradeEvents.length
+                : tab === 'chat'
+                  ? (logs.data ?? []).length
+                  : tab === 'positions'
+                    ? Object.keys(positions.data?.[positions.data.length - 1]?.positions ?? {}).length
+                    : ''}
             </span>
           </div>
           <div className="trade-list">{renderList()}</div>

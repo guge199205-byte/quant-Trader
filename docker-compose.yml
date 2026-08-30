@@ -165,9 +165,12 @@ services:
       # 总管技能执行环境：
       #   ① /quantmind 只读挂载 → 技能契约脚本源 `/quantmind/skills/<name>/scripts/`
       #   ② /data 读写 → 报告落盘（quantmind 股票报告页可见）
-      # （docker exec quantmind 跑重依赖脚本需挂 docker.sock，默认不挂，见 README.docker.md）
+      #   ③ docker CLI + socket → 技能契约「docker exec quantmind」跑重依赖
+      #      取数脚本（用户 2026-08-30 明确要求挂载）
       - /home/zbox/projects/quantmind:/quantmind:ro
       - /home/zbox/projects/quantmind/data:/data:rw
+      - /usr/bin/docker:/usr/bin/docker:ro
+      - /var/run/docker.sock:/var/run/docker.sock
 
   # ---- dsh 局域网代理（nginx，basic auth）----
   # dsh 本身只绑 127.0.0.1；此容器 host 网络绑 192.168.31.68:3081 与 dsh 的

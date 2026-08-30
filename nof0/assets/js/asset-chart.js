@@ -1,4 +1,4 @@
-// BayMax Trade Agent - 资产演变图表
+// AI-agent - 资产演变图表
 // Main page visualization
 
 const dataLoader = new DataLoader();

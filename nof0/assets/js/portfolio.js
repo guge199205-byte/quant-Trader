@@ -1,4 +1,4 @@
-// BayMax Trade Agent - 投资组合分析页面
+// AI-agent - 投资组合分析页面
 // Detailed view of individual agent portfolios
 
 let configLoader = null;

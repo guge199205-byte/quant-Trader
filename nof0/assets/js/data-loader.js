@@ -6,7 +6,7 @@ class DataLoader {
         this.agentData = {};
         this.priceCache = {};
         this.config = null;
-        this.baseDataPath = 'data'; // BayMax Trade Agent 数据路径
+        this.baseDataPath = 'data'; // AI-agent 数据路径
         this.currentMarket = 'us'; // 'us' or 'cn'
     }
 

@@ -1,15 +1,8 @@
-import { Link, NavLink, useLocation } from 'react-router-dom';
-import { useCallback } from 'react';
+import { Link, NavLink } from 'react-router-dom';
 import { MarketId } from '../api/client';
 import './Navbar.css';
 
-const NAV = [
-  { to: '/', label: 'HOME', end: true },
-  { to: '/live', label: 'LIVE' },
-  { to: '/leaderboard', label: 'LEADERBOARD' },
-  { to: '/about', label: 'ABOUT' },
-];
-
+/** 复刻 coke-nof1 导航：黑 2px 底边 + 居中菜单 + 右侧外链 */
 export function MarketSwitcher({
   market,
   onChange,
@@ -18,13 +11,12 @@ export function MarketSwitcher({
   onChange: (m: MarketId) => void;
 }) {
   return (
-    <div className="mkt-switch" role="tablist" aria-label="市场切换">
+    <div style={{ display: 'flex', gap: 0 }}>
       {(['us', 'cn', 'hk'] as MarketId[]).map((m) => (
         <button
           key={m}
-          role="tab"
-          aria-selected={market === m}
           className={`chip ${m} ${market === m ? 'active' : ''}`}
+          style={{ borderRadius: 0 }}
           onClick={() => onChange(m)}
         >
           {m.toUpperCase()}
@@ -35,43 +27,30 @@ export function MarketSwitcher({
 }
 
 export default function Navbar() {
-  const loc = useLocation();
-
-  // 保持 /live 与 /model/* 下的市场切换同步（存 URL query）
-  const marketFromQuery = useCallback(() => {
-    const m = new URLSearchParams(loc.search).get('market');
-    return (['us', 'cn', 'hk'] as MarketId[]).includes(m as MarketId) ? (m as MarketId) : null;
-  }, [loc.search]);
-
   return (
-    <header className="navbar">
-      <div className="navbar-inner">
-        <Link to="/" className="brand">
-          <span className="brand-mark">▚</span>
-          <span className="brand-name">
-            BAYMAX<span className="brand-accent">ARENA</span>
-          </span>
-          <span className="brand-season">S1</span>
+    <nav className="navbar">
+      <div className="navbar-container">
+        <Link to="/" className="navbar-logo">
+          <div className="logo-text">
+            <span className="logo-alpha">BayMax</span>
+            <span className="logo-arena">Arena</span>
+          </div>
         </Link>
 
-        <nav className="nav-links" aria-label="主导航">
-          {NAV.map((n) => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              end={n.end}
-              className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
-            >
-              {n.label}
-            </NavLink>
-          ))}
-        </nav>
+        <ul className="navbar-menu-center">
+          <li><NavLink to="/live" className={({ isActive }) => (isActive ? 'active' : '')}>LIVE</NavLink></li>
+          <li className="separator">|</li>
+          <li><NavLink to="/leaderboard" className={({ isActive }) => (isActive ? 'active' : '')}>LEADERBOARD</NavLink></li>
+          <li className="separator">|</li>
+          <li><NavLink to="/about" className={({ isActive }) => (isActive ? 'active' : '')}>ABOUT</NavLink></li>
+        </ul>
 
-        <div className="nav-right">
-          {marketFromQuery() && <span className="nav-hint">market={marketFromQuery()}</span>}
-          <span className="nav-clock" id="arena-clock" />
+        <div className="navbar-right">
+          <Link to="/live" className="navbar-link">
+            3 MARKETS × 2 MODELS · SEASON 1
+          </Link>
         </div>
       </div>
-    </header>
+    </nav>
   );
 }

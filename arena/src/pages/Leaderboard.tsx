@@ -1,29 +1,21 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  MarketId,
-  Overview,
-  Summary,
-  fetchBenchmark,
-  fetchOverview,
-  fetchPerformance,
-  marketMeta,
-} from '../api/client';
+import { MarketId, OverviewRow, fetchOverview, marketMeta } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
-import EquityChart, { toBenchLine, toChartLine } from '../components/EquityChart';
+import { logoOf } from '../components/ModelCard';
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format';
+import './Leaderboard.css';
 
-type SortKey = 'total_return' | 'max_drawdown' | 'sharpe' | 'win_rate' | 'profit_factor' | 'closed_trades' | 'total_fee' | 'fee_ratio' | 'avg_hold_days';
-
-const MARKET_COLOR: Record<MarketId, string> = { us: 'var(--us)', cn: 'var(--cn)', hk: 'var(--hk)' };
+type SortKey = 'total_return' | 'pnl' | 'sharpe' | 'win_rate' | 'closed_trades';
 
 interface RankRow {
   market: MarketId;
   agent: string;
-  summary: Summary;
+  cash: number | null;
+  summary: NonNullable<OverviewRow['summary']>;
 }
 
-/** 排行榜：三市场 × 双模型排名表（可排序）+ 归一化净值对比图 */
+/** 排行榜 —— 复刻 coke-nof1：统计卡 + 可排序排名表（3 市场 × 2 模型，扩展指标列） */
 export default function Leaderboard() {
   const nav = useNavigate();
   const [filter, setFilter] = useState<MarketId | 'all'>('all');
@@ -32,38 +24,29 @@ export default function Leaderboard() {
 
   const overview = usePolling(() => fetchOverview(), [], 30000);
 
-  // 展开所有 agent 的净值序列（排行榜图）
   const rows = useMemo(() => {
     const out: RankRow[] = [];
-    const ov = overview.data as Overview | null;
+    const ov = overview.data;
     if (!ov) return out;
     for (const m of ['us', 'cn', 'hk'] as MarketId[]) {
       for (const r of ov.markets[m] ?? []) {
-        if (r.summary) out.push({ market: m, agent: r.name, summary: r.summary });
+        if (r.summary) out.push({ market: m, agent: r.name, cash: r.cash, summary: r.summary });
       }
     }
     return out;
   }, [overview.data]);
 
-  const allKey = rows.map((r) => `${r.market}:${r.agent}`).join('|');
-  const perfs = usePolling(
-    () =>
-      Promise.all(
-        rows.map((r) => fetchPerformance(r.agent, r.market).catch(() => null)),
-      ).then((list) => list.filter(Boolean) as NonNullable<Awaited<ReturnType<typeof fetchPerformance>>>[]),
-    [allKey],
-    30000,
-  );
-
   const visible = filter === 'all' ? rows : rows.filter((r) => r.market === filter);
 
   const sorted = useMemo(() => {
+    const valOf = (r: RankRow, k: SortKey): number =>
+      k === 'pnl' ? (r.summary.end_equity ?? 0) - (r.summary.start_equity ?? 0) : (r.summary[k] ?? -Infinity);
     const arr = [...visible];
     arr.sort((a, b) => {
-      const av = a.summary[sortKey] ?? -Infinity;
-      const bv = b.summary[sortKey] ?? -Infinity;
+      const av = valOf(a, sortKey);
+      const bv = valOf(b, sortKey);
       if (av === bv) return b.summary.total_return - a.summary.total_return;
-      return sortDesc ? (bv as number) - (av as number) : (av as number) - (bv as number);
+      return sortDesc ? bv - av : av - bv;
     });
     return arr;
   }, [visible, sortKey, sortDesc]);
@@ -73,29 +56,20 @@ export default function Leaderboard() {
     else { setSortKey(k); setSortDesc(true); }
   };
 
-  const sortArrow = (k: SortKey) => (sortKey === k ? (sortDesc ? ' ↓' : ' ↑') : '');
+  const sortArrow = (k: SortKey) => (sortKey === k ? (sortDesc ? ' ▲' : ' ▼') : '');
 
-  // 图表：全部 agent（归一化），filter 单市场时叠加该市场基准
-  const chartLines = useMemo(() => {
-    const agentMarket = new Map(rows.map((r) => [r.agent, r.market]));
-    return (perfs.data ?? []).map((p) => {
-      const m = agentMarket.get(p.agent) ?? 'us';
-      return toChartLine(p.agent, p.agent, MARKET_COLOR[m], p.points);
-    });
-  }, [perfs.data, rows]);
-
-  const bench = usePolling(
-    () => (filter === 'all' ? Promise.resolve(null) : fetchBenchmark(filter)),
-    [filter],
-    300000,
-  );
-  const benchLine = useMemo(
-    () =>
-      bench.data && bench.data.length
-        ? toBenchLine(filter === 'us' ? 'QQQ' : 'SSE50', '#8a94a6', bench.data)
-        : null,
-    [bench.data, filter],
-  );
+  // 顶部统计（4 卡，coke leaderboard-stats）
+  const stats = useMemo(() => {
+    if (!rows.length) return { pool: null, best: null, trades: 0, avgRet: null };
+    const pool = rows.reduce((s, r) => s + (r.summary.end_equity ?? 0), 0);
+    const best = [...rows].sort(
+      (a, b) => (b.summary.total_return ?? -Infinity) - (a.summary.total_return ?? -Infinity),
+    )[0];
+    const trades = rows.reduce((s, r) => s + (r.summary.closed_trades ?? 0), 0);
+    const avgRet =
+      rows.reduce((s, r) => s + (r.summary.total_return ?? 0), 0) / rows.length;
+    return { pool, best, trades, avgRet };
+  }, [rows]);
 
   if (overview.error) {
     return <div className="error-box">API 连接失败：{overview.error}</div>;
@@ -103,89 +77,121 @@ export default function Leaderboard() {
 
   return (
     <div className="page">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
-        <h1 style={{ fontSize: 20 }}>LEADERBOARD <span className="accent">/</span> 排行榜</h1>
-        <div style={{ display: 'flex', gap: 8 }}>
+      <div className="leaderboard-header">
+        <h1 className="leaderboard-title">LEADERBOARD</h1>
+        <div className="market-chips">
           {(['all', 'us', 'cn', 'hk'] as const).map((f) => (
             <button
               key={f}
               className={`chip ${f} ${filter === f ? 'active' : ''}`}
+              style={{ borderRadius: 0 }}
               onClick={() => setFilter(f as MarketId | 'all')}
             >
               {f === 'all' ? 'ALL' : f.toUpperCase()}
             </button>
           ))}
         </div>
-        <span style={{ flex: 1 }} />
-        <span className="faint" style={{ fontSize: 11, letterSpacing: '0.12em' }}>
-          Season 1 · 2026-08 启动
-        </span>
       </div>
 
-      <div className="panel" style={{ marginBottom: 20 }}>
-        <div className="panel-title">净值走势对比（归一化 100 起点）</div>
-        <EquityChart lines={chartLines} benchmark={benchLine} currency="$" height={400} />
+      <div className="leaderboard-stats">
+        <div className="stat-item">
+          <div className="stat-label">TOTAL POOL</div>
+          <div className="stat-value">{stats.pool != null ? `$${Math.round(stats.pool).toLocaleString('en-US')}` : '—'}</div>
+          <div className="stat-sub">3 MARKETS × 2 MODELS</div>
+        </div>
+        <div className="stat-item">
+          <div className="stat-label">BEST MODEL</div>
+          <div className="stat-value" style={{ fontSize: 16 }}>
+            {stats.best ? (
+              <>
+                {logoOf(stats.best.agent)} {stats.best.agent.replace('deepseek-v4-', '').toUpperCase()}
+              </>
+            ) : '—'}
+          </div>
+          <div className="stat-sub">
+            {stats.best ? (
+              <span className={pnlClass(stats.best.summary.total_return)}>
+                {fmtPct(stats.best.summary.total_return)}
+              </span>
+            ) : ''}
+          </div>
+        </div>
+        <div className="stat-item">
+          <div className="stat-label">TOTAL TRADES</div>
+          <div className="stat-value">{stats.trades}</div>
+          <div className="stat-sub">CLOSED POSITIONS</div>
+        </div>
+        <div className="stat-item">
+          <div className="stat-label">AVG RETURN</div>
+          <div className={`stat-value ${pnlClass(stats.avgRet)}`}>{fmtPct(stats.avgRet)}</div>
+          <div className="stat-sub">ACROSS ALL AGENTS</div>
+        </div>
       </div>
 
       {overview.loading && !rows.length ? (
-        <div className="loading"><div className="spinner" />加载中…</div>
+        <div className="loading"><div className="spinner" />LOADING…</div>
       ) : (
-        <div className="panel">
-          <div className="panel-title">模型排名（点击列头排序 · 点击行看详情）</div>
-          <div className="table-wrap">
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Agent</th>
-                  <th>市场</th>
-                  <th onClick={() => handleSort('total_return')}>收益率{sortArrow('total_return')}</th>
-                  <th onClick={() => handleSort('max_drawdown')}>最大回撤{sortArrow('max_drawdown')}</th>
-                  <th onClick={() => handleSort('sharpe')}>Sharpe{sortArrow('sharpe')}</th>
-                  <th onClick={() => handleSort('win_rate')}>胜率{sortArrow('win_rate')}</th>
-                  <th onClick={() => handleSort('profit_factor')}>盈亏比{sortArrow('profit_factor')}</th>
-                  <th onClick={() => handleSort('closed_trades')}>平仓{sortArrow('closed_trades')}</th>
-                  <th onClick={() => handleSort('total_fee')}>费用{sortArrow('total_fee')}</th>
-                  <th onClick={() => handleSort('fee_ratio')}>费率{sortArrow('fee_ratio')}</th>
-                  <th onClick={() => handleSort('avg_hold_days')}>持仓天{sortArrow('avg_hold_days')}</th>
-                  <th>权益</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.map((r, i) => {
-                  const s = r.summary;
-                  const meta = marketMeta(r.market);
-                  const rank = i + 1;
-                  return (
-                    <tr key={`${r.market}:${r.agent}`} className="clickable" onClick={() => nav(`/model/${r.market}/${encodeURIComponent(r.agent)}`)}>
-                      <td>
-                        <span className={`rank-badge ${rank === 1 ? 'rank-1' : rank === 2 ? 'rank-2' : rank === 3 ? 'rank-3' : ''}`}>
-                          {rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `#${rank}`}
-                        </span>
-                      </td>
-                      <td style={{ fontWeight: 700 }}>{r.agent}</td>
-                      <td><span className="chip" style={{ color: `var(--${r.market})`, borderColor: `var(--${r.market})` }}>{meta.label}</span></td>
-                      <td className={pnlClass(s.total_return)}>{fmtPct(s.total_return)}</td>
-                      <td className="dim">{fmtPct(s.max_drawdown, 2, false)}</td>
-                      <td className="dim">{fmtNum(s.sharpe)}</td>
-                      <td className="dim">{s.win_rate != null ? fmtPct(s.win_rate, 1, false) : '—'}</td>
-                      <td className="dim">{s.profit_factor != null ? fmtNum(s.profit_factor) : '—'}</td>
-                      <td className="dim">{s.closed_trades ?? 0}</td>
-                      <td className="dim">{s.total_fee != null ? fmtMoney(s.total_fee, meta.currency, 0) : '—'}</td>
-                      <td className="dim">{s.fee_ratio != null ? fmtPct(s.fee_ratio, 3, false) : '—'}</td>
-                      <td className="dim">{s.avg_hold_days != null ? fmtNum(s.avg_hold_days, 1) : '—'}</td>
-                      <td className="dim">{fmtMoney(s.end_equity, meta.currency)}</td>
-                    </tr>
-                  );
-                })}
-                {!sorted.length && (
-                  <tr><td colSpan={13} className="faint" style={{ textAlign: 'center', padding: 30 }}>暂无数据</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+        <div className="leaderboard-table-wrap">
+          <table className="leaderboard-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>MODEL</th>
+                <th>MARKET</th>
+                <th>BALANCE</th>
+                <th onClick={() => handleSort('pnl')}>PNL{sortArrow('pnl')}</th>
+                <th onClick={() => handleSort('total_return')}>RETURN%{sortArrow('total_return')}</th>
+                <th onClick={() => handleSort('sharpe')}>SHARPE{sortArrow('sharpe')}</th>
+                <th onClick={() => handleSort('win_rate')}>WIN RATE{sortArrow('win_rate')}</th>
+                <th onClick={() => handleSort('closed_trades')}>TRADES{sortArrow('closed_trades')}</th>
+                <th>STATUS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r, i) => {
+                const s = r.summary;
+                const meta = marketMeta(r.market);
+                const pnl = (s.end_equity ?? 0) - (s.start_equity ?? 0);
+                const rank = i + 1;
+                return (
+                  <tr
+                    key={`${r.market}:${r.agent}`}
+                    className={`clickable ${rank === 1 ? 'top-performer' : ''}`}
+                    onClick={() => nav(`/model/${r.market}/${encodeURIComponent(r.agent)}`)}
+                  >
+                    <td>
+                      <span className={`rank-badge ${rank <= 3 ? 'top3' : ''}`}>{rank}</span>
+                    </td>
+                    <td className="model-cell">
+                      <span className="model-logo-cell">{logoOf(r.agent)}</span>
+                      <span className="model-name-cell">{r.agent.replace('deepseek-v4-', 'DeepSeek V4 ')}</span>
+                    </td>
+                    <td><span className="market-cell">{meta.label}</span></td>
+                    <td>{fmtMoney(s.end_equity, meta.currency)}</td>
+                    <td className={pnlClass(pnl)}>{pnl >= 0 ? '+' : ''}{fmtMoney(pnl, meta.currency)}</td>
+                    <td className={pnlClass(s.total_return)}>{fmtPct(s.total_return)}</td>
+                    <td className="dim">{fmtNum(s.sharpe)}</td>
+                    <td className="dim">{s.win_rate != null ? fmtPct(s.win_rate, 1, false) : '—'}</td>
+                    <td className="dim">{s.closed_trades ?? 0}</td>
+                    <td>
+                      <span className={`status-badge ${s.records > 0 ? 'active' : 'stopped'}`}>
+                        {s.records > 0 ? 'LIVE' : 'PENDING'}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!sorted.length && (
+                <tr><td colSpan={10} className="dim" style={{ textAlign: 'center', padding: 30 }}>NO DATA</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
       )}
+
+      <div className="leaderboard-footer">
+        Updated every 30 seconds · Season 1 · DeepSeek V4 Flash vs V4 Pro
+      </div>
     </div>
   );
 }

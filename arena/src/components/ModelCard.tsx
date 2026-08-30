@@ -1,42 +1,46 @@
-import { useNavigate } from 'react-router-dom';
-import { EquityPoint, MarketId, marketMeta, Summary } from '../api/client';
-import { fmtDate, fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format';
-import Sparkline from './Sparkline';
+import { MarketId, marketMeta } from '../api/client';
+import { fmtMoney, fmtPct, pnlClass } from '../utils/format';
 
-/** 模型卡：名称 + 市场 + 净值/收益 + 指标 + 迷你曲线。点击进 ModelDetail。 */
+/** 模型 emoji 标识（coke-nof1 风格色块映射） */
+export const MODEL_LOGOS: Record<string, string> = {
+  'deepseek-v4-flash': '🟠',
+  'deepseek-v4-pro': '🔵',
+};
+
+export const logoOf = (name: string): string => MODEL_LOGOS[name] ?? '⚪';
+
+/** 模型名 → 短标签（终端显示） */
+export const shortName = (name: string): string =>
+  name
+    .replace('deepseek-v4', 'DS V4')
+    .replace('deepseek', 'DS')
+    .toUpperCase();
+
+/** mini 模型卡：logo + 名称 + 余额 + 收益% —— 复刻 coke-nof1 model-card-mini。
+ *  点击触发选中（右栏 filter 联动）。 */
 export default function ModelCard({
   market,
   agent,
-  equitySeries,
-  summary,
+  balance,
+  ret,
+  selected,
+  onClick,
 }: {
   market: MarketId;
   agent: string;
-  equitySeries: EquityPoint[];
-  summary: Summary | null;
+  balance: number | null;
+  ret: number | null;
+  selected: boolean;
+  onClick: () => void;
 }) {
-  const nav = useNavigate();
   const meta = marketMeta(market);
-  const points = equitySeries.length > 30 ? equitySeries.slice(-60) : equitySeries;
-  const latestDate = points.length ? points[points.length - 1].date : null;
-  const ret = summary?.total_return ?? null;
-
   return (
-    <div className="model-card" onClick={() => nav(`/model/${market}/${encodeURIComponent(agent)}`)}>
-      <div className="head">
-        <span className="name">{agent}</span>
-        <span className="market-tag">{meta.label}</span>
-      </div>
-      <Sparkline points={points} width={260} height={34} />
-      <div className="equity">{fmtMoney(summary?.end_equity ?? null, meta.currency)}</div>
-      <div className={`ret ${pnlClass(ret)}`}>{fmtPct(ret)}</div>
-      <div className="meta">
-        <span>SHARPE<b>{fmtNum(summary?.sharpe)}</b></span>
-        <span>MAX DD<b>{fmtPct(summary?.max_drawdown, 2, false)}</b></span>
-        <span>胜率<b>{summary?.win_rate != null ? fmtPct(summary.win_rate, 1, false) : '—'}</b></span>
-        <span>平仓<b>{summary?.closed_trades ?? 0}</b></span>
-        <span>记录<b>{summary?.records ?? 0}</b></span>
-        <span>最新<b>{fmtDate(latestDate)}</b></span>
+    <div className={`model-card-mini ${selected ? 'selected' : ''}`} onClick={onClick}>
+      <div className="model-logo">{logoOf(agent)}</div>
+      <div className="model-info">
+        <div className="model-name">{shortName(agent)}</div>
+        <div className="model-balance">{fmtMoney(balance, meta.currency)}</div>
+        <div className={`model-pnl ${pnlClass(ret)}`}>{fmtPct(ret)}</div>
       </div>
     </div>
   );

@@ -1,69 +1,126 @@
 .navbar {
+  background-color: #ffffff;
+  border-bottom: 2px solid #000000;
+  padding: 0;
   position: sticky;
   top: 0;
   z-index: 50;
-  background: rgba(10, 13, 18, 0.92);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--line);
 }
-.navbar-inner {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 0 24px;
-  height: 56px;
-  display: flex;
-  align-items: center;
-  gap: 28px;
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  text-decoration: none;
-  color: var(--text);
-}
-.brand-mark {
-  color: var(--accent);
-  font-size: 17px;
-  animation: blink 3s steps(1) infinite;
-}
-@keyframes blink {
-  0%, 92% { opacity: 1; }
-  96%, 100% { opacity: 0.25; }
-}
-.brand-name {
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-}
-.brand-accent { color: var(--accent); margin-left: 6px; }
-.brand-season {
-  font-size: 9.5px;
-  letter-spacing: 0.14em;
-  color: #06251a;
-  background: var(--accent);
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-weight: 700;
-}
-.nav-links { display: flex; gap: 4px; flex: 1; }
-.nav-link {
-  padding: 6px 14px;
-  font-size: 12px;
-  letter-spacing: 0.16em;
-  color: var(--dim);
-  text-decoration: none;
-  border-radius: 6px;
-  transition: color 0.15s, background 0.15s;
-}
-.nav-link:hover { color: var(--text); background: var(--panel-2); text-decoration: none; }
-.nav-link.active { color: var(--accent); background: var(--accent-dim); }
-.nav-right { display: flex; align-items: center; gap: 14px; }
-.nav-hint { font-size: 10px; color: var(--faint); letter-spacing: 0.1em; }
-.nav-clock { font-size: 11.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
 
-@media (max-width: 720px) {
-  .navbar-inner { padding: 0 12px; gap: 12px; }
-  .nav-link { padding: 6px 8px; font-size: 11px; }
-  .nav-clock, .nav-hint { display: none; }
+.navbar-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 56px;
+  padding: 0 16px;
+  width: 100%;
+}
+
+.navbar-logo {
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+}
+
+.logo-text {
+  display: flex;
+  align-items: baseline;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.logo-alpha {
+  font-size: 20px;
+  font-weight: 700;
+  color: #000000;
+  letter-spacing: -0.5px;
+}
+
+.logo-arena {
+  font-size: 14px;
+  font-weight: 400;
+  color: #000000;
+  margin-left: 2px;
+}
+
+.navbar-menu-center {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  list-style: none;
+  gap: 24px;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+}
+
+.navbar-menu-center li {
+  display: flex;
+  align-items: center;
+}
+
+.navbar-menu-center li.separator {
+  color: #000000;
+  font-size: 14px;
+  font-weight: 300;
+}
+
+.navbar-menu-center li a {
+  color: #000000;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  transition: color 0.2s;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.navbar-menu-center li a:hover,
+.navbar-menu-center li a.active {
+  color: #10a37f;
+}
+
+.navbar-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.navbar-link {
+  color: #000000;
+  text-decoration: underline;
+  font-size: 10px;
+  font-weight: 400;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: color 0.2s;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.navbar-link:hover {
+  color: #10a37f;
+}
+
+@media (max-width: 768px) {
+  .navbar-container {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 8px 16px;
+  }
+  .navbar-menu-center {
+    position: static;
+    transform: none;
+    width: 100%;
+    justify-content: center;
+    order: 3;
+    margin-top: 8px;
+    gap: 12px;
+  }
+  .navbar-menu-center li a { font-size: 10px; }
+  .navbar-right { flex-direction: row; gap: 8px; }
+  .navbar-link { font-size: 8px; }
+  .logo-alpha { font-size: 16px; }
+  .logo-arena { font-size: 12px; }
 }

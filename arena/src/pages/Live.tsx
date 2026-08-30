@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
+  BenchPoint,
   LogLine,
   MarketId,
   OverviewRow,
@@ -15,15 +16,44 @@ import {
 } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
 import EquityChart, { toBenchLine, toChartLine } from '../components/EquityChart';
-import ModelCard from '../components/ModelCard';
-import StatusStrip from '../components/StatusStrip';
-import { PositionsTable, TradesTable } from '../components/Tables';
-import DecisionLog from '../components/DecisionLog';
+import ModelCard, { logoOf } from '../components/ModelCard';
 import { MarketSwitcher } from '../components/Navbar';
+import { fmtMoney, fmtPct, pnlClass } from '../utils/format';
+import './Live.css';
 
-const MARKET_COLOR: Record<MarketId, string> = { us: 'var(--us)', cn: 'var(--cn)', hk: 'var(--hk)' };
+/** 模型色（coke AccountValueChart 风格） */
+const MODEL_COLORS: Record<string, string> = {
+  'deepseek-v4-flash': '#4d6bfe',
+  'deepseek-v4-pro': '#8b5cf6',
+};
+const FALLBACK_COLOR = '#5a5a5a';
+const BENCH_COLOR = '#10a37f';
 
-/** Live 实盘观战：市场切换 → 状态条 + 模型卡网格 + 净值对比图 + 持仓/成交/决策日志 */
+type Tab = 'all' | '5d' | 'completed' | 'chat' | 'positions' | 'readme';
+type TimeRange = 'all' | '5d';
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'all', label: 'ALL' },
+  { id: '5d', label: '5D' },
+  { id: 'completed', label: 'COMPLETED' },
+  { id: 'chat', label: 'MODELCHAT' },
+  { id: 'positions', label: 'POSITIONS' },
+  { id: 'readme', label: 'README' },
+];
+
+interface TradeEvt {
+  date: string;
+  side: 'buy' | 'sell';
+  symbol: string;
+  amount: number;
+  cash: number;
+}
+
+const benchLabelOf = (market: MarketId): string =>
+  market === 'us' ? 'NDX100' : market === 'cn' ? 'SSE50' : 'HSI';
+
+/** Live 终端页 —— 复刻 coke-nof1：
+ *  顶部价格条 + HIGHEST/LOWEST → 左净值图 + 模型横排卡 → 右 360px 六 tab 面板 */
 export default function Live() {
   const [params, setParams] = useSearchParams();
   const rawMarket = params.get('market');
@@ -36,6 +66,10 @@ export default function Live() {
   );
   const meta = marketMeta(market);
 
+  const [tab, setTab] = useState<Tab>('all');
+  const [chartRange, setChartRange] = useState<TimeRange>('all');
+  const [selectedModel, setSelectedModel] = useState<string>('all');
+
   // 总控聚合（三市场一次拉取）
   const overview = usePolling(() => fetchOverview(), [], 30000);
   const rows: OverviewRow[] = useMemo(
@@ -44,10 +78,10 @@ export default function Live() {
   );
   const agentsKey = rows.map((r) => r.name).join('|');
 
-  // 每市场基准（US=QQQ / CN=SSE50 / HK 无）
+  // 基准指数（US=等权 NDX100 / CN=SSE50 / HK 暂无）
   const bench = usePolling(() => fetchBenchmark(market), [market], 300000);
 
-  // 当前市场所有 agent 的净值序列（key 含 agent 名单，名单变化才重拉）
+  // 当前市场全部 agent 净值序列
   const perfs = usePolling(
     () =>
       Promise.all(
@@ -60,122 +94,300 @@ export default function Live() {
   const lines = useMemo(
     () =>
       (perfs.data ?? []).map((p) =>
-        toChartLine(p.agent, p.agent, MARKET_COLOR[market], p.points),
+        toChartLine(p.agent, p.agent, MODEL_COLORS[p.agent] ?? FALLBACK_COLOR, p.points),
       ),
-    [perfs.data, market],
-  );
-
-  // 详情 tab：默认第一个有数据的 agent
-  const [tab, setTab] = useState<'positions' | 'trades' | 'logs'>('positions');
-  const [focusAgent, setFocusAgent] = useState<string | null>(null);
-  const activeAgent = focusAgent ?? perfs.data?.[0]?.agent ?? null;
-
-  const positions = usePolling<PositionRecord[]>(
-    () => (activeAgent ? fetchPositions(activeAgent, market) : Promise.resolve([])),
-    [activeAgent, market],
-    30000,
-  );
-  const trades = usePolling<PositionRecord[]>(
-    () => (activeAgent ? fetchTrades(activeAgent, market) : Promise.resolve([])),
-    [activeAgent, market],
-    30000,
-  );
-  const logs = usePolling<LogLine[]>(
-    () => (activeAgent ? fetchLogs(activeAgent, market) : Promise.resolve([])),
-    [activeAgent, market],
-    30000,
+    [perfs.data],
   );
 
   const benchLine = useMemo(
     () =>
       bench.data && bench.data.length
-        ? toBenchLine(market === 'us' ? 'QQQ' : market === 'cn' ? 'SSE50' : '', '#8a94a6', bench.data)
+        ? toBenchLine(benchLabelOf(market), BENCH_COLOR, bench.data)
         : null,
     [bench.data, market],
   );
 
+  // 右侧面板数据源（FILTER 选中模型；'all' → 第一个 agent）
+  const effectiveModel = selectedModel === 'all' ? (rows[0]?.name ?? null) : selectedModel;
+
+  const positions = usePolling<PositionRecord[]>(
+    () => (effectiveModel ? fetchPositions(effectiveModel, market) : Promise.resolve([])),
+    [effectiveModel, market],
+    30000,
+  );
+  const trades = usePolling<PositionRecord[]>(
+    () => (effectiveModel ? fetchTrades(effectiveModel, market) : Promise.resolve([])),
+    [effectiveModel, market],
+    30000,
+  );
+  const logs = usePolling<LogLine[]>(
+    () => (effectiveModel ? fetchLogs(effectiveModel, market) : Promise.resolve([])),
+    [effectiveModel, market],
+    30000,
+  );
+
+  // ---------- 事件流（成交） ----------
+  const tradeEvents: TradeEvt[] = useMemo(
+    () =>
+      (trades.data ?? [])
+        .filter((r) => r.this_action)
+        .map((r) => ({
+          date: r.date,
+          side: (r.this_action!.action ?? '').toLowerCase() === 'buy' ? 'buy' as const : 'sell' as const,
+          symbol: r.this_action!.symbol,
+          amount: r.this_action!.amount,
+          cash: r.positions?.CASH ?? 0,
+        }))
+        .sort((a, b) => (a.date < b.date ? 1 : -1)),
+    [trades.data],
+  );
+
+  const recentDays = useMemo(() => {
+    const dates = [...new Set(tradeEvents.map((e) => e.date))].sort();
+    return new Set(dates.slice(-5));
+  }, [tradeEvents]);
+
+  // ---------- 顶部价格条（基准 + 最高/最低表演者） ----------
+  const benchStats = useMemo(() => {
+    const pts: BenchPoint[] = bench.data ?? [];
+    if (pts.length < 2) return { last: null, dayChange: null };
+    const last = pts[pts.length - 1].close;
+    const prev = pts[pts.length - 2].close;
+    return { last, dayChange: prev ? (last - prev) / prev : null };
+  }, [bench.data]);
+
+  const performers = useMemo(() => {
+    const list = rows
+      .map((r) => ({ name: r.name, ret: r.summary?.total_return ?? null }))
+      .filter((p) => p.ret != null)
+      .sort((a, b) => (b.ret as number) - (a.ret as number));
+    return { highest: list[0] ?? null, lowest: list[list.length - 1] ?? null };
+  }, [rows]);
+
+  // ---------- 右侧列表渲染 ----------
+  const renderList = () => {
+    if (tab === 'readme') {
+      return (
+        <div className="readme-body">
+          <h4>BayMax Arena</h4>
+          <p>
+            DeepSeek <b>V4 Flash</b> & <b>V4 Pro</b> 以零样本方式独立交易
+            {meta.name} 成分股，无微调、无人类干预。
+          </p>
+          <h4>Cost Model</h4>
+          <p>双边费率 0.03% × 2 + 滑点 ±0.05%，成交价取自本地数据仓库日线。</p>
+          <h4>Data</h4>
+          <p>US 等权 NDX100 · CN SSE50 指数 · 数据更新至 {rows[0]?.latest_date ?? '—'}。</p>
+          <h4>Fair Play</h4>
+          <p>所有模型同一起点资金、同一数据切片、同一工具集；历史回放防未来函数。</p>
+        </div>
+      );
+    }
+
+    if (tab === 'positions') {
+      const last = positions.data?.[positions.data.length - 1];
+      if (!last) return <div className="empty-state">NO POSITION DATA</div>;
+      const entries = Object.entries(last.positions ?? {}).filter(([sym]) => sym !== 'CASH');
+      const cash = Number(last.positions?.CASH ?? 0);
+      return (
+        <div style={{ padding: '8px 12px' }}>
+          <div className="pos-row">
+            <span className="pos-sym">CASH</span>
+            <span className="pos-cash">{fmtMoney(cash, meta.currency)}</span>
+          </div>
+          {entries.length === 0 && (
+            <div className="empty-state" style={{ padding: '24px 0' }}>FLAT — NO POSITIONS</div>
+          )}
+          {entries.map(([sym, qty]) => (
+            <div className="pos-row" key={sym}>
+              <span className="pos-sym">{sym}</span>
+              <span className="pos-qty">{Number(qty).toLocaleString('en-US')}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    if (tab === 'chat') {
+      const msgs = (logs.data ?? []).flatMap((l) =>
+        (l.new_messages ?? []).map((m) => m.content).filter((c): c is string => !!c),
+      );
+      if (!msgs.length) return <div className="empty-state">NO DECISION LOGS</div>;
+      return (
+        <>
+          {msgs.map((content, i) => (
+            <div className="trade-list-item" key={i}>
+              <div className="trade-item-header">
+                <span className="trade-side info">AI</span>
+                <span className="trade-item-time">{logoOf(effectiveModel ?? '')}</span>
+              </div>
+              <div className="msg-content">{content}</div>
+            </div>
+          ))}
+        </>
+      );
+    }
+
+    // ALL / 5D / COMPLETED
+    let evts = tradeEvents;
+    if (tab === '5d') evts = tradeEvents.filter((e) => recentDays.has(e.date));
+    if (tab === 'completed') evts = tradeEvents.filter((e) => e.side === 'sell');
+    if (!evts.length) return <div className="empty-state">NO TRADES</div>;
+    return (
+      <>
+        {evts.map((e, i) => (
+          <div className="trade-list-item" key={`${e.date}-${i}`}>
+            <div className="trade-item-header">
+              <span className="trade-item-time">{e.date.slice(0, 10)}</span>
+              <span className={`trade-side ${e.side}`}>{e.side === 'buy' ? 'BUY' : 'SELL'}</span>
+            </div>
+            <div className="trade-details">
+              <span className="trade-symbol">{e.symbol}</span>
+              <span className="trade-qty">× {e.amount}</span>
+              <span className="trade-pnl">{fmtMoney(e.cash, meta.currency)}</span>
+            </div>
+            <div className="trade-cash">CASH {fmtMoney(e.cash, meta.currency)}</div>
+          </div>
+        ))}
+      </>
+    );
+  };
+
   if (overview.error) {
-    return <div className="error-box">API 连接失败：{overview.error}<br /><br />请确认 baymax-api(8091) 与 ui-arena(8092) 容器已启动</div>;
+    return (
+      <div className="error-box">
+        API 连接失败：{overview.error}
+        <br /><br />
+        请确认 baymax-api(8091) 与 ui-arena(8092) 容器已启动
+      </div>
+    );
   }
 
   return (
-    <div className="page">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
-        <h1 style={{ fontSize: 20 }}>LIVE <span className="accent">/</span> 实盘观战</h1>
+    <div className="live">
+      {/* 顶部状态条：价格 + 表演者 + 市场切换 */}
+      <div className="top-status-bar">
+        <div className="status-group">
+          <div className="price-item">
+            <span className="price-label">{benchLabelOf(market)} INDEX</span>
+            <span className="price-value">{benchStats.last != null ? fmtMoney(benchStats.last) : '—'}</span>
+            <span className={`price-change ${benchStats.dayChange != null ? pnlClass(benchStats.dayChange) : 'dim'}`}>
+              {benchStats.dayChange != null ? fmtPct(benchStats.dayChange) : 'NO FEED'}
+            </span>
+          </div>
+          <div className="performers">
+            <div className="performer">
+              <span className="performer-label">HIGHEST</span>
+              <span className="performer-value">
+                {performers.highest ? (
+                  <>{performers.highest.name} <b className="up">{fmtPct(performers.highest.ret)}</b></>
+                ) : '—'}
+              </span>
+            </div>
+            <div className="performer">
+              <span className="performer-label">LOWEST</span>
+              <span className="performer-value">
+                {performers.lowest ? (
+                  <>{performers.lowest.name} <b className="down">{fmtPct(performers.lowest.ret)}</b></>
+                ) : '—'}
+              </span>
+            </div>
+          </div>
+        </div>
         <MarketSwitcher market={market} onChange={switchMarket} />
-        <span style={{ flex: 1 }} />
-        <span className="faint" style={{ fontSize: 11, letterSpacing: '0.12em' }}>
-          自动刷新 30s · {meta.currency} 计价
-        </span>
       </div>
 
-      <StatusStrip
-        market={market}
-        rows={rows}
-        bench={bench.data ?? null}
-        benchLabel={market === 'us' ? 'QQQ' : market === 'cn' ? 'SSE50' : ''}
-      />
-
-      {overview.loading && !rows.length ? (
-        <div className="loading"><div className="spinner" />加载中…</div>
-      ) : (
-        <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 12, marginBottom: 20 }}>
-            {perfs.data?.map((p) => (
-                <ModelCard key={p.agent} market={market} agent={p.agent} equitySeries={p.points} summary={p.summary} />
-              ))}
-            {!perfs.data?.length && (
-              <div className="panel" style={{ padding: 40, gridColumn: '1 / -1' }}>
-                <div className="loading">该市场暂无 agent 数据</div>
+      <div className="main-content">
+        {/* 左：图表 + 模型卡 */}
+        <div className="chart-area">
+          <div className="chart-header">
+            <div className="chart-title">TOTAL ACCOUNT VALUE</div>
+            <div className="chart-controls">
+              <button className={`time-btn ${chartRange === 'all' ? 'active' : ''}`} onClick={() => setChartRange('all')}>
+                ALL
+              </button>
+              <button className={`time-btn ${chartRange === '5d' ? 'active' : ''}`} onClick={() => setChartRange('5d')}>
+                5D
+              </button>
+            </div>
+          </div>
+          {overview.loading && !rows.length ? (
+            <div className="loading"><div className="spinner" />LOADING…</div>
+          ) : (
+            <>
+              <EquityChart lines={lines} benchmark={benchLine} currency={meta.currency} timeRange={chartRange} />
+              <div className="chart-legend" style={{ marginTop: 6 }}>
+                {lines.map((l) => (
+                  <span className="legend-item" key={l.id}>
+                    <span style={{ color: l.color }}>▬</span> {l.label}
+                  </span>
+                ))}
+                {benchLine && (
+                  <span className="legend-item">
+                    <span style={{ color: benchLine.color }}>- -</span> {benchLine.label}
+                  </span>
+                )}
               </div>
-            )}
-          </div>
 
-          <div className="panel" style={{ marginBottom: 20 }}>
-            <div className="panel-title">
-              净值走势对比（{meta.currency} · 归一化 100 起点）
-              {benchLine && <span className="faint" style={{ letterSpacing: '0.08em' }}>虚线 = 基准指数</span>}
-            </div>
-            <EquityChart lines={lines} benchmark={benchLine} currency={meta.currency} />
-          </div>
+              <div className="model-cards-section">
+                {(perfs.data ?? []).map((p) => (
+                  <ModelCard
+                    key={p.agent}
+                    market={market}
+                    agent={p.agent}
+                    balance={p.summary?.end_equity ?? null}
+                    ret={p.summary?.total_return ?? null}
+                    selected={p.agent === effectiveModel}
+                    onClick={() =>
+                      setSelectedModel((cur) => (cur === p.agent ? 'all' : p.agent))
+                    }
+                  />
+                ))}
+                {!perfs.data?.length && <div className="empty-state">NO AGENTS IN THIS MARKET</div>}
+              </div>
+            </>
+          )}
+        </div>
 
-          <div className="panel">
-            <div className="panel-title">
-              明细
-              {perfs.data && perfs.data.length > 1 && (
-                <select
-                  value={activeAgent ?? ''}
-                  onChange={(e) => setFocusAgent(e.target.value)}
-                  style={{
-                    background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--line-strong)',
-                    borderRadius: 6, padding: '4px 10px', fontSize: 12, fontFamily: 'inherit',
-                  }}
-                >
-                  {perfs.data.map((p) => (
-                    <option key={p.agent} value={p.agent}>{p.agent}</option>
-                  ))}
-                </select>
-              )}
-            </div>
-            <div className="tabs">
-              <button className={`tab ${tab === 'positions' ? 'active' : ''}`} onClick={() => setTab('positions')}>
-                POSITIONS 持仓
+        {/* 右：360px 面板 */}
+        <div className="right-section">
+          <div className="trade-tabs">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                className={`trade-tab ${tab === t.id ? 'active' : ''}`}
+                onClick={() => setTab(t.id)}
+              >
+                {t.label}
               </button>
-              <button className={`tab ${tab === 'trades' ? 'active' : ''}`} onClick={() => setTab('trades')}>
-                TRADES 成交
-              </button>
-              <button className={`tab ${tab === 'logs' ? 'active' : ''}`} onClick={() => setTab('logs')}>
-                DECISIONS 决策日志
-              </button>
-            </div>
-            {tab === 'positions' && <PositionsTable records={positions.data ?? []} currency={meta.currency} />}
-            {tab === 'trades' && <TradesTable records={trades.data ?? []} currency={meta.currency} />}
-            {tab === 'logs' && <DecisionLog logs={logs.data ?? []} />}
+            ))}
           </div>
-        </>
-      )}
+          <div className="filter-bar">
+            <span className="filter-label">MODEL</span>
+            <select
+              className="filter-select"
+              value={effectiveModel ?? ''}
+              onChange={(e) => setSelectedModel(e.target.value)}
+            >
+              {rows.map((r) => (
+                <option key={r.name} value={r.name}>{r.name}</option>
+              ))}
+            </select>
+            <span className="filter-count">
+              {tab === 'chat'
+                ? (logs.data ?? []).length
+                : tab === 'positions'
+                  ? Object.keys(positions.data?.[positions.data.length - 1]?.positions ?? {}).length
+                  : (tab === '5d'
+                      ? tradeEvents.filter((e) => recentDays.has(e.date)).length
+                      : tab === 'completed'
+                        ? tradeEvents.filter((e) => e.side === 'sell').length
+                        : tradeEvents.length)}
+            </span>
+          </div>
+          <div className="trade-list">{renderList()}</div>
+        </div>
+      </div>
     </div>
   );
 }
-
-// fetchOverview 放在顶部 import 里（见文件头），避免循环引用

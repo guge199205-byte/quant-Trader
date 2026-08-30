@@ -154,6 +154,8 @@ def _load_price_lookup(config: dict, market: str) -> Dict[str, Dict[str, float]]
     market_cfg = config.get("markets", {}).get(market, {})
     if market == "cn":
         merged = get_data_root(config) / "A_stock" / "merged.jsonl"
+    elif market == "hk":
+        merged = get_data_root(config) / "HK_stock" / "merged.jsonl"
     else:
         merged = get_data_root(config) / "merged.jsonl"
     lookup: Dict[str, Dict[str, float]] = {}

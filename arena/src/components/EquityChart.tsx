@@ -42,7 +42,8 @@ export default function EquityChart({
   currency?: string;
   mode?: 'pct' | 'dollar';
   timeRange?: 'all' | '5d';
-  height?: number;
+  /** 数字 = 固定 px；字符串 = 任意 CSS 值（如 clamp(...) 响应式高度） */
+  height?: number | string;
 }) {
   const [hover, setHover] = useState<{ x: number; y: number; label: string; v: number } | null>(null);
 
@@ -85,7 +86,7 @@ export default function EquityChart({
   }
 
   return (
-    <div style={{ height, width: '100%' }}>
+    <div style={{ height: typeof height === 'number' ? `${height}px` : height, width: '100%' }}>
       <ParentSize>
         {({ width, height: h }) => {
           const iw = Math.max(width - margin.left - margin.right, 10);

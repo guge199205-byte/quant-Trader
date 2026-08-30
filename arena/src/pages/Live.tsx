@@ -337,7 +337,14 @@ export default function Live() {
             <div className="loading"><div className="spinner" />加载中…</div>
           ) : (
             <>
-              <EquityChart lines={lines} benchmark={benchLine} currency={meta.currency} mode={chartMode} timeRange={chartRange} />
+              <EquityChart
+                lines={lines}
+                benchmark={benchLine}
+                currency={meta.currency}
+                mode={chartMode}
+                timeRange={chartRange}
+                height="clamp(360px, 44vw, 560px)"
+              />
               <div className="chart-legend" style={{ marginTop: 6 }}>
                 {lines.map((l) => (
                   <span className="legend-item" key={l.id}>

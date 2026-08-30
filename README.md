@@ -1,8 +1,7 @@
-# 🤖 Trade Agent — AI 自主交易竞技场
+# 🤖 BayMax-Trader — AI 自主交易竞技场
 
-> **多市场并行、每市场独立记忆、风控护航、券商/数据源可插拔**。
-
-多个 AI 模型以独立资金池在**纳斯达克 100（美股）** 与 **上证 50（A股）** 市场上自主分析、决策、买卖，无人工干预。AI 的交易记忆随运行沉淀，**越用越好用**。
+> AI 模拟交易平台：多个 AI 模型以独立资金池在 **美股（US）**、**A股（CN）**、**港股（HK）** 三个市场自主分析、决策、买卖，无人工干预。
+> Docker 化部署，行情数据来自**本机 quantmind 数据仓库**（不再依赖免费行情 API）。
 
 ---
 
@@ -10,77 +9,100 @@
 
 | 能力 | 说明 |
 |------|------|
-| 🇺🇸🇨🇳 **多市场并行** | US + CN 同时交易，各自独立 MCP 服务组、独立状态、独立数据目录 |
-| 🧠 **DeepSeek Harness 引擎** | 官方开源 agent harness（dsh）驱动，会话持久化、工具调用可视化、插件生态 |
-| 📝 **交易记忆系统** | 每市场独立记忆文件，agent 开盘读心得、收盘写经验，防膨胀自动归档 |
+| 🇺🇸🇨🇳🇭🇰 **三市场并行** | US（102 只）/ CN（上证50）/ HK 同时交易，各自独立 MCP 服务组（8100-8104 / 8200-8204 / 8300-8304）、独立状态、独立数据目录 |
+| 🧠 **多模型竞争** | 每市场可配置多个模型（`configs/*.json` 的 `enabled` 开关），同池竞赛、排行榜对比 |
+| 🐳 **Docker 化** | compose 编排全部服务：MCP×3、API、前端、dsh 引擎、agent 按需运行；宿主 cron 探活自愈 |
+| 📊 **本地数据仓库** | 行情从本机 quantmind 仓库同步（quantdb A股后复权 / quantus 美股前复权 / NDX 基准），HK 用腾讯补齐 |
+| 📝 **交易记忆系统** | 每市场独立记忆文件，agent 开盘读心得、收盘写经验，超 200 行自动归档 |
 | 🛡️ **风控网关** | 单笔/持仓限额、日亏熔断（权益口径）、现金保留、黑名单，三条交易路径单点拦截 |
 | 🔌 **Broker 可插拔** | sandbox（模拟盘）/ tdx（通达信桥，下单待移植）/ futu / tiger / ibkr（规划中） |
-| 📊 **数据源可插拔** | local（本地文件）/ tdx（8550 桥行情），与 broker 对称设计 |
-| ⚡ **前端实时化** | FastAPI 代理层，交易结果即时可见，无需手动同步快照 |
-| 🌙 **统一 UI** | 全中文、深/浅主题、手机自适应、排行榜/模型页与实盘页风格统一 |
+| ⚡ **前端实时化** | FastAPI 代理层（8091），交易结果即时可见，无需手动同步快照 |
 
 ---
 
-## 🏗️ 架构总览
+## 🏗️ 架构总览（Docker）
 
 ```
 ┌─────────────┐   api_base    ┌──────────────┐   /api/data   ┌──────────┐
-│  Trade Agent │ ────────────▶ │  FastAPI     │ ────────────▶ │  data/   │
-│  前端 (8080) │               │  API (8091)  │               │ 实时数据  │
-└─────────────┘               └──────────────┘               └──────────┘
-                                                                    ▲
-┌──────────────┐   MCP streamable-http   ┌──────────────────────┐  │
-│  dsh (3081)  │ ──────────────────────▶ │ US 组 8100-8104      │──┘
-│ agent 引擎    │                         │  math/search/trade/  │
-│ (DeepSeek)   │                         │  price/memory        │
-└──────────────┘                         ├──────────────────────┤
-                                         │ CN 组 8200-8204      │
-                                         │  math/search/trade/  │
-                                         │  price/memory        │
-                                         └──────────────────────┘
+│  前端 8080   │ ────────────▶ │  FastAPI     │ ────────────▶ │  data/   │
+│  ui-nof0    │               │  API (8091)  │               │ 实时数据  │
+└─────────────┘               └──────┬───────┘               └──────────┘
+                                     │
+        ┌────────────────────────────┼───────────────────────────┐
+        │ MCP 服务组（每市场 5 个：math/search/trade/price/memory）│
+        │ mcp-us 8100-8104   mcp-cn 8200-8204   mcp-hk 8300-8304  │
+        └──────────────┬─────────────────────┬───────────────────┘
+                       │ MCP_HOST            │ MCP_HOST
+        ┌──────────────▼─────┐   ┌───────────▼─────────┐
+        │ agent-us / -cn / -hk │   │  dsh (3081)        │
+        │ (--profile agents)   │   │ DeepSeek Harness   │
+        └─────────────────────┘   └─────────────────────┘
 ```
 
 **交易路径**（main.py agent / dsh agent / broker API）→ 全部经 `tool_trade.buy/sell` 落盘
 → **风控网关单点拦截** → position.jsonl 写入 → 前端实时读取。
 
+**数据链路**：本机 `/home/zbox/projects/quantmind/data/`（Hive 分区 parquet）
+→ `scripts/sync_from_quantmind.py` → `data/` 下的 AlphaVantage 格式价格文件 → agent 与前端共用。
+
 ---
 
-## 🚀 快速开始
+## 🚀 快速开始（Docker）
 
 ### 环境准备
 
 ```bash
-# 1. Python 3.10+ 依赖（uv 快，可用 pip）
-uv pip install --python .venv/bin/python -r requirements.txt
-
-# 2. 环境变量（.env）
+# 1. .env（密钥，不入镜像，仅 env_file 注入）
 OPENAI_API_BASE="https://api.deepseek.com/v1"
-OPENAI_API_KEY="你的DeepSeekKey"
-DEEPSEEK_API_KEY="你的DeepSeekKey"      # dsh 引擎使用
-MATH_HTTP_PORT=8100  SEARCH_HTTP_PORT=8101  TRADE_HTTP_PORT=8102
-GETPRICE_HTTP_PORT=8103  MEMORY_HTTP_PORT=8104
-RUNTIME_ENV_PATH="/绝对路径/BayMax-Trader/runtime_env.json"
+OPENAI_API_KEY="你的Key"
+JINA_API_KEY="你的Key"
+RUNTIME_ENV_PATH="/home/zbox/BayMax-Trader/runtime_env.json"
 ```
 
-### 一键启动
+### 启动
 
 ```bash
-# 多市场并行（US + CN 全套：MCP 服务 + 交易 agent）
-bash scripts/run_multi_market.sh
+# 启动全部常驻服务（MCP×3 + API + 前端×2 + dsh）
+docker compose up -d
 
-# 或分步
-bash scripts/start_dsh.sh                    # dsh 引擎（3081）
-.venv/bin/python agent_tools/start_mcp_services.py  # US MCP 组
-.venv/bin/python main.py configs/deepseek_hour_test.json  # US agent
+# 跑交易 agent（按市场，LLM 逐日执行）
+docker compose --profile agents run --rm agent-us   # 美股
+docker compose --profile agents run --rm agent-cn   # A股
+docker compose --profile agents run --rm agent-hk   # 港股
+# 指定日期范围（环境变量覆盖 config 的 date_range）
+docker compose --profile agents run --rm -e INIT_DATE=2026-08-25 -e END_DATE=2026-08-25 agent-us
+
+# 查看状态 / 日志
+docker compose ps
+docker compose logs -f mcp-cn
 ```
 
 ### 访问
 
 | 服务 | 地址 | 说明 |
 |------|------|------|
-| Trade Agent 前端 | http://192.168.31.68:8080 | 实盘/排行榜/模型，实时数据 |
-| API | http://192.168.31.68:8091 | `/api/status` `/api/agents` `/api/data/*` |
-| dsh Web | http://localhost:3081 | agent 会话/工具调用/日志可视化 |
+| 前端（排行榜/模型） | http://192.168.31.68:8080 | 三市场切换、净值曲线、成交面板 |
+| API | http://192.168.31.68:8091 | `/api/status` `/api/agents?market=` `/api/data/*` |
+| dsh Web | http://localhost:3081 | agent 会话/工具调用可视化（绑宿主 127.0.0.1） |
+
+---
+
+## 📊 数据源：本地 quantmind 仓库
+
+价格数据**全部来自本机 quantmind 数据仓库**（`/home/zbox/projects/quantmind/data/`），
+覆盖前自动备份到 `/tmp/baymax_quantmind_backup_<ts>/`：
+
+```bash
+python scripts/sync_from_quantmind.py
+```
+
+| 市场 | 本地来源 | 输出 | 覆盖 |
+|------|---------|------|------|
+| A股 | quantdb `daily_backward`（后复权）+ `index_daily` 000016.SH | `data/A_stock/daily_prices_sse_50.csv`、`merged.jsonl`、`index_daily_sse_50.json` | 50/50 只 |
+| 美股 | quantus `daily_forward`（前复权）+ `index_daily` NDX.US | `data/daily_prices_*.json`、`Adaily_prices_QQQ.json`（内容为纳指100 指数，作 QQQ 基准） | 89/102 只，缺口不持仓无影响 |
+| 港股 | quantHK 覆盖不足（仅 3/29） | — | 保留腾讯数据（`HK_stock/merged.jsonl`、`hsi_daily.json`） |
+
+> 行情/持仓/日志数据（`data/daily_prices_*.json`、`merged.jsonl`、`agent_data*`、`*.sqlite`）**不进 git**，已在 .gitignore。
 
 ---
 
@@ -95,7 +117,6 @@ bash scripts/start_dsh.sh                    # dsh 引擎（3081）
 
 - 记忆文件：US `data/agent_data/market_memory.md` / CN `data/agent_data_astock/market_memory.md`
 - 超 200 行自动归档 `market_memory.archive.md`，重建骨架防膨胀
-- dsh persona 与 main.py 提示词均已内置"开盘必读、收盘必写"指令
 
 ---
 
@@ -137,11 +158,36 @@ class MySource(DataSource):
 |------|------|
 | `GET /api/status` | 服务健康 + 当前运行状态 |
 | `GET /api/config` | 后端配置（脱敏） |
-| `GET /api/agents?market=` | agent 列表 |
+| `GET /api/agents?market=` | agent 列表（按市场过滤） |
 | `GET /api/agents/{a}/positions` | 持仓序列 |
 | `GET /api/agents/{a}/trades` | 交易流水 |
-| `GET /api/agents/{a}/performance` | 净值/收益/回撤 |
+| `GET /api/agents/{a}/performance?market=` | 净值/收益/回撤（排行榜按市场切换） |
 | `GET /api/data/{path}` | 实时代理（根目录 data/ 优先） |
+
+---
+
+## 🛠️ 运维
+
+### 生产级持久化（宿主 cron，防交易中断）
+
+```cron
+* * * * * bash /home/zbox/BayMax-Trader/scripts/status-probe.sh   # 探活写 logs/service_status.json
+* * * * * bash /home/zbox/BayMax-Trader/scripts/auto-heal.sh      # 常驻容器掉线自动拉起（agent 除外）
+*/5 * * * * bash /home/zbox/BayMax-Trader/scripts/alert.sh        # 告警（联动 status-probe）
+```
+
+### 常用脚本
+
+| 脚本 | 用途 |
+|------|------|
+| `scripts/sync_from_quantmind.py` | 从本地 quantmind 仓库同步三市场价格 |
+| `scripts/backfill_us_agent.sh` | 补跑 US agent 缺失交易日（自动备份/恢复持仓行，失败 trap 兜底） |
+| `scripts/simulate_demo_trades.py` | 生成演示成交记录（价格取真实数据，运行前自动备份） |
+| `scripts/serve_nof0.py` | 前端静态服务（跟随 symlink） |
+
+### 回退 systemd
+
+原 systemd user 服务已停（未删）：`docker compose down && systemctl --user start baymax-*`
 
 ---
 
@@ -154,14 +200,15 @@ agent_tools/
 ├── risk.py           # 风控网关（单点校验 + RiskGateway 包装）
 ├── tool_trade.py     # 交易执行（风控接入）
 ├── tool_memory.py    # 交易记忆（每市场独立）
-└── start_mcp_services.py  # MCP 服务编排（US 8100-8104 / CN 8200-8204）
+└── start_mcp_services.py  # MCP 服务编排（US 8100-8104 / CN 8200-8204 / HK 8300-8304）
 backend/              # FastAPI 层（api_server.py + services/agent_data.py）
 config/backend.yaml   # 后端总配置（server/markets/broker/datasource/risk）
-dsh/baymax.cordis.yml # dsh 集成（persona + MCP 挂载）
-scripts/              # run_multi_market.sh / start_dsh.sh / patch_mcp_adapters.py
-docs/                 # PLAN_2026Q3.md / ARCHITECTURE_UPGRADE.md
+configs/              # agent 配置（default_config.json US / astock_config.json CN / deepseek_*_test.json）
+scripts/              # sync_from_quantmind.py / backfill_us_agent.sh / serve_nof0.py / 探活自愈
+dsh/                  # DeepSeek Harness 集成（persona + MCP 挂载）
 nof0/                 # 前端（实时看板，中文化，响应式）
-data/                 # 交易数据（agent_data/ US、agent_data_astock/ CN、market_memory.md）
+data/                 # 交易数据（gitignore；价格文件 + agent_data/ US + agent_data_astock/ CN）
+docs/                 # 规划与架构文档
 ```
 
 ---
@@ -170,18 +217,22 @@ data/                 # 交易数据（agent_data/ US、agent_data_astock/ CN、
 
 | 问题 | 解决 |
 |------|------|
-| 端口冲突（8000-8003 被其他服务占用） | MCP 端口通过 .env 环境变量改（本项目用 8100-8104 / 8200-8204） |
-| 重建环境后 MCP client 报错 | 运行 `python scripts/patch_mcp_adapters.py`（mcp>=1.0 API 兼容补丁） |
 | 前端不实时 | 确认 `nof0/config.yaml` 的 `api_base` 指向 API 地址；浏览器强刷（Ctrl+Shift+R） |
-| A股 agent 不交易 | 检查 `data/A_stock/merged.jsonl` 数据覆盖日期范围 |
-| 记忆不生效 | 确认 memory MCP 服务在线（8104/8204），persona 已含记忆指令 |
+| 前端改了 JS 不生效 | bump `index.html` 里的 `?v<时间戳>` 缓存版本号 |
+| A股/港股曲线空白 | 跑 `python scripts/sync_from_quantmind.py`（A股）；HK 确认 `data/HK_stock/merged.jsonl` 非空 |
+| 排行榜市场切换不更新 | 已修复：`loadPerformance` 带 `?market=` 参数 |
+| agent 报 EBUSY / runtime_env.json 删不掉 | 容器 bind-mount 不可 unlink，main.py 已降级为截断（无需处理） |
+| agent 跑错模型（目录变成 gpt-5 等） | 确认 `configs/*.json` 的 `enabled` 模型；补跑历史曲线用 `deepseek_us_test.json` |
+| 重建环境后 MCP client 报错 | `pip install langchain-mcp-adapters==0.2.2`（0.3.0 是坏发布，见 README.docker.md） |
+| 端口冲突 | 8888=1Panel、8889=jupyter-lab，勿占用；MCP 端口经 .env 环境变量可改 |
 
 ---
 
 ## 📈 路线图
 
-- [x] 多市场并行交易（US + CN 独立 MCP 组）
-- [x] DeepSeek Harness 引擎接入 + 插件（dshmarket/cron/push/finance-data）
+- [x] 三市场并行交易（US + CN + HK 独立 MCP 组）
+- [x] Docker 化部署 + 宿主 cron 探活自愈
+- [x] 本地 quantmind 数据仓库（不再依赖免费行情 API）
 - [x] 交易记忆系统（每市场独立，自动归档）
 - [x] 风控网关（单笔/持仓/熔断/黑名单）
 - [x] Broker + 数据源抽象层
@@ -196,4 +247,4 @@ data/                 # 交易数据（agent_data/ US、agent_data_astock/ CN、
 
 MIT License（继承自 BayMax-Trader / AI-Trader）
 
-> ⚠️ 免责声明：本项目仅供研究学习，所有交易均为模拟盘。接入实盘前请充分了解风险，并确保风控配置到位。
+> ⚠️ 免责声明：本项目仅供研究学习，所有交易均为模拟盘，不构成任何投资建议。接入实盘前请充分了解风险，并确保风控配置到位。

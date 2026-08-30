@@ -17,7 +17,11 @@
 ├─────────────┤
 │ mcp-hk      │   8300-8304
 ├─────────────┤
-│ api (8091)  │   后端 API + nof0 前端
+│ api (8091)  │   后端 API（数据/鉴权，双前端共用）
+├─────────────┤
+│ ui-nof0     │   Quant-Agent-Trader 实时看板（8080，静态服务）
+├─────────────┤
+│ ui-arena    │   Arena 竞技场（8092，nginx 反代 8091 + token 注入）
 ├─────────────┤
 │ ui (8887)   │   docs 静态快照（8888 被 1Panel、8889 被 jupyter 占用）
 └─────────────┘
@@ -29,7 +33,7 @@ agent-us / agent-cn / agent-hk：按市场独立容器，profile: agents
 ## 常用命令
 
 ```bash
-cd /home/zbox/Quant-Agent-Trader
+cd /path/to/quant-agent-trader
 
 # 启动全部常驻服务（mcp×3 + api + dsh + ui）
 docker compose up -d
@@ -59,8 +63,9 @@ docker compose down
 | mcp-us | 8100-8104 | math/search/trade/price/memory |
 | mcp-cn | 8200-8204 | 同上 |
 | mcp-hk | 8300-8304 | 同上 |
-| api | 8091 | FastAPI + nof0 前端（带数据 API） |
-| ui-nof0 | 8080 | nof0 主题界面（原 start_nof0.sh 端口） |
+| api | 8091 | FastAPI 后端 API（数据/鉴权，双前端共用） |
+| ui-nof0 | 8080 | Quant-Agent-Trader 实时看板（原 start_nof0.sh 端口） |
+| ui-arena | 8092 | Arena 竞技场（nginx 反代 8091 + envsubst token 注入） |
 | dsh | 3081 | DeepSeek Harness（绑定宿主 127.0.0.1） |
 | ui | 8887 | docs 静态快照（8888/8889 被占） |
 
@@ -91,11 +96,11 @@ docker compose down
 
 ```cron
 # 每分钟：宿主侧探活（写 logs/service_status.json，api /api/metrics 读它）
-* * * * * bash /home/zbox/Quant-Agent-Trader/scripts/status-probe.sh
+* * * * * bash /path/to/quant-agent-trader/scripts/status-probe.sh
 # 每分钟：常驻容器掉线自动 docker compose up -d 拉起（agent 是按需任务不自动拉起）
-* * * * * bash /home/zbox/Quant-Agent-Trader/scripts/auto-heal.sh
+* * * * * bash /path/to/quant-agent-trader/scripts/auto-heal.sh
 # 每 5 分钟：告警（含 status-probe 联动，掉线立即知道）
-*/5 * * * * bash /home/zbox/Quant-Agent-Trader/scripts/alert.sh
+*/5 * * * * bash /path/to/quant-agent-trader/scripts/alert.sh
 ```
 
 - `status-probe.sh`：宿主侧 socket 探活 api/mcp×3/dsh（容器内探不到宿主回环上的 dsh），结果 JSON 写 `logs/service_status.json`（bind-mount 进 api 容器，360s 新鲜度）

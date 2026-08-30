@@ -9,7 +9,9 @@ import './Harness.css';
    都能保持"同站点"。首次进入在页面内输入一次 admin 凭据。
    ============================================================ */
 
-const DSH_URL = 'http://192.168.31.68:3081';
+// 新窗口入口同样自适应：localhost/127.0.0.1 → dsh 直连（免 auth），
+// 局域网 IP → dsh-proxy（192.168.31.68:3081 + basic auth）
+const DSH_URL = `http://${window.location.hostname}:3081`;
 const DSH_PROXIED_URL = `http://${window.location.hostname}:8093`;
 
 export default function Harness() {

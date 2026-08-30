@@ -374,6 +374,7 @@ function QuantDbSdkCard() {
             <span className="dp-field-label">流量配额</span>
             <span className="dp-sdk-big">{usage ? usage.remaining_gb.toFixed(1) : '—'} GB</span>
             <span className="dp-dim">剩余</span>
+            <a className="dp-btn dp-btn-mini" href="https://www.quantdb.cn/pricing.html" target="_blank" rel="noopener noreferrer">购买流量 ↗</a>
           </div>
           <div className="dp-meter">
             <div className="dp-meter-fill" style={{ width: `${usagePct}%` }} />

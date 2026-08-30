@@ -139,6 +139,8 @@
   color: #000;
   cursor: pointer;
   transition: all 0.15s;
+  text-decoration: none;
+  display: inline-block;
 }
 
 .dp-btn:hover:not(:disabled) {

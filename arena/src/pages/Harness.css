@@ -1,0 +1,70 @@
+/* 交易智能体（AI-HARNESS 嵌入页）— 终端风 */
+
+.hs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 0;
+  border-bottom: 2px solid #000;
+  margin-bottom: 14px;
+}
+
+.hs-title {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.hs-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  font-size: 9px;
+  font-weight: 700;
+  border: 1.5px solid #000;
+  background: #000;
+  color: #fff;
+  vertical-align: 3px;
+  letter-spacing: 0.15em;
+}
+
+.hs-sub {
+  font-size: 10px;
+  color: #666;
+  letter-spacing: 0.3px;
+  margin-top: 3px;
+}
+
+.hs-btn {
+  padding: 4px 12px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  border: 1.5px solid #000;
+  background: #fff;
+  color: #000;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.hs-btn:hover {
+  background: #000;
+  color: #fff;
+}
+
+.hs-frame-wrap {
+  border: 2px solid #000;
+  background: #fff;
+}
+
+.hs-frame {
+  display: block;
+  width: 100%;
+  height: calc(100vh - 210px);
+  min-height: 480px;
+  border: none;
+}

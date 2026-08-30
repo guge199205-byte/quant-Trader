@@ -102,3 +102,4 @@ runtime_env*.json
 node_modules/
 arena/node_modules/
 arena/dist/
+data/benchmark_nasdaq100.json

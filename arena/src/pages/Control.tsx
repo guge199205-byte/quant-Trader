@@ -144,7 +144,7 @@ export default function Control() {
       </section>
 
       {/* 三市场区块 */}
-      {(['us', 'cn', 'hk'] as MarketId[]).map((m) => {
+      {(['cn', 'hk', 'us'] as MarketId[]).map((m) => {
         const rows = overview.data?.markets[m] ?? [];
         const running = rows.filter((r) => r.summary).length;
         const meta = marketMeta(m);

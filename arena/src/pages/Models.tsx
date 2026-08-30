@@ -29,7 +29,7 @@ export default function Models() {
     const out: { market: MarketId; agent: string; hasSummary: boolean }[] = [];
     const ov = overview.data;
     if (!ov) return out;
-    for (const m of ['us', 'cn', 'hk'] as MarketId[]) {
+    for (const m of ['cn', 'hk', 'us'] as MarketId[]) {
       for (const r of ov.markets[m] ?? []) {
         out.push({ market: m, agent: r.name, hasSummary: !!r.summary });
       }

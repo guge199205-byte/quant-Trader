@@ -16,8 +16,9 @@
 | 📝 **交易记忆系统** | 每市场独立记忆文件，agent 开盘读心得、收盘写经验，超 200 行自动归档 |
 | 🛡️ **风控网关** | 单笔/持仓限额、日亏熔断（权益口径）、现金保留、黑名单，三条交易路径单点拦截 |
 | 🔌 **Broker 可插拔** | sandbox（模拟盘）/ tdx（通达信桥，下单待移植）/ futu / tiger / ibkr（规划中） |
-| ⚡ **双前端实时化** | Quant-Agent-Trader 实时看板（8080，四页：实盘/排行榜/模型/总控）+ Arena 竞技场（8092，终端风：实况/排行榜/模型/总控/关于），同接 FastAPI 8091，交易结果即时可见 |
+| ⚡ **双前端实时化** | Quant-Agent-Trader 实时看板（8080，四页：实盘/排行榜/模型/总控）+ Arena 竞技场（8092，终端风：实况/排行榜/模型/总控/交易所/关于），同接 FastAPI 8091，交易结果即时可见 |
 | 🤖 **双模型对决** | DeepSeek V4 Flash · V4 Pro 零样本竞技：同一数据、同一工具集、同一起点资金公平对决 |
+| 🏦 **交易所设置页** | Arena `/trading`：通达信交易桥（桥地址/Token 可编辑、自动推送开关、滚动买卖配置、止损止盈实时提醒、每 8s 桥主机状态）+ 券商实盘接入（富途/老虎/盈透 IB，敏感字段只写不回显）+ 实时交易状态；经 backend `/api/quantmind` 代理直连 quantmind 8000 |
 
 ---
 
@@ -106,8 +107,9 @@ docker compose logs -f mcp-cn
 | 服务 | 地址 | 说明 |
 |------|------|------|
 | Quant-Agent-Trader 实时看板 | http://192.168.31.68:8080 | 实盘（净值/持仓/成交/分析）/ 排行榜 / 模型 / 总控，三市场切换 |
-| Arena 竞技场 | http://192.168.31.68:8092 | 终端风：实况 / 排行榜 / 模型 / 总控 / 关于（nginx 同源反代 8091，token 自动注入） |
-| API | http://192.168.31.68:8091 | `/api/overview` `/api/metrics` `/api/agents?market=` `/api/data/*` |
+| Arena 竞技场 | http://192.168.31.68:8092 | 终端风：实况 / 排行榜 / 模型 / 总控 / 交易所 / 关于（nginx 同源反代 8091，token 自动注入） |
+| 交易所设置 | http://192.168.31.68:8092/trading | 通达信交易桥 + 券商接入（富途/老虎/IB）+ 实时交易状态 |
+| API | http://192.168.31.68:8091 | `/api/overview` `/api/metrics` `/api/agents?market=` `/api/quantmind/*` `/api/data/*` |
 | dsh Web | http://localhost:3081 | agent 会话/工具调用可视化（绑宿主 127.0.0.1） |
 
 ---
@@ -173,7 +175,17 @@ class MySource(DataSource):
     def get_quote(self, symbol, date, market): ...
 ```
 
-已内置：`sandbox`（模拟盘）/ `tdx`（通达信 8550 桥）；规划：futu（OpenD）/ tiger / ibkr。
+已内置（`agent_tools/brokers/`，自 quantmind 交易框架移植）：
+
+| Broker | 模块 | 状态 |
+|--------|------|------|
+| 模拟盘 | `sandbox.py` | ✅ 默认路径 |
+| 通达信桥 | `tdx_bridge.py` | ✅ 已移植；UI 侧（交易所页）已可配置桥地址/Token/推送开关，实盘下单待桥在线联调 |
+| 富途 | `futu_bridge.py` | ✅ 已移植（需 FutuOpenD） |
+| 老虎 | `tiger_bridge.py` | ✅ 已移植（免网关 SIM 模式） |
+| 盈透 | `ibkr_bridge.py` | ✅ 已移植（IB Gateway paper 4002 / real 4001） |
+
+切换：`config/backend.yaml` → `broker.default`。交易所设置页（Arena `/trading`）可在线配置券商凭据（敏感字段只写不回显）。
 
 ---
 
@@ -223,13 +235,13 @@ class MySource(DataSource):
 
 ```
 agent_tools/
-├── brokers/          # Broker 抽象层（sandbox/tdx 注册表）
+├── brokers/          # Broker 抽象层（sandbox/tdx_bridge/futu_bridge/tiger_bridge/ibkr_bridge，自 quantmind 移植）
 ├── datasources/      # 数据源抽象层（local/tdx 注册表）
 ├── risk.py           # 风控网关（单点校验 + RiskGateway 包装）
 ├── tool_trade.py     # 交易执行（风控接入）
 ├── tool_memory.py    # 交易记忆（每市场独立）
 └── start_mcp_services.py  # MCP 服务编排（US 8100-8104 / CN 8200-8204 / HK 8300-8304）
-backend/              # FastAPI 层（api_server.py + services/agent_data.py）
+backend/              # FastAPI 层（api_server.py + services/agent_data.py + services/quantmind_proxy.py 交易所代理）
 config/backend.yaml   # 后端总配置（server/markets/broker/datasource/risk）
 configs/              # agent 配置（default_config.json US / astock_config.json CN / deepseek_*_test.json）
 scripts/              # sync_from_quantmind.py / backfill_us_agent.sh / serve_nof0.py / 探活自愈
@@ -268,8 +280,10 @@ docs/                 # 规划与架构文档
 - [x] 双模型对决（DeepSeek V4 Flash / V4 Pro 零样本竞技）
 - [x] 双前端（Quant-Agent-Trader 看板 8080 + Arena 竞技场 8092）
 - [x] summary 扩展指标（夏普/胜率/盈亏比/费用/平均持仓）
-- [ ] TDX 实盘下单移植（风控已就位）
-- [ ] 富途 OpenD / 老虎 / IBKR adapter
+- [x] 交易所设置页（TDX 桥地址/Token/推送/滚动买卖/止损止盈 UI + 券商凭据接入 + 实时交易状态）
+- [x] Broker 移植（tdx/futu/tiger/ibkr/sandbox → `agent_tools/brokers/`）
+- [ ] TDX 实盘下单联调（桥 192.168.31.31:8550 在线后验证）
+- [ ] 富途 OpenD / IB Gateway 实盘验证
 - [ ] dsh 定时收盘复盘 + 多渠道推送
 - [ ] 每日自动调度（daily_trade.sh + cron）
 

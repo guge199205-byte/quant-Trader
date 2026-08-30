@@ -65,9 +65,9 @@ const benchLabelOf = (market: MarketId): string =>
 export default function Live() {
   const [params, setParams] = useSearchParams();
   const rawMarket = params.get('market');
-  const market: MarketId = (['us', 'cn', 'hk'] as MarketId[]).includes(rawMarket as MarketId)
+  const market: MarketId = (['cn', 'hk', 'us'] as MarketId[]).includes(rawMarket as MarketId)
     ? (rawMarket as MarketId)
-    : 'us';
+    : 'cn';
   const switchMarket = useCallback(
     (m: MarketId) => setParams({ market: m }, { replace: true }),
     [setParams],

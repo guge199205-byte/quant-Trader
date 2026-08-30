@@ -11,9 +11,9 @@ export const api = axios.create({ baseURL: '/api', timeout: 20000 });
 export type MarketId = 'us' | 'cn' | 'hk';
 
 export const MARKETS: { id: MarketId; label: string; name: string; currency: string }[] = [
-  { id: 'us', label: 'US', name: '美股 · NASDAQ 100', currency: '$' },
   { id: 'cn', label: 'CN', name: 'A股 · SSE 50', currency: '¥' },
   { id: 'hk', label: 'HK', name: '港股 · 恒指成分', currency: 'HK$' },
+  { id: 'us', label: 'US', name: '美股 · NASDAQ 100', currency: '$' },
 ];
 
 export const marketMeta = (id: MarketId) => MARKETS.find((m) => m.id === id) ?? MARKETS[0];

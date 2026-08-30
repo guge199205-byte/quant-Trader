@@ -18,7 +18,7 @@ export function MarketSwitcher({
 }) {
   return (
     <div style={{ display: 'flex', gap: 0 }}>
-      {(['us', 'cn', 'hk'] as MarketId[]).map((m) => (
+      {(['cn', 'hk', 'us'] as MarketId[]).map((m) => (
         <button
           key={m}
           className={`chip ${m} ${market === m ? 'active' : ''}`}

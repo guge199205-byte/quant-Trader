@@ -8,7 +8,7 @@ import './Home.css';
 export default function Home() {
   const overview = usePolling(() => fetchOverview(), [], 60000);
 
-  const marketRows = (['us', 'cn', 'hk'] as MarketId[]).map((m) => ({
+  const marketRows = (['cn', 'hk', 'us'] as MarketId[]).map((m) => ({
     market: m,
     rows: overview.data?.markets[m] ?? [],
   }));

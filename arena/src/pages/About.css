@@ -1,0 +1,85 @@
+/* About 页：系统结构说明 + 赛制与方法论 */
+
+.about-arch {
+  border: 2px solid #000;
+  background: #fafafa;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 11px;
+  line-height: 1.65;
+  font-family: 'Courier New', monospace;
+  color: #222;
+  white-space: pre;
+  margin-bottom: 8px;
+}
+
+.about-arch b { color: #000; }
+
+.about-arch::first-line {
+  font-weight: 700;
+  color: #000;
+}
+
+.about-flow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 10px 0 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 10.5px;
+}
+
+.about-flow-step {
+  padding: 4px 10px;
+  border: 1.5px solid #000;
+  background: #fff;
+  font-weight: 700;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.about-flow-arrow {
+  color: #666;
+  font-weight: 700;
+}
+
+.about-flow-step.hl { background: #000; color: #fff; }
+
+.about-desc {
+  font-size: 10.5px;
+  color: #333;
+  line-height: 1.8;
+}
+
+.about-desc b { color: #000; }
+
+.about-desc code {
+  background: #f0f0f0;
+  border: 1px solid #ddd;
+  padding: 0 4px;
+  font-size: 10px;
+}
+
+.about-kv {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 2px 14px;
+  font-size: 10.5px;
+  line-height: 1.75;
+  margin-top: 8px;
+}
+
+.about-kv dt {
+  font-weight: 700;
+  color: #000;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.about-kv dd { margin: 0; color: #444; }
+
+@media (max-width: 720px) {
+  .about-arch { font-size: 9.5px; padding: 10px 12px; }
+  .about-kv { grid-template-columns: 1fr; }
+}

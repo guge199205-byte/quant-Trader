@@ -27,8 +27,8 @@ const BENCH_COLOR = '#10a37f';
 
 /** 模型详情页：coke 视觉 + 真实扩展指标（Sharpe/胜率/费用/持仓）+ 决策日志 */
 export default function ModelDetail() {
-  const { market = 'us', agent = '' } = useParams();
-  const m = (['us', 'cn', 'hk'] as MarketId[]).includes(market as MarketId) ? (market as MarketId) : 'us';
+  const { market = 'cn', agent = '' } = useParams();
+  const m = (['cn', 'hk', 'us'] as MarketId[]).includes(market as MarketId) ? (market as MarketId) : 'cn';
   const name = decodeURIComponent(agent);
   const meta = marketMeta(m);
   const [tab, setTab] = useState<'positions' | 'trades' | 'logs'>('positions');

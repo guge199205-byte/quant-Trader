@@ -28,7 +28,7 @@ export default function Leaderboard() {
     const out: RankRow[] = [];
     const ov = overview.data;
     if (!ov) return out;
-    for (const m of ['us', 'cn', 'hk'] as MarketId[]) {
+    for (const m of ['cn', 'hk', 'us'] as MarketId[]) {
       for (const r of ov.markets[m] ?? []) {
         if (r.summary) out.push({ market: m, agent: r.name, cash: r.cash, summary: r.summary });
       }

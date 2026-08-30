@@ -384,6 +384,16 @@ def get_overview():
     return {"success": True, "data": {"markets": markets}}
 
 
+# ---------- quantmind 交易平台代理（通达信桥 / 券商接入 / 实时交易） ----------
+
+@app.api_route("/api/quantmind/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def quantmind_proxy(path: str, request: Request):
+    """转发到 quantmind 交易平台（容器内经 docker0 网关访问宿主机 8000），token 自动登录/续期。"""
+    from backend.services import quantmind_proxy as qm
+
+    return await qm.proxy_to_quantmind(request, path)
+
+
 # ---------- 静态托管（8090 直接出页面：index / 子页面 / data 快照） ----------
 
 @app.get("/")

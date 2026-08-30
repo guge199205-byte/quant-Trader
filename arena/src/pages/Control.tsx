@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   MarketId,
   SERVICE_NAMES,
+  api,
   fetchMetrics,
   fetchOverview,
   marketMeta,
@@ -13,12 +14,53 @@ import './Control.css';
 
 const MARKET_FLAG: Record<MarketId, string> = { us: '🇺🇸', cn: '🇨🇳', hk: '🇭🇰' };
 
+// ---------- 交易所状态（经 /api/quantmind 代理 → quantmind 8000） ----------
+
+interface TdxStatus {
+  enabled: boolean;
+  bridge_url: string;
+  bridge_token_configured: boolean;
+  real_trading_enabled: boolean;
+  health: { error?: string; tdx_connected?: boolean } | null;
+}
+
+interface BrokerStatus {
+  broker: string;
+  label: string;
+  fields: Record<string, string | boolean>;
+  loaded: boolean;
+}
+
+interface TradingStatus {
+  status: string;
+  mode: string;
+}
+
+async function fetchExchangeStatus() {
+  const [tdx, tiger, futu, ib, rt] = await Promise.all([
+    api.get('/quantmind/tdx/config').then((r) => r.data as TdxStatus).catch(() => null),
+    api.get('/quantmind/broker-config/tiger').then((r) => r.data as BrokerStatus).catch(() => null),
+    api.get('/quantmind/broker-config/futu').then((r) => r.data as BrokerStatus).catch(() => null),
+    api.get('/quantmind/broker-config/ib').then((r) => r.data as BrokerStatus).catch(() => null),
+    api.get('/quantmind/real-trading/status').then((r) => r.data as TradingStatus).catch(() => null),
+  ]);
+  const brokers = [tiger, futu, ib]
+    .filter((b): b is BrokerStatus => !!b)
+    .map((b) => ({ broker: b.broker, label: b.label, fields: b.fields, loaded: true }));
+  return { tdx, brokers, rt };
+}
+
+const brokerConfigured = (b: { fields: Record<string, string | boolean> }) =>
+  Object.entries(b.fields).some(([k, v]) => k.endsWith('_configured') && v === true) ||
+  Object.entries(b.fields).some(([k, v]) => !k.endsWith('_configured') && typeof v === 'string' && v.length > 0);
+
 /** 总控台 —— 参考 nof0 monitor.html：服务健康条 + 三市场汇总表 + 最近交易时间 */
 export default function Control() {
   const nav = useNavigate();
 
   const metrics = usePolling(() => fetchMetrics(), [], 30000);
   const overview = usePolling(() => fetchOverview(), [], 30000);
+  const exchange = usePolling(fetchExchangeStatus, [], 30000);
 
   const ageText = useMemo(() => {
     const age = metrics.data?.latest_trade_age_sec;
@@ -53,6 +95,53 @@ export default function Control() {
           </span>
         ))}
       </div>
+
+      {/* 交易所状态 */}
+      <section className="mk-section" style={{ border: '2px solid #000', padding: '10px 14px', marginBottom: 18 }}>
+        <div className="mk-head" style={{ marginBottom: 8 }}>
+          <span>🏦 交易所状态</span>
+          <span className="mk-count">
+            {exchange.data?.tdx
+              ? `通达信桥 ${exchange.data.tdx.health?.error ? '不可达' : '在线'}`
+              : '交易所数据加载中…'}
+          </span>
+        </div>
+        {exchange.data && (
+          <div className="exch-row">
+            {exchange.data.tdx && (
+              <span className={`svc-chip ${exchange.data.tdx.health?.error ? 'svc-down' : 'svc-up'}`}>
+                <span className={`svc-dot ${exchange.data.tdx.health?.error ? 'svc-down' : 'svc-up'}`} />
+                通达信桥
+                <span className="exch-sub">
+                  {exchange.data.tdx.health?.error ? '不可达' : '在线'}
+                  {exchange.data.tdx.health?.tdx_connected ? '· 客户端已连' : ''}
+                </span>
+                <span className={`exch-sub ${exchange.data.tdx.real_trading_enabled ? 'exch-on' : ''}`}>
+                  实盘{exchange.data.tdx.real_trading_enabled ? '开' : '关'}
+                </span>
+                <span className="exch-sub">推送{exchange.data.tdx.enabled ? '开' : '关'}</span>
+              </span>
+            )}
+            {exchange.data.brokers.map((b) => (
+              <span key={b.broker} className={`svc-chip ${brokerConfigured(b) ? 'svc-up' : 'svc-down'}`}>
+                <span className={`svc-dot ${brokerConfigured(b) ? 'svc-up' : 'svc-down'}`} />
+                {b.label}
+                <span className="exch-sub">{brokerConfigured(b) ? '已配置' : '未配置'}</span>
+              </span>
+            ))}
+            {exchange.data.rt && (
+              <span className={`svc-chip ${exchange.data.rt.status === 'running' ? 'svc-up' : 'svc-down'}`}>
+                <span className={`svc-dot ${exchange.data.rt.status === 'running' ? 'svc-up' : 'svc-down'}`} />
+                实时交易
+                <span className="exch-sub">
+                  {exchange.data.rt.status === 'running' ? '运行中' : '未运行'}
+                  · {exchange.data.rt.mode === 'REAL' ? '实盘' : exchange.data.rt.mode === 'SIMULATION' ? '模拟盘' : exchange.data.rt.mode}
+                </span>
+              </span>
+            )}
+          </div>
+        )}
+      </section>
 
       {/* 三市场区块 */}
       {(['us', 'cn', 'hk'] as MarketId[]).map((m) => {

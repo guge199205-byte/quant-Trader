@@ -52,6 +52,8 @@ export default function Navbar() {
           <li className="separator">|</li>
           <li><NavLink to="/control" className={({ isActive }) => (isActive ? 'active' : '')}>总控</NavLink></li>
           <li className="separator">|</li>
+          <li><NavLink to="/trading" className={({ isActive }) => (isActive ? 'active' : '')}>交易所</NavLink></li>
+          <li className="separator">|</li>
           <li><NavLink to="/about" className={({ isActive }) => (isActive ? 'active' : '')}>关于</NavLink></li>
         </ul>
 

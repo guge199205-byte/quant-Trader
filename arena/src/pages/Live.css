@@ -8,7 +8,7 @@
 .live {
   max-width: 1440px;
   margin: 0 auto;
-  padding: 10px 0 0; /* 顶部紧凑：状态条贴近导航栏，ticker 紧贴状态条 */
+  padding: 2px 0 0; /* 顶部贴齐：状态条与导航栏之间仅留 2px 分隔 */
   font-family: 'Courier New', monospace;
 }
 

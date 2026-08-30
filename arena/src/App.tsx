@@ -5,6 +5,7 @@ import Live from './pages/Live';
 import Leaderboard from './pages/Leaderboard';
 import Models from './pages/Models';
 import Control from './pages/Control';
+import TradingSettings from './pages/TradingSettings';
 import ModelDetail from './pages/ModelDetail';
 import About from './pages/About';
 
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="/leaderboard" element={<Leaderboard />} />
         <Route path="/models" element={<Models />} />
         <Route path="/control" element={<Control />} />
+        <Route path="/trading" element={<TradingSettings />} />
         <Route path="/model/:market/:agent" element={<ModelDetail />} />
         <Route path="/about" element={<About />} />
       </Routes>

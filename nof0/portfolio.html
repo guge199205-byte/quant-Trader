@@ -16,7 +16,7 @@
             document.documentElement.style.backgroundColor = t === 'dark' ? '#0a0a0a' : '#ffffff';
         })();
     </script>
-    <link rel="stylesheet" href="assets/css/nof0-styles.css?v20260830">
+    <link rel="stylesheet" href="assets/css/nof0-styles.css?v20260830b">
     <script src="assets/js/vendor/chart.umd.min.js?v20260830"></script>
     <link rel="prefetch" href="index.html">
     <link rel="prefetch" href="models.html">
@@ -50,19 +50,18 @@
             overflow-x: auto;
             -webkit-overflow-scrolling: touch;
         }
-        .lb-table { width: 100%; border-collapse: collapse; min-width: 640px; }
+        .lb-table { width: 100%; border-collapse: collapse; min-width: 640px; border: 1px solid var(--glass-border); }
         .lb-table th {
             text-align: left; font-size: 0.7rem; color: var(--gray-400, #888);
-            padding: 0.5rem 0.9rem; border-bottom: 1px solid var(--glass-border);
+            padding: 0.5rem 0.9rem; border: 1px solid var(--glass-border);
             white-space: nowrap; font-weight: 500;
         }
         .lb-table td {
             padding: 0.45rem 0.9rem; font-size: 0.82rem;
-            border-bottom: 1px solid var(--glass-border);
+            border: 1px solid var(--glass-border);
             font-variant-numeric: tabular-nums; white-space: nowrap;
         }
-        .lb-table tr:last-child td { border-bottom: none; }
-        .lb-table tr:hover td { background: var(--glass-hover, rgba(255,255,255,0.03)); }
+                .lb-table tr:hover td { background: var(--glass-hover, rgba(255,255,255,0.03)); }
         .rank-badge {
             display: inline-flex; align-items: center; justify-content: center;
             width: 1.5rem; height: 1.5rem; border-radius: 50%;

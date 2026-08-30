@@ -70,6 +70,15 @@ export interface LogLine {
   new_messages?: { role?: string; content?: string }[];
 }
 
+/** /agents/{name}/trades 返回：顶层 action/symbol/amount/cash_after */
+export interface TradeRecord {
+  date: string;
+  action: string; // 'buy' | 'sell'
+  symbol: string;
+  amount: number;
+  cash_after: number;
+}
+
 export interface OverviewRow {
   name: string;
   latest_date: string | null;
@@ -120,7 +129,7 @@ export const fetchPositions = (agent: string, market: MarketId) =>
   unwrap<PositionRecord[]>(api.get(`/agents/${encodeURIComponent(agent)}/positions`, { params: { market } }));
 
 export const fetchTrades = (agent: string, market: MarketId) =>
-  unwrap<PositionRecord[]>(api.get(`/agents/${encodeURIComponent(agent)}/trades`, { params: { market } }));
+  unwrap<TradeRecord[]>(api.get(`/agents/${encodeURIComponent(agent)}/trades`, { params: { market } }));
 
 export const fetchLogs = (agent: string, market: MarketId) =>
   unwrap<LogLine[]>(api.get(`/agents/${encodeURIComponent(agent)}/logs`, { params: { market } }));

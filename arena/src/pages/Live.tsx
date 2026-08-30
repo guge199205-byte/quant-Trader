@@ -6,6 +6,7 @@ import {
   MarketId,
   OverviewRow,
   PositionRecord,
+  TradeRecord,
   fetchBenchmark,
   fetchLogs,
   fetchOverview,
@@ -116,7 +117,7 @@ export default function Live() {
     [effectiveModel, market],
     30000,
   );
-  const trades = usePolling<PositionRecord[]>(
+  const trades = usePolling<TradeRecord[]>(
     () => (effectiveModel ? fetchTrades(effectiveModel, market) : Promise.resolve([])),
     [effectiveModel, market],
     30000,
@@ -127,17 +128,16 @@ export default function Live() {
     30000,
   );
 
-  // ---------- 事件流（成交） ----------
+  // ---------- 事件流（成交，/trades 顶层字段） ----------
   const tradeEvents: TradeEvt[] = useMemo(
     () =>
       (trades.data ?? [])
-        .filter((r) => r.this_action)
         .map((r) => ({
           date: r.date,
-          side: (r.this_action!.action ?? '').toLowerCase() === 'buy' ? 'buy' as const : 'sell' as const,
-          symbol: r.this_action!.symbol,
-          amount: r.this_action!.amount,
-          cash: r.positions?.CASH ?? 0,
+          side: (r.action ?? '').toLowerCase() === 'buy' ? 'buy' as const : 'sell' as const,
+          symbol: r.symbol,
+          amount: r.amount,
+          cash: r.cash_after ?? 0,
         }))
         .sort((a, b) => (a.date < b.date ? 1 : -1)),
     [trades.data],

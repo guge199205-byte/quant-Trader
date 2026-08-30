@@ -378,12 +378,16 @@ body::before {
 
 .main-grid {
     display: grid;
-    grid-template-columns: 2fr 1fr;
+    grid-template-columns: 3fr 1fr;      /* 左图表区放大：2fr → 3fr */
     gap: var(--space-3);
-    align-items: start;
+    align-items: stretch;                /* 左右两栏等高对齐 */
     min-height: calc(100vh - var(--header-h) - var(--ticker-h) - var(--space-6));
     max-width: 100%;
     overflow: visible;
+    /* 四边外框：上下左右都有线 */
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    padding: var(--space-3);
 }
 
 /* Chart Area */

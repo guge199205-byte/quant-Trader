@@ -1,8 +1,7 @@
-import { PositionRecord } from '../api/client';
+import { PositionRecord, TradeRecord } from '../api/client';
 import { fmtDate } from '../utils/format';
 
-/** 持仓/成交记录表：{date, this_action, positions}。
- *  positions: {CASH: number, SYMBOL: qty}；this_action 存在时说明该行有交易动作。 */
+/** 持仓记录表：{date, positions}；positions: {CASH: number, SYMBOL: qty}。 */
 export function PositionsTable({ records, currency = '$' }: { records: PositionRecord[]; currency?: string }) {
   const last = records[records.length - 1];
   const rows = last ? Object.entries(last.positions) : [];
@@ -16,12 +15,11 @@ export function PositionsTable({ records, currency = '$' }: { records: PositionR
             <th>证券</th>
             <th>数量</th>
             <th>现金</th>
-            <th>动作</th>
           </tr>
         </thead>
         <tbody>
           {rows.length === 0 && (
-            <tr><td colSpan={5} className="faint">无持仓（空仓）</td></tr>
+            <tr><td colSpan={4} className="faint">无持仓（空仓）</td></tr>
           )}
           {rows.map(([sym, qty]) => (
             <tr key={sym}>
@@ -29,7 +27,6 @@ export function PositionsTable({ records, currency = '$' }: { records: PositionR
               <td>{sym === 'CASH' ? <span className="accent">CASH</span> : sym}</td>
               <td>{qty === 0 ? '—' : Number(qty).toLocaleString('en-US')}</td>
               <td>{sym === 'CASH' ? `${currency}${Number(qty).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}</td>
-              <td className="faint">{last?.this_action ? '—' : '—'}</td>
             </tr>
           ))}
         </tbody>
@@ -38,9 +35,8 @@ export function PositionsTable({ records, currency = '$' }: { records: PositionR
   );
 }
 
-/** 交易明细表：只有带 this_action 的行，展示买卖方向与数量 */
-export function TradesTable({ records, currency = '$' }: { records: PositionRecord[]; currency?: string }) {
-  const trades = records.filter((r) => r.this_action);
+/** 交易明细表：/trades 顶层字段 {date, action, symbol, amount, cash_after} */
+export function TradesTable({ records, currency = '$' }: { records: TradeRecord[]; currency?: string }) {
   return (
     <div className="table-wrap">
       <table className="data">
@@ -54,19 +50,18 @@ export function TradesTable({ records, currency = '$' }: { records: PositionReco
           </tr>
         </thead>
         <tbody>
-          {trades.length === 0 && (
+          {records.length === 0 && (
             <tr><td colSpan={5} className="faint">暂无成交记录</td></tr>
           )}
-          {trades.map((t, i) => {
-            const a = t.this_action!;
-            const buy = a.action === 'buy';
+          {records.map((t, i) => {
+            const buy = t.action === 'buy';
             return (
               <tr key={`${t.date}-${i}`}>
                 <td>{fmtDate(t.date)}</td>
                 <td className={buy ? 'up' : 'down'}>{buy ? '▲ BUY' : '▼ SELL'}</td>
-                <td>{a.symbol}</td>
-                <td>{a.amount}</td>
-                <td className="faint">{currency}{Number(t.positions?.CASH ?? 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</td>
+                <td>{t.symbol}</td>
+                <td>{t.amount}</td>
+                <td className="faint">{currency}{Number(t.cash_after ?? 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</td>
               </tr>
             );
           })}

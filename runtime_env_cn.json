@@ -1,0 +1,7 @@
+{
+    "SIGNATURE": "deepseek-v4-flash",
+    "IF_TRADE": false,
+    "MARKET": "cn",
+    "LOG_PATH": "./data/agent_data_astock",
+    "TODAY_DATE": "2026-08-28"
+}

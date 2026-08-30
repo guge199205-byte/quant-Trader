@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+        <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>排行榜 - Trade Agent</title>
+    <script>
+        // 防主题闪烁：CSS 加载前同步主题背景色
+        (function () {
+            var t = localStorage.getItem('theme') ||
+                (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+            document.documentElement.setAttribute('data-theme', t);
+            document.documentElement.style.backgroundColor = t === 'dark' ? '#0a0a0a' : '#ffffff';
+        })();
+    </script>
+    <link rel="stylesheet" href="assets/css/nof0-styles.css?v20260830">
+    <script src="assets/js/vendor/chart.umd.min.js?v20260830"></script>
+    <link rel="prefetch" href="index.html">
+    <link rel="prefetch" href="models.html">
+    <style>
+        /* ===== 排行榜页紧凑布局 ===== */
+        .lb-stats {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 0.75rem;
+            padding: 0 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+        .lb-stat {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 0.65rem 0.9rem;
+            min-width: 0;
+        }
+        .lb-stat .label { font-size: 0.7rem; color: var(--gray-400, #888); margin-bottom: 0.2rem; }
+        .lb-stat .value { font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+        .lb-stat .sub { font-size: 0.68rem; color: var(--gray-400, #888); margin-top: 0.15rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .pos { color: #10b981; } .neg { color: #ef4444; }
+
+        /* 排行榜表格：紧凑 */
+        .lb-table-wrap {
+            margin: 0 1.5rem;
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .lb-table { width: 100%; border-collapse: collapse; min-width: 640px; }
+        .lb-table th {
+            text-align: left; font-size: 0.7rem; color: var(--gray-400, #888);
+            padding: 0.5rem 0.9rem; border-bottom: 1px solid var(--glass-border);
+            white-space: nowrap; font-weight: 500;
+        }
+        .lb-table td {
+            padding: 0.45rem 0.9rem; font-size: 0.82rem;
+            border-bottom: 1px solid var(--glass-border);
+            font-variant-numeric: tabular-nums; white-space: nowrap;
+        }
+        .lb-table tr:last-child td { border-bottom: none; }
+        .lb-table tr:hover td { background: var(--glass-hover, rgba(255,255,255,0.03)); }
+        .rank-badge {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 1.5rem; height: 1.5rem; border-radius: 50%;
+            font-size: 0.7rem; font-weight: 600;
+            background: var(--glass-bg); border: 1px solid var(--glass-border);
+        }
+        .rank-1 { color: #f59e0b; border-color: #f59e0b55; }
+        .rank-2 { color: #94a3b8; border-color: #94a3b855; }
+        .rank-3 { color: #d97706; border-color: #d9770655; }
+        .model-cell { display: flex; align-items: center; gap: 0.5rem; }
+        .model-cell img { width: 1.3rem; height: 1.3rem; border-radius: 4px; }
+        .model-dot { width: 0.55rem; height: 0.55rem; border-radius: 50%; flex-shrink: 0; }
+        .model-name { font-weight: 500; }
+
+        /* 图表区：紧凑 */
+        .lb-chart {
+            margin: 0.75rem 1.5rem;
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 0.75rem 1rem;
+        }
+        .lb-chart .chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
+        .lb-chart .chart-head h2 { font-size: 0.85rem; margin: 0; }
+        .lb-chart canvas { height: 220px !important; }
+
+        /* 明细折叠区 */
+        .lb-detail {
+            margin: 0.75rem 1.5rem 1.5rem;
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .lb-detail summary {
+            padding: 0.6rem 1rem; cursor: pointer; font-size: 0.8rem;
+            color: var(--gray-400, #888); user-select: none;
+        }
+        .lb-detail summary:hover { color: var(--foreground); }
+        .detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.75rem; padding: 0 1rem 1rem; }
+        .detail-agent { border: 1px solid var(--glass-border); border-radius: 10px; padding: 0.6rem 0.8rem; }
+        .detail-agent .da-head { display: flex; align-items: center; gap: 0.4rem; font-size: 0.78rem; font-weight: 600; margin-bottom: 0.3rem; }
+        .detail-agent .da-head img { width: 1.1rem; height: 1.1rem; border-radius: 3px; }
+        .detail-agent .da-cash { font-size: 0.72rem; color: var(--gray-400, #888); margin-bottom: 0.3rem; }
+        .empty { padding: 2rem; text-align: center; color: var(--gray-400, #888); font-size: 0.85rem; }
+
+        /* 加载态 */
+        .lb-loading { text-align: center; padding: 3rem; color: var(--gray-400, #888); }
+
+        /* ===== 响应式 ===== */
+        @media (max-width: 900px) {
+            .lb-stats { grid-template-columns: repeat(2, 1fr); }
+            .lb-stat:nth-child(5) { grid-column: span 2; }
+        }
+        @media (max-width: 480px) {
+            .lb-stats, .lb-table-wrap, .lb-chart, .lb-detail { margin-left: 0.6rem; margin-right: 0.6rem; }
+            .lb-stats { padding: 0; gap: 0.5rem; }
+            .lb-stat { padding: 0.5rem 0.6rem; }
+            .lb-chart canvas { height: 180px !important; }
+            .header-brand h1 { font-size: 0.95rem; }
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-container">
+            <div class="header-brand"><h1>Trade Agent</h1></div>
+            <nav class="header-nav">
+                <a href="index.html" class="nav-link">实盘</a>
+                <a href="portfolio.html" class="nav-link active">排行榜</a>
+                <a href="models.html" class="nav-link">模型</a>
+                <a href="monitor.html" class="nav-link">总控</a>
+            </nav>
+            <div class="header-actions">
+                <div class="market-selector">
+                    <button id="usMarketBtn" class="market-btn active" data-market="us">🇺🇸 美股</button>
+                    <button id="cnMarketBtn" class="market-btn" data-market="cn">🇨🇳 A股</button>
+                    <button id="hkMarketBtn" class="market-btn" data-market="hk">🇭🇰 港股</button>
+                </div>
+                <button class="theme-toggle" id="themeToggle" aria-label="切换主题">
+                    <svg class="theme-icon light-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" width="14" height="14">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                        <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.22"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="theme-icon dark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" width="14" height="14">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- 统计条：总权益 / 平均收益 / 最佳模型 / 最差模型 / 基准对比 -->
+        <section class="lb-stats" id="statsBar">
+            <div class="lb-stat"><div class="label">总权益</div><div class="value" id="statEquity">--</div><div class="sub" id="statEquitySub"></div></div>
+            <div class="lb-stat"><div class="label">平均收益率</div><div class="value" id="statAvgReturn">--</div><div class="sub">全体模型均值</div></div>
+            <div class="lb-stat"><div class="label">🏆 最佳模型</div><div class="value" id="statBest" style="font-size:0.9rem">--</div><div class="sub" id="statBestSub"></div></div>
+            <div class="lb-stat"><div class="label">⚠️ 最差模型</div><div class="value" id="statWorst" style="font-size:0.9rem">--</div><div class="sub" id="statWorstSub"></div></div>
+            <div class="lb-stat"><div class="label">📈 基准</div><div class="value" id="statBenchmark">--</div><div class="sub" id="statBenchmarkSub"></div></div>
+        </section>
+
+        <!-- 排行榜表格 -->
+        <section class="lb-table-wrap">
+            <table class="lb-table">
+                <thead>
+                    <tr>
+                        <th>排名</th><th>模型</th><th>初始资金</th><th>当前权益</th>
+                        <th>收益率</th><th>最大回撤</th><th>交易次数</th><th>状态</th>
+                    </tr>
+                </thead>
+                <tbody id="leaderboardBody">
+                    <tr><td colspan="8" class="lb-loading">加载中...</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- 净值对比图 -->
+        <section class="lb-chart">
+            <div class="chart-head">
+                <h2>净值走势对比（归一化 100 起点）</h2>
+            </div>
+            <canvas id="equityChart"></canvas>
+        </section>
+
+        <!-- 持仓明细（折叠） -->
+        <details class="lb-detail">
+            <summary>📦 持仓明细（点击展开）</summary>
+            <div class="detail-grid" id="detailGrid"></div>
+        </details>
+    </main>
+
+    <script src="assets/js/config-loader.js?v20260830"></script>
+    <script src="assets/js/theme.js?v20260830"></script>
+    <script>
+        // ===== 排行榜数据加载（API 实时） =====
+        const state = { market: 'us', agents: [], chart: null };
+
+        async function getApiBase() {
+            if (window.configLoader) {
+                try {
+                    await window.configLoader.loadConfig();
+                    const p = window.configLoader.getDataPath();
+                    // 数据代理路径 → API 前缀（含 /api）
+                    if (p && p.startsWith('http')) return p.replace(/\/api\/data$/, '/api');
+                } catch (e) { /* fallback */ }
+            }
+            return 'http://192.168.31.68:8091/api';
+        }
+
+        let apiToken = '';
+        async function getApiToken() {
+            if (!apiToken && window.configLoader && window.configLoader.getApiToken) {
+                apiToken = window.configLoader.getApiToken();
+            }
+            return apiToken;
+        }
+        function authHeaders() {
+            const t = apiToken || '';
+            return t ? { 'X-API-Token': t } : {};
+        }
+
+        async function loadAgents(api) {
+            const resp = await fetch(`${api}/agents?market=${state.market}`, { headers: authHeaders() });
+            const data = await resp.json();
+            return (data.data || []).filter(a => a.has_position);
+        }
+
+        async function loadPerformance(api, name) {
+            const resp = await fetch(`${api}/agents/${encodeURIComponent(name)}/performance?market=${state.market}`, { headers: authHeaders() });
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            return data.data || null;
+        }
+
+        function fmtMoney(v, isCN) { const s = isCN ? '¥' : (state.market === 'hk' ? 'HK$' : '$'); return s + Number(v || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 }); }
+        function fmtPct(v) { const n = Number(v || 0); return (n >= 0 ? '+' : '') + (n * 100).toFixed(2) + '%'; }
+        function pctClass(v) { return Number(v || 0) >= 0 ? 'pos' : 'neg'; }
+        function fmtDate(d) { return d ? String(d).slice(0, 10) : '--'; }
+
+        function agentMeta(name) {
+            const marketConfig = window.configLoader && window.configLoader.getMarketConfig
+                ? window.configLoader.getMarketConfig(state.market) : null;
+            const ag = marketConfig && marketConfig.agents
+                ? marketConfig.agents.find(x => x.folder === name) : null;
+            return {
+                display: ag ? ag.display_name : name,
+                icon: ag ? ag.icon : '',
+                color: ag ? (ag.color || '#888') : '#888',
+            };
+        }
+
+        async function refresh() {
+            const isCN = state.market === 'cn';
+            const api = await getApiBase();
+            const agents = await loadAgents(api);
+            const rows = [];
+            for (const a of agents) {
+                const perf = await loadPerformance(api, a.name);
+                if (!perf) continue;
+                rows.push({
+                    name: a.name, latest: a.latest_date, cash: a.cash,
+                    perf,
+                    tradesCount: (perf.points || []).filter(p => p.action).length,
+                });
+            }
+            rows.sort((x, y) => (y.perf.summary.total_return || 0) - (x.perf.summary.total_return || 0));
+            state.agents = rows;
+            renderStats(rows, isCN);
+            renderTable(rows, isCN);
+            renderChart(rows, isCN);
+            await renderDetail(rows, isCN);
+        }
+
+        function renderStats(rows, isCN) {
+            const totalEquity = rows.reduce((s, r) => s + (r.perf.summary.end_equity || 0), 0);
+            const initTotal = rows.reduce((s, r) => s + (r.perf.summary.start_equity || 0), 0);
+            const avg = rows.length ? rows.reduce((s, r) => s + (r.perf.summary.total_return || 0), 0) / rows.length : 0;
+            document.getElementById('statEquity').textContent = fmtMoney(totalEquity, isCN);
+            document.getElementById('statEquitySub').textContent = rows.length + ' 个模型 · 初始 ' + fmtMoney(initTotal, isCN);
+            const avgEl = document.getElementById('statAvgReturn');
+            avgEl.textContent = fmtPct(avg);
+            avgEl.className = 'value ' + pctClass(avg);
+            const best = rows[0], worst = rows[rows.length - 1];
+            if (best) {
+                const bm = agentMeta(best.name);
+                document.getElementById('statBest').textContent = bm.display;
+                document.getElementById('statBestSub').innerHTML =
+                    '<span class="' + pctClass(best.perf.summary.total_return) + '">' + fmtPct(best.perf.summary.total_return) + '</span> · 回撤 ' + (best.perf.summary.max_drawdown * 100).toFixed(2) + '%';
+            }
+            if (worst && worst !== best) {
+                const wm = agentMeta(worst.name);
+                document.getElementById('statWorst').textContent = wm.display;
+                document.getElementById('statWorstSub').innerHTML =
+                    '<span class="' + pctClass(worst.perf.summary.total_return) + '">' + fmtPct(worst.perf.summary.total_return) + '</span> · 回撤 ' + (worst.perf.summary.max_drawdown * 100).toFixed(2) + '%';
+            }
+            const benchName = state.market === 'hk' ? '恒生指数' : (isCN ? '上证50' : 'QQQ');
+            document.getElementById('statBenchmark').textContent = benchName;
+            document.getElementById('statBenchmarkSub').textContent = '基准走势（见净值对比图）';
+        }
+
+        function renderTable(rows, isCN) {
+            const body = document.getElementById('leaderboardBody');
+            if (!rows.length) {
+                body.innerHTML = '<tr><td colspan="8" class="empty">暂无交易数据，运行 agent 后自动出现</td></tr>';
+                return;
+            }
+            body.innerHTML = rows.map((r, i) => {
+                const m = agentMeta(r.name);
+                const s = r.perf.summary;
+                const rank = i < 3 ? `rank-badge rank-${i + 1}` : 'rank-badge';
+                return `<tr>
+                    <td><span class="${rank}">${i + 1}</span></td>
+                    <td><div class="model-cell">
+                        <span class="model-dot" style="background:${m.color}"></span>
+                        ${m.icon ? `<img src="${m.icon}" onerror="this.style.display='none'">` : ''}
+                        <span class="model-name">${m.display}</span>
+                    </div></td>
+                    <td>${fmtMoney(s.start_equity, isCN)}</td>
+                    <td>${fmtMoney(s.end_equity, isCN)}</td>
+                    <td class="${pctClass(s.total_return)}">${fmtPct(s.total_return)}</td>
+                    <td class="neg">-${(s.max_drawdown * 100).toFixed(2)}%</td>
+                    <td>${r.tradesCount}</td>
+                    <td style="color:var(--gray-400,#888);font-size:0.72rem">截至 ${fmtDate(r.latest)}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        function renderChart(rows, isCN) {
+            const canvas = document.getElementById('equityChart');
+            const labels = [];
+            const datasets = rows.slice(0, 8).map(r => {
+                const m = agentMeta(r.name);
+                const pts = (r.perf.points || []).filter(p => p.equity != null);
+                if (!pts.length) return null;
+                const start = pts[0].equity || 1;
+                return {
+                    label: m.display,
+                    data: pts.map(p => Number(((p.equity / start) * 100).toFixed(2))),
+                    borderColor: m.color,
+                    backgroundColor: m.color + '18',
+                    borderWidth: 1.6,
+                    pointRadius: 0,
+                    tension: 0.25,
+                    fill: false,
+                };
+            }).filter(Boolean);
+            const allPts = rows.flatMap(r => r.perf.points || []).filter(p => p.equity != null);
+            allPts.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+            allPts.forEach(p => { const d = String(p.date).slice(0, 16); if (!labels.includes(d)) labels.push(d); });
+
+            if (state.chart) { state.chart.destroy(); }
+            state.chart = new Chart(canvas.getContext('2d'), {
+                type: 'line',
+                data: { labels: labels.map(d => d.slice(5)), datasets },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: true, position: 'top', labels: { boxWidth: 12, font: { size: 10 } } },
+                    },
+                    scales: {
+                        x: { ticks: { font: { size: 9 }, maxTicksLimit: 8 } },
+                        y: { ticks: { font: { size: 9 } } },
+                    },
+                },
+            });
+        }
+
+        let stockNames = {};
+        async function loadStockNames() {
+            if (Object.keys(stockNames).length) return;
+            try {
+                const api = await getApiBase();
+                const r = await fetch(`${api}/stock-names?market=${state.market}`, { headers: authHeaders() });
+                stockNames = (await r.json()).data || {};
+            } catch (e) { /* 保持空表 */ }
+        }
+        function stockName(sym) { return stockNames[sym] || sym; }
+
+        async function renderDetail(rows, isCN) {
+            const grid = document.getElementById('detailGrid');
+            if (!rows.length) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1">暂无持仓数据</div>'; return; }
+            const api = await getApiBase();
+            await loadStockNames();
+            const cards = [];
+            for (const r of rows.slice(0, 6)) {
+                const m = agentMeta(r.name);
+                const last = r.perf.points.length ? r.perf.points[r.perf.points.length - 1] : null;
+                // 拉最新持仓明细
+                let posHtml = '<div style="font-size:0.68rem;color:var(--gray-400,#888)">无持仓</div>';
+                try {
+                    const pr = await fetch(`${api}/agents/${encodeURIComponent(r.name)}/positions?limit=1`, { headers: authHeaders() });
+                    if (pr.ok) {
+                        const pd = await pr.json();
+                        const recs = pd.data || [];
+                        if (recs.length) {
+                            const pos = recs[recs.length - 1].positions || {};
+                            const held = Object.entries(pos).filter(([k, v]) => k !== 'CASH' && Number(v) > 0);
+                            if (held.length) {
+                                posHtml = held.map(([k, v]) =>
+                                    `<div class="detail-pos"><span class="sym">${stockName(k)}</span><span>${v} 股</span></div>`).join('');
+                            }
+                        }
+                    }
+                } catch (e) { /* 保持无持仓提示 */ }
+                cards.push(`<div class="detail-agent">
+                    <div class="da-head"><span class="model-dot" style="background:${m.color}"></span>${m.display}
+                    <span style="margin-left:auto;font-weight:400;color:var(--gray-400,#888)">现金 ${fmtMoney(r.cash ?? 0, isCN)}</span></div>
+                    <div class="da-cash">最新净值 ${fmtMoney(last ? last.equity : 0, isCN)}</div>
+                    ${posHtml}
+                </div>`);
+            }
+            grid.innerHTML = cards.join('');
+        }
+
+        // ===== 市场切换 & 主题 =====
+        document.querySelectorAll('.market-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.market-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                state.market = btn.dataset.market;
+                document.getElementById('leaderboardBody').innerHTML = '<tr><td colspan="8" class="lb-loading">加载中...</td></tr>';
+                refresh();
+            });
+        });
+
+        // ===== 启动 =====
+        (async function init() {
+            // 确保 ConfigLoader 实例存在（本页为自包含实现，不依赖旧页面 JS）
+            if (!window.configLoader && window.ConfigLoader) {
+                window.configLoader = new window.ConfigLoader();
+            }
+            if (window.configLoader) { await window.configLoader.loadConfig().catch(() => {}); await getApiToken(); }
+            if (window.ThemeManager) new window.ThemeManager();
+            refresh();
+            setInterval(refresh, 30000); // 30s 自动刷新
+        })();
+    </script>
+</body>
+</html>

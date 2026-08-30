@@ -1,0 +1,25 @@
+# 依赖与虚拟环境
+.venv
+**/__pycache__
+*.pyc
+
+# 运行时数据（compose 里 bind-mount，不打包进镜像）
+data
+logs
+configs
+config
+docs
+nof0
+trade_cache.sqlite
+runtime_env.json
+runtime_env_cn.json
+runtime_env_hk.json
+
+# 密钥
+.env
+.service.env
+
+# git 与杂项
+.git
+*.png
+tests

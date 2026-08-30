@@ -1,0 +1,195 @@
+# BayMax-Trader 容器化编排
+# 端口布局（与 scripts/alert.sh 探活一致）：
+#   mcp-us: 8100-8104   mcp-cn: 8200-8204   mcp-hk: 8300-8304
+#   api: 8091   dsh: 3081   ui: 8888
+# 常用命令见 README.docker.md
+name: baymax
+
+x-python-app: &python-app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file: .env
+  restart: unless-stopped
+  volumes:
+    - ./data:/app/data
+    - ./logs:/app/logs
+    - ./configs:/app/configs
+    - ./trade_cache.sqlite:/app/trade_cache.sqlite
+    - ./runtime_env.json:/app/runtime_env.json
+    - ./runtime_env_cn.json:/app/runtime_env_cn.json
+    - ./runtime_env_hk.json:/app/runtime_env_hk.json
+
+services:
+  # ---- MCP 服务（三市场独立实例）----
+  mcp-us:
+    <<: *python-app
+    container_name: baymax-mcp-us
+    working_dir: /app/agent_tools
+    command: python start_mcp_services.py
+    environment:
+      MATH_HTTP_PORT: "8100"
+      SEARCH_HTTP_PORT: "8101"
+      TRADE_HTTP_PORT: "8102"
+      GETPRICE_HTTP_PORT: "8103"
+      MEMORY_HTTP_PORT: "8104"
+      RUNTIME_ENV_PATH: /app/runtime_env.json
+    ports:
+      - "8100-8104:8100-8104"
+
+  mcp-cn:
+    <<: *python-app
+    container_name: baymax-mcp-cn
+    working_dir: /app/agent_tools
+    command: python start_mcp_services.py
+    environment:
+      MATH_HTTP_PORT: "8200"
+      SEARCH_HTTP_PORT: "8201"
+      TRADE_HTTP_PORT: "8202"
+      GETPRICE_HTTP_PORT: "8203"
+      MEMORY_HTTP_PORT: "8204"
+      RUNTIME_ENV_PATH: /app/runtime_env_cn.json
+    ports:
+      - "8200-8204:8200-8204"
+
+  mcp-hk:
+    <<: *python-app
+    container_name: baymax-mcp-hk
+    working_dir: /app/agent_tools
+    command: python start_mcp_services.py
+    environment:
+      MATH_HTTP_PORT: "8300"
+      SEARCH_HTTP_PORT: "8301"
+      TRADE_HTTP_PORT: "8302"
+      GETPRICE_HTTP_PORT: "8303"
+      MEMORY_HTTP_PORT: "8304"
+      RUNTIME_ENV_PATH: /app/runtime_env_hk.json
+    ports:
+      - "8300-8304:8300-8304"
+
+  # ---- 后端 API（托管 nof0 前端）----
+  api:
+    <<: *python-app
+    container_name: baymax-api
+    working_dir: /app
+    command: python -m backend.api_server
+    environment:
+      RUNTIME_ENV_PATH: /app/runtime_env_cn.json
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./configs:/app/configs
+      - ./config:/app/config
+      - ./nof0:/app/nof0
+      - ./trade_cache.sqlite:/app/trade_cache.sqlite
+    ports:
+      - "8091:8091"
+
+  # ---- 交易 agent（按市场独立启动，运行完自动退出）----
+  agent-us:
+    <<: *python-app
+    profiles: ["agents"]
+    container_name: baymax-agent-us
+    working_dir: /app
+    command: python main.py configs/default_config.json
+    environment:
+      MCP_HOST: mcp-us
+      MATH_HTTP_PORT: "8100"
+      SEARCH_HTTP_PORT: "8101"
+      TRADE_HTTP_PORT: "8102"
+      GETPRICE_HTTP_PORT: "8103"
+      RUNTIME_ENV_PATH: /app/runtime_env.json
+    restart: "no"
+    depends_on:
+      - mcp-us
+
+  agent-cn:
+    <<: *python-app
+    profiles: ["agents"]
+    container_name: baymax-agent-cn
+    working_dir: /app
+    command: python main.py configs/astock_config.json
+    environment:
+      MCP_HOST: mcp-cn
+      MATH_HTTP_PORT: "8200"
+      SEARCH_HTTP_PORT: "8201"
+      TRADE_HTTP_PORT: "8202"
+      GETPRICE_HTTP_PORT: "8203"
+      RUNTIME_ENV_PATH: /app/runtime_env_cn.json
+    restart: "no"
+    depends_on:
+      - mcp-cn
+
+  agent-hk:
+    <<: *python-app
+    profiles: ["agents"]
+    container_name: baymax-agent-hk
+    working_dir: /app
+    command: python main.py configs/deepseek_hk_test.json
+    environment:
+      MCP_HOST: mcp-hk
+      MATH_HTTP_PORT: "8300"
+      SEARCH_HTTP_PORT: "8301"
+      TRADE_HTTP_PORT: "8302"
+      GETPRICE_HTTP_PORT: "8303"
+      RUNTIME_ENV_PATH: /app/runtime_env_hk.json
+    restart: "no"
+    depends_on:
+      - mcp-hk
+
+  # ---- dsh（DeepSeek Harness，挂 mcp-us 的 5 个工具）----
+  # dsh 拒绝绑 0.0.0.0（防 RCE 外露），用 host 网络绑宿主 127.0.0.1:3081，
+  # cordis 里 localhost:8100-8104 正好指向宿主上发布的 mcp-us 端口
+  dsh:
+    build:
+      context: .
+      dockerfile: Dockerfile.dsh
+    container_name: baymax-dsh
+    network_mode: host
+    env_file:
+      - .env
+      - .service.env
+    restart: unless-stopped
+    command: dsh --profile web --patch /app/dsh/baymax.cordis.yml --port 3081 --no-open
+    volumes:
+      - ./dsh:/app/dsh
+
+  # ---- nof0 主题界面（原 start_nof0.sh 的 8080）----
+  ui-nof0:
+    <<: *python-app
+    container_name: baymax-ui-nof0
+    working_dir: /app/nof0
+    # follow_symlinks=True：nof0/data 是指向 ../data 的符号链接，默认不跟随会 404
+    command: python /app/scripts/serve_nof0.py --port 8080 --dir /app/nof0
+    volumes:
+      - ./nof0:/app/nof0
+      - ./data:/app/data  # symlink 目标：容器内 /app/nof0/data -> /app/data
+    ports:
+      - "8080:8080"
+
+  # ---- 静态 UI（docs 快照）----
+  ui:
+    <<: *python-app
+    container_name: baymax-ui
+    working_dir: /app/docs
+    command: python -m http.server 8888
+    volumes:
+      - ./docs:/app/docs
+    ports:
+      # 宿主 8888 被 1Panel、8889 被 jupyter-lab 占用，UI 映射到 8887
+      - "8887:8888"
+
+  # ---- 数据同步（一次性任务：docker compose --profile datasync run --rm datasync-us）----
+  datasync-us:
+    <<: *python-app
+    profiles: ["datasync"]
+    working_dir: /app/data
+    command: bash -c "python get_daily_price.py && python merge_jsonl.py"
+    restart: "no"
+
+  datasync-cn:
+    <<: *python-app
+    profiles: ["datasync"]
+    working_dir: /app/data/A_stock
+    command: bash -c "python get_daily_price_a_stock.py && python merge_a_stock_jsonl.py"
+    restart: "no"

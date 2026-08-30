@@ -1,0 +1,25 @@
+{
+  "agent_type": "BaseAgent_Hour",
+  "market": "us",
+  "date_range": {
+    "init_date": "2025-10-30 09:30:00",
+    "end_date": "2025-10-30 16:00:00"
+  },
+  "models": [
+    {
+      "name": "deepseek-v4-flash",
+      "basemodel": "deepseek-v4-flash",
+      "signature": "deepseek-v4-flash",
+      "enabled": true
+    }
+  ],
+  "agent_config": {
+    "max_steps": 10,
+    "max_retries": 2,
+    "base_delay": 1.0,
+    "initial_cash": 10000.0
+  },
+  "log_config": {
+    "log_path": "./data/agent_data"
+  }
+}

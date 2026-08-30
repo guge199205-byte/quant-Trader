@@ -1,0 +1,130 @@
+/* 排行榜/模型页与实盘页(noF0)风格统一：最后加载，覆盖旧样式 */
+/* ===== 去花哨：统计卡统一玻璃拟态 ===== */
+.overview-stat-card.best-model,
+.overview-stat-card.worst-model,
+.overview-stat-card.total-equity {
+    background: var(--glass-bg);
+    border-color: var(--glass-border);
+    box-shadow: none;
+}
+
+.overview-stat-card.best-model::before,
+.overview-stat-card.worst-model::before,
+.overview-stat-card.total-equity::before {
+    background: linear-gradient(90deg, transparent, var(--glass-border), transparent);
+}
+
+.overview-stat-card:hover {
+    transform: none;
+    box-shadow: none;
+}
+
+.overview-stat-card:hover::before {
+    opacity: 0;
+}
+
+.stat-icon {
+    background: var(--glass-bg) !important;
+    box-shadow: none !important;
+}
+
+.nof0-leaderboard-table,
+.analysis-stats-table,
+.holdings-table {
+    border-color: var(--glass-border);
+}
+
+.nof0-leaderboard-table thead th,
+.analysis-stats-table thead th,
+.holdings-table thead th {
+    background: var(--glass-bg);
+    color: var(--foreground);
+    font-weight: 600;
+}
+
+/* ===== models 页深色主题统一（覆盖浅色硬编码） ===== */
+body {
+    background: var(--background) !important;
+    color: var(--foreground) !important;
+    font-family: var(--font-primary) !important;
+}
+
+.models-container,
+.models-controls,
+.chart-section,
+.realtime-model-item,
+.time-range-selector {
+    background: var(--glass-bg) !important;
+    border: 1px solid var(--glass-border);
+    box-shadow: none !important;
+    color: var(--foreground);
+}
+
+.models-controls select,
+.time-range-selector {
+    color: var(--foreground);
+}
+
+.models-controls select option {
+    background: var(--background);
+    color: var(--foreground);
+}
+
+/* ===== 排行榜/模型页风格统一（与实盘页一致的玻璃拟态，去花哨） ===== */
+.overview-stat-card.best-model,
+.overview-stat-card.worst-model,
+.overview-stat-card.total-equity {
+    background: var(--glass-bg);
+    border-color: var(--glass-border);
+    box-shadow: none;
+}
+
+.overview-stat-card.best-model::before,
+.overview-stat-card.worst-model::before,
+.overview-stat-card.total-equity::before {
+    background: linear-gradient(90deg, transparent, var(--glass-border), transparent);
+}
+
+.overview-stat-card:hover {
+    transform: none;
+    box-shadow: none;
+}
+
+.overview-stat-card:hover::before {
+    opacity: 0;
+}
+
+/* 统计图标统一为品牌主色，去掉彩色渐变背景 */
+.stat-icon {
+    background: var(--glass-bg) !important;
+    box-shadow: none !important;
+}
+
+/* 表格与实盘页风格一致：无彩色条纹、细边框 */
+.nof0-leaderboard-table,
+.analysis-stats-table,
+.holdings-table {
+    border-color: var(--glass-border);
+}
+
+.nof0-leaderboard-table thead th,
+.analysis-stats-table thead th,
+.holdings-table thead th {
+    background: var(--glass-bg);
+    color: var(--foreground);
+    font-weight: 600;
+}
+
+/* 去蓝色渐变文字 + 统一 spinner（页面切换不再"蓝一下"） */
+.total-equity .stat-value {
+    background: none;
+    -webkit-background-clip: initial;
+    -webkit-text-fill-color: currentColor;
+    background-clip: initial;
+    color: var(--foreground);
+}
+
+.spinner, .spinner-small {
+    border-top-color: var(--gray-400) !important;
+    border-right-color: var(--gray-400) !important;
+}

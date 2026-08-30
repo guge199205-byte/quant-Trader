@@ -1,0 +1,10 @@
+# BayMax-Trader dsh（DeepSeek Harness）镜像
+# 容器内使用 baymax.docker.cordis.yml（MCP 地址指向 mcp-us 容器）
+FROM node:22-slim
+
+RUN npm install -g --no-audit --no-fund @deepseek-ai/dsh
+
+WORKDIR /app
+COPY dsh/baymax.docker.cordis.yml /app/dsh/baymax.docker.cordis.yml
+
+CMD ["dsh", "--profile", "web", "--patch", "/app/dsh/baymax.docker.cordis.yml", "--port", "3081", "--no-open"]

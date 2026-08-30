@@ -1,0 +1,91 @@
+# BayMax-Trader × DeepSeek Harness (dsh) 集成 patch
+#
+# 用途：把 BayMax 的 4 个 MCP 服务（math/search/trade/price）挂进 dsh，
+#      并注入中文交易助手 persona，让 dsh 成为交易 agent 的稳定运行引擎。
+# 用法：dsh --profile web --patch dsh/baymax.cordis.yml --port 3081 --no-open
+#
+# 前置：MCP 服务已在 8100-8103 运行
+#       (.venv/bin/python agent_tools/start_mcp_services.py)
+# 模型：默认 deepseek-official / deepseek-v4-flash，key 从环境变量 DEEPSEEK_API_KEY 读取
+
+# ---- 中文交易 persona（部署身份，order-0 提示词）----
+- id: system-prompt
+  config:
+    persona: >-
+      你是一名股票基本面分析交易助手（BayMax-Trader）。
+
+      你的目标：
+      - 通过调用可用工具进行思考、分析和决策。
+      - 分析各标的的价格、估值与收益表现，识别交易机会。
+      - 长期目标是通过投资组合实现收益最大化，同时控制回撤风险。
+      - 做决策前尽可能通过搜索工具收集信息来辅助判断。
+
+      工具使用规则：
+      - 所有交易操作必须通过 baymax_trade 服务器上的工具执行
+        （buy/sell），直接输出操作指令不会被接受，也不被系统记录。
+      - 查询持仓用 baymax_trade 的持仓工具；查询价格/行情用
+        baymax_price 服务器上的工具；计算用 baymax_math；市场信息用
+        baymax_search。
+
+      交易记忆（重要）：
+      - 每个交易日开盘决策前，先调用 baymax_memory 的 read_memory 工具
+        回顾历史心得（策略心得/成功案例/失败教训/市场观察），避免重复犯错。
+      - 每个交易日收盘后，调用 baymax_memory 的 append_memory 工具，
+        沉淀今日经验：什么策略有效、什么判断失误、市场有哪些信号。
+        内容要具体、可复用（含日期与结论），让明天的自己更聪明。
+      - 下单前必须核对：当前可用现金、目标标的当前价格、持仓上限。
+
+      交易纪律：
+      - 分批建仓，单标的不超过可投资金的 20%。
+      - 设置明确的止损位（-8%）与止盈位（+15%），到达后执行卖出。
+      - 每天交易结束后总结：持仓变化、现金余额、当日盈亏与原因。
+
+      完成标准：
+      - 当判断当日交易决策已完成时，输出清晰的交易总结
+        （买入/卖出明细、当前持仓、现金余额、下一步计划），
+        并以 "交易完成" 结尾。
+- insert:
+    - id: mcp-math
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: baymax_math
+        transport: streamable-http
+        url: http://localhost:8100/mcp
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false
+
+    - id: mcp-search
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: baymax_search
+        transport: streamable-http
+        url: http://localhost:8101/mcp
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false
+
+    - id: mcp-trade
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: baymax_trade
+        transport: streamable-http
+        url: http://localhost:8102/mcp
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false
+
+    - id: mcp-price
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: baymax_price
+        transport: streamable-http
+        url: http://localhost:8103/mcp
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false
+
+    - id: mcp-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: baymax_memory
+        transport: streamable-http
+        url: http://localhost:8104/mcp
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false

@@ -1,0 +1,91 @@
+# BayMax-Trader 后端配置
+# 由 backend/config.py 加载；密钥引用 .env，不在此处存放
+
+server:
+  host: "0.0.0.0"
+  port: 8091
+  # 前端静态目录（API 可托管，也可用现有 8080 http.server）
+  ui_dir: "./nof0"
+  # API 不可用时前端回退到静态快照
+  fallback_to_static: true
+
+# 数据源：API /api/data/* 优先读取项目根 data/，其次读 ui_dir/data/
+data:
+  root_dir: "./data"
+
+markets:
+  us:
+    name: "美股市场（纳斯达克100）"
+    enabled: true
+    data_dir: "agent_data"
+    benchmark_file: "Adaily_prices_QQQ.json"
+    currency: "USD"
+  cn:
+    name: "A股市场（上证50）"
+    enabled: true
+    data_dir: "agent_data_astock"
+    benchmark_file: "A_stock/index_daily_sse_50.json"
+    currency: "CNY"
+  hk:
+    name: "港股市场（恒生指数）"
+    enabled: true
+    data_dir: "agent_data_hk"
+    benchmark_file: "hsi_daily.json"
+    currency: "HKD"
+
+# 券商接入（broker 抽象层，sandbox 为默认模拟盘）
+# tdx/futu/tiger/ibkr 的密钥与地址来自 .env：
+#   TDX_BRIDGE_URL / TDX_BRIDGE_TOKEN
+#   FUTU_OPEND_HOST / FUTU_OPEND_PORT
+#   TIGER_API_KEY / TIGER_SECRET_KEY
+#   IBKR_HOST / IBKR_PORT / IBKR_CLIENT_ID
+broker:
+  default: "sandbox"   # sandbox | tdx | futu | tiger | ibkr
+  sandbox:
+    enabled: true
+    initial_cash: 10000.0
+  tdx:
+    enabled: false
+  futu:
+    enabled: true
+  tiger:
+    enabled: true
+  ibkr:
+    enabled: true
+
+api:
+  # 前端轮询刷新间隔（秒）
+  refresh_interval: 5
+  # 净值序列最大点数
+  max_equity_points: 500
+
+# 交易成本模型（模拟盘贴近真实）
+trading:
+  fees:
+    buy_rate: 0.0003      # 买入手续费率（万3）
+    sell_rate: 0.0003     # 卖出手续费率
+    slippage: 0.0005      # 滑点（买 +0.05%，卖 -0.05%）
+
+# 风控（broker 前置网关，所有交易路径生效）
+# 熔断口径：当日已实现亏损（id=0 初始现金 vs 当前现金），不含浮盈浮亏
+risk:
+  enabled: true
+  max_order_ratio: 0.20        # 单笔买入 ≤ 权益 20%
+  max_position_ratio: 0.20     # 单标持仓 ≤ 权益 20%
+  max_daily_loss_pct: 0.05     # 日亏 5% 熔断（暂停买入）
+  min_cash_reserve: 100.0      # 交易后最低保留现金
+  blacklist: []                # 禁用标的（如退市整理、ST）
+  approval_required: false     # 实盘 broker 上线时置 true
+
+# 数据源（行情抽象层，与 broker 对称可插拔）
+# tdx 的 token 来自 .env: TDX_BRIDGE_URL / TDX_BRIDGE_TOKEN
+datasource:
+  default: "local"             # local | tdx
+  local:
+    enabled: true
+  tdx:
+    enabled: false
+
+logging:
+  level: "INFO"
+  file: "./logs/api.log"

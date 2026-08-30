@@ -65,6 +65,34 @@ def load_trades(config: dict, agent: str, market: str = "us",
     return trades[-limit:] if limit and limit > 0 else trades
 
 
+def enrich_trades_with_prices(config: dict, market: str,
+                              trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """为原始成交补 price/notional：按成交日从价格文件重算（滑点模型同 rebuild_closed_trades）。
+
+    返回新列表（不可变）：每条 {..., price, notional}；查不到价格时 price/notional 为 None。
+    """
+    if not trades:
+        return trades
+    fees = config.get("trading", {}).get("fees", {})
+    slippage = float(fees.get("slippage", 0.0005))
+    prices = _load_price_lookup(config, market)
+    enriched = []
+    for t in trades:
+        # sqlite 缓存为顶层字段（action/symbol/amount），JSONL 直读为 this_action 嵌套，两者兼容
+        ta = t.get("this_action") or t
+        date = t.get("date", "")[:10]
+        sym = ta.get("symbol", "")
+        action = ta.get("action")
+        raw = prices.get(date, {}).get(sym)
+        price = notional = None
+        if raw:
+            price = float(raw) * (1 + slippage) if action == "buy" else float(raw) * (1 - slippage)
+            qty = ta.get("amount", 0) or 0
+            notional = price * qty
+        enriched.append({**t, "price": price, "notional": notional})
+    return enriched
+
+
 def load_agent_logs(config: dict, agent: str, market: str = "us",
                     date: Optional[str] = None) -> List[Dict[str, Any]]:
     """读取某 agent 的日志记录；date 指定时只读该日期目录（精确匹配前缀）。"""

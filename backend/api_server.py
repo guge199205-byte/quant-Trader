@@ -186,7 +186,8 @@ def get_trades(agent: str, market: str = Query("us"), limit: int = Query(200, ge
     if not trades:
         # 缓存未命中时回退 JSONL 直读（保证一致性）
         trades = agent_data.load_trades(cfg, agent, market, limit)
-    return {"success": True, "data": trades}
+    # 补 price/notional（价格文件重算 + 滑点模型，与 FIFO 平仓口径一致）
+    return {"success": True, "data": agent_data.enrich_trades_with_prices(cfg, market, trades)}
 
 
 @app.get("/api/agents/{agent}/performance")

@@ -77,13 +77,15 @@ export interface LogLine {
   new_messages?: { role?: string; content?: string }[];
 }
 
-/** /agents/{name}/trades 返回：顶层 action/symbol/amount/cash_after */
+/** /agents/{name}/trades 返回：顶层 action/symbol/amount/cash_after（price/notional 由后端重算） */
 export interface TradeRecord {
   date: string;
   action: string; // 'buy' | 'sell'
   symbol: string;
   amount: number;
   cash_after: number;
+  price: number | null;
+  notional: number | null;
 }
 
 export interface OverviewRow {

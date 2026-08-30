@@ -1,7 +1,7 @@
 import { ClosedTradeDetail, Holdings, PositionRecord, TradeRecord } from '../api/client';
 import { fmtDate, fmtNum } from '../utils/format';
 
-/** LAST 25 TRADES 平仓明细表（nof1 列结构：SIDE/COIN/ENTRY/EXIT/QTY/HOLDING/NOTIONAL ENTRY|EXIT/FEES/NET P&L）。 */
+/** LAST 25 TRADES 平仓明细表（中文列结构：日期/方向/证券/买入价/卖出价/数量/持仓时长/买入金额/卖出金额/总费用/净盈亏）。 */
 export function LastTradesTable({ trades, currency = '$' }: { trades: ClosedTradeDetail[]; currency?: string }) {
   const holdText = (days: number | null): string => {
     if (days == null) return '—';
@@ -13,17 +13,17 @@ export function LastTradesTable({ trades, currency = '$' }: { trades: ClosedTrad
       <table className="data">
         <thead>
           <tr>
-            <th>DATE</th>
-            <th>SIDE</th>
-            <th>COIN</th>
-            <th>ENTRY PRICE</th>
-            <th>EXIT PRICE</th>
-            <th>QUANTITY</th>
-            <th>HOLDING TIME</th>
-            <th>NOTIONAL ENTRY</th>
-            <th>NOTIONAL EXIT</th>
-            <th>TOTAL FEES</th>
-            <th>NET P&L</th>
+            <th>日期</th>
+            <th>方向</th>
+            <th>证券</th>
+            <th>买入价</th>
+            <th>卖出价</th>
+            <th>数量</th>
+            <th>持仓时长</th>
+            <th>买入金额</th>
+            <th>卖出金额</th>
+            <th>总费用</th>
+            <th>净盈亏</th>
           </tr>
         </thead>
         <tbody>
@@ -35,7 +35,7 @@ export function LastTradesTable({ trades, currency = '$' }: { trades: ClosedTrad
             return (
               <tr key={`${t.exit_date}-${t.symbol}-${i}`}>
                 <td className="faint">{fmtDate(t.exit_date)}</td>
-                <td className="up">LONG</td>
+                <td className="up">买入</td>
                 <td><b>{t.symbol}</b></td>
                 <td>{fmtNum(t.entry_price)}</td>
                 <td>{fmtNum(t.exit_price)}</td>

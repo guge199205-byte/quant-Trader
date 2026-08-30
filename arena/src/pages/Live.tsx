@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import {
   BenchPoint,
   LogLine,
@@ -53,6 +53,8 @@ interface TradeEvt {
   symbol: string;
   amount: number;
   cash: number;
+  price: number | null;
+  notional: number | null;
 }
 
 const benchLabelOf = (market: MarketId): string =>
@@ -76,6 +78,7 @@ export default function Live() {
   const [chartRange, setChartRange] = useState<TimeRange>('all');
   const [chartMode, setChartMode] = useState<'pct' | 'dollar'>('pct');
   const [selectedModel, setSelectedModel] = useState<string>('all');
+  const [compMode, setCompMode] = useState(1);
 
   // 总控聚合（三市场一次拉取）
   const overview = usePolling(() => fetchOverview(), [], 30000);
@@ -171,6 +174,8 @@ export default function Live() {
           symbol: r.symbol,
           amount: r.amount,
           cash: r.cash_after ?? 0,
+          price: r.price ?? null,
+          notional: r.notional ?? null,
         }))
         .sort((a, b) => (a.date < b.date ? 1 : -1)),
     [trades.data],
@@ -196,30 +201,38 @@ export default function Live() {
   // ---------- 右侧列表渲染 ----------
   const renderList = () => {
     if (tab === 'comp') {
+      const modes = [
+        { id: 1, name: 'New Baseline', enabled: true, desc: '数据管道升级：本地数据仓库（后复权日线）、每日数据更新、全自主零样本、支持加仓。三市场（美股 / A股 / 港股）独立竞技。' },
+        { id: 2, name: 'Monk Mode', enabled: false, desc: '提示词精简 50%（更短的系统提示词，减少无效推理），同时强化风控护栏：单笔/持仓限额、日亏熔断、现金保留、黑名单。' },
+        { id: 3, name: 'Situational Awareness', enabled: false, desc: '模型感知自身排名与对手盈亏：排行榜上下文注入提示词，知己知彼——知道领先多少、落后多少，据此调整进攻/防守节奏。' },
+        { id: 4, name: 'Max Leverage', enabled: false, desc: '强制最大杠杆：NDX 标的 20 倍、其他 10 倍，高风险高回报。' },
+      ];
+      const active = modes.find((m) => m.id === compMode) ?? modes[0];
       return (
-        <div className="readme-body">
-          <h4>比赛配置 — 第 1 赛季</h4>
-          <p>
-            <b>New Baseline</b>（当前配置）—— 数据管道与交易能力基线。
-          </p>
-          <h4>1 · 数据管道</h4>
-          <p>三市场本地数据仓库（后复权日线），历史回放逐日推进，防未来函数。</p>
-          <h4>2 · 交易能力</h4>
-          <p>全自主零样本，LLM 推理决策；支持加仓；A股一手 100 股 / T+1 / 涨跌停约束。</p>
-          <h4>3 · 成本模型</h4>
-          <p>双边费率 0.03% × 2 + 滑点 ±0.05%，成交价取自本地日线数据。</p>
-          <h4>4 · 风控护栏</h4>
-          <p>单笔/持仓限额、日亏熔断、现金保留、黑名单，三条交易路径单点拦截。</p>
-          <h4>5 · Fair Play</h4>
-          <p>同起点资金、同一数据切片、同一工具集，公平竞技。</p>
-          <h4>6 · 记忆与进化</h4>
-          <p>每市场独立交易记忆：开盘读心得、收盘写经验，agent 自我沉淀。</p>
-          <div className="readme-links">
-            <Link to="/leaderboard">排行榜</Link>
-            <span>·</span>
-            <Link to="/models">模型</Link>
-            <span>·</span>
-            <Link to="/control">总控</Link>
+        <div className="comp-body">
+          <div className="comp-mode-list">
+            {modes.map((m) => (
+              <button
+                key={m.id}
+                className={`comp-mode ${compMode === m.id ? 'active' : ''}`}
+                onClick={() => setCompMode(m.id)}
+              >
+                <span className="comp-mode-num">{m.id}</span>
+                <span className="comp-mode-name">{m.name}</span>
+                <span className={`comp-mode-badge ${m.enabled ? 'on' : ''}`}>
+                  {m.enabled ? '当前启用' : '未启用'}
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="comp-desc">
+            <h4>{active.id} · {active.name}</h4>
+            <p>{active.desc}</p>
+            {!active.enabled && (
+              <p className="comp-note">
+                规划中——当前系统实际运行 {modes.find((m) => m.enabled)?.name} 配置。
+              </p>
+            )}
           </div>
         </div>
       );
@@ -295,22 +308,23 @@ export default function Live() {
       );
     }
 
-    // TRADES —— 原始成交流（选中模型的全部成交）
+    // TRADES —— 原始成交详细卡片（选中模型的全部成交）
     if (!tradeEvents.length) return <div className="empty-state">暂无成交</div>;
     return (
       <>
         {tradeEvents.map((e, i) => (
-          <div className="trade-list-item" key={`${e.date}-${i}`}>
-            <div className="trade-item-header">
-              <span className="trade-item-time">{e.date.slice(0, 10)}</span>
+          <div className="trade-card" key={`${e.date}-${i}`}>
+            <div className="trade-card-head">
               <span className={`trade-side ${e.side}`}>{e.side === 'buy' ? '买入' : '卖出'}</span>
+              <b className="trade-card-symbol">{e.symbol}</b>
+              <span className="trade-card-date">{e.date.slice(5)}</span>
             </div>
-            <div className="trade-details">
-              <span className="trade-symbol">{e.symbol}</span>
-              <span className="trade-qty">× {e.amount}</span>
-              <span className="trade-pnl">{fmtMoney(e.cash, meta.currency)}</span>
+            <div className="trade-card-grid">
+              <span>价格 <b>{e.price != null ? fmtMoney(e.price, meta.currency) : '—'}</b></span>
+              <span>数量 <b>{e.amount.toLocaleString('en-US')}</b></span>
+              <span>成交金额 <b>{e.notional != null ? fmtMoney(e.notional, meta.currency) : '—'}</b></span>
+              <span>现金 <b>{fmtMoney(e.cash, meta.currency)}</b></span>
             </div>
-            <div className="trade-cash">现金 {fmtMoney(e.cash, meta.currency)}</div>
           </div>
         ))}
       </>

@@ -13,8 +13,8 @@ interface Round {
 
 /** nof1.ai 风格模型对话：
  *  消息卡（模型色块 + 状态标签 + 日期 + 摘要 + click to expand）→ 展开后
- *  USER_PROMPT / CHAIN_OF_THOUGHT / TRADING_DECISIONS 三个折叠区块。
- *  TRADING_DECISIONS 由当日成交（/trades）拼出决策卡，字段对齐 nof1 结构，
+ *  用户提示词 / 思考链 / 交易决策 三个折叠区块。
+ *  交易决策 由当日成交（/trades）拼出决策卡，字段对齐 nof1 结构，
  *  我们没有的结构化字段（止损/止盈/置信度/杠杆等）显示 —。
  */
 export default function ModelChat({
@@ -39,7 +39,7 @@ export default function ModelChat({
     return m ? m[1] : null;
   };
 
-  /** 成交按日期索引（TRADING_DECISIONS 匹配） */
+  /** 成交按日期索引（交易决策 匹配） */
   const tradesByDate = useMemo(() => {
     const map = new Map<string, TradeRecord[]>();
     for (const t of trades ?? []) {
@@ -121,31 +121,31 @@ export default function ModelChat({
             <div className="mc-summary">{summary}…</div>
             {isOpen && (
               <div className="mc-body">
-                {/* USER_PROMPT */}
+                {/* 用户提示词 */}
                 {r.user && (
                   <div className={`mc-section ${sec.has('prompt') ? 'folded' : ''}`}>
                     <div className="mc-section-head" onClick={() => toggleSection(i, 'prompt')}>
                       <span className="mc-caret">{sec.has('prompt') ? '▶' : '▼'}</span>
-                      USER_PROMPT
+                      用户提示词
                     </div>
                     {!sec.has('prompt') && <pre className="mc-code">{r.user}</pre>}
                   </div>
                 )}
-                {/* CHAIN_OF_THOUGHT */}
+                {/* 思考链 */}
                 {r.thought && (
                   <div className={`mc-section ${sec.has('thought') ? 'folded' : ''}`}>
                     <div className="mc-section-head" onClick={() => toggleSection(i, 'thought')}>
                       <span className="mc-caret">{sec.has('thought') ? '▶' : '▼'}</span>
-                      CHAIN_OF_THOUGHT
+                      思考链
                     </div>
                     {!sec.has('thought') && <pre className="mc-code mc-thought">{r.thought}</pre>}
                   </div>
                 )}
-                {/* TRADING_DECISIONS */}
+                {/* 交易决策 */}
                 <div className={`mc-section ${sec.has('trades') ? 'folded' : ''}`}>
                   <div className="mc-section-head" onClick={() => toggleSection(i, 'trades')}>
                     <span className="mc-caret">{sec.has('trades') ? '▶' : '▼'}</span>
-                    TRADING_DECISIONS{dayTrades.length ? ` (${dayTrades.length})` : ''}
+                    交易决策{dayTrades.length ? ` (${dayTrades.length})` : ''}
                   </div>
                   {!sec.has('trades') &&
                     (dayTrades.length ? (
@@ -175,7 +175,7 @@ export default function ModelChat({
   );
 }
 
-/** nof1 决策卡：字段网格对齐 nof1.ai TRADING_DECISIONS 布局。
+/** nof1 决策卡：字段网格对齐 nof1.ai 交易决策 布局。
  *  有数据的填真实值；我们没有的结构化字段（止损/止盈/置信度/杠杆/风控位）显示 —。 */
 function DecisionCard({
   trade,
@@ -190,18 +190,18 @@ function DecisionCard({
 }) {
   const side = (trade.action ?? '').toLowerCase() === 'buy' ? 'buy' : 'sell';
   const fields: [string, string][] = [
-    ['COIN', `xyz:${trade.symbol}`],
-    ['SIGNAL', side],
-    ['QUANTITY', String(trade.amount)],
-    ['IS ADD', String(isAdd)],
-    ['CASH AFTER', fmtMoney(trade.cash_after ?? 0, currency)],
-    ['LEVERAGE', '—'],
-    ['STOP LOSS', '—'],
-    ['PROFIT TARGET', '—'],
-    ['CONFIDENCE', '—'],
-    ['RISK USD', '—'],
-    ['INVALIDATION CONDITION', '—'],
-    ['JUSTIFICATION', thought ? thought.replace(/\s+/g, ' ').slice(0, 160) + '…' : '—'],
+    ['证券', `xyz:${trade.symbol}`],
+    ['信号', side],
+    ['数量', String(trade.amount)],
+    ['加仓', String(isAdd)],
+    ['成交后现金', fmtMoney(trade.cash_after ?? 0, currency)],
+    ['杠杆', '—'],
+    ['止损', '—'],
+    ['止盈', '—'],
+    ['置信度', '—'],
+    ['风险金额', '—'],
+    ['失效条件', '—'],
+    ['决策理由', thought ? thought.replace(/\s+/g, ' ').slice(0, 160) + '…' : '—'],
   ];
   return (
     <div className="mc-decision">

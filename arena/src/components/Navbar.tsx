@@ -3,6 +3,12 @@ import { MarketId } from '../api/client';
 import './Navbar.css';
 
 /** 复刻 coke-nof1 导航：黑 2px 底边 + 居中菜单 + 右侧外链 */
+const MARKET_LABELS: Record<MarketId, string> = {
+  us: '🇺🇸 美股',
+  cn: '🇨🇳 A股',
+  hk: '🇭🇰 港股',
+};
+
 export function MarketSwitcher({
   market,
   onChange,
@@ -19,7 +25,7 @@ export function MarketSwitcher({
           style={{ borderRadius: 0 }}
           onClick={() => onChange(m)}
         >
-          {m.toUpperCase()}
+          {MARKET_LABELS[m]}
         </button>
       ))}
     </div>

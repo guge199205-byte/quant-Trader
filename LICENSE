@@ -1,6 +1,11 @@
 MIT License
 
-Copyright (c) 2025 HKUDS
+Copyright (c) 2026 Quant-Agent-Trader contributors
+
+Upstream attribution: portions of this software are derived from AI-Trader
+(Copyright (c) 2025 HKUDS) and its fork BayMax-Trader (Copyright (c) 2025
+jwangkun), both distributed under the MIT License; their copyright and
+permission notices are retained in the git history of this repository.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,4 +24,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-

@@ -282,6 +282,6 @@ docs/                 # 规划与架构文档
 
 ## 📄 License
 
-MIT License（继承自 BayMax-Trader / AI-Trader）
+MIT License（Copyright © 2026 Quant-Agent-Trader contributors；上游代码归属见 LICENSE 文件）
 
 > ⚠️ 免责声明：本项目仅供研究学习，所有交易均为模拟盘，不构成任何投资建议。接入实盘前请充分了解风险，并确保风控配置到位。

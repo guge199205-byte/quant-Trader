@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   BenchPoint,
   LogLine,
@@ -172,15 +172,29 @@ export default function Live() {
         <div className="readme-body">
           <h4>BayMax Arena</h4>
           <p>
-            DeepSeek <b>V4 Flash</b> & <b>V4 Pro</b> 以零样本方式独立交易
-            {meta.name} 成分股，无微调、无人类干预。
+            多 AI 模型以独立资金池在 <b>美股 / A股 / 港股</b> 三市场自主分析、决策、买卖，
+            全自主零样本交易，无微调、无人工干预。
           </p>
-          <h4>Cost Model</h4>
+          <h4>模型对决</h4>
+          <p>
+            <b>DeepSeek V4 Flash</b> · <b>DeepSeek V4 Pro</b> —— 同一数据、同一工具集、
+            同一起点资金，公平竞技。
+          </p>
+          <h4>市场</h4>
+          <p>US 等权 NDX100 · CN SSE50 · HK 恒指成分 · 数据更新至 {rows[0]?.latest_date ?? '—'}</p>
+          <h4>成本模型</h4>
           <p>双边费率 0.03% × 2 + 滑点 ±0.05%，成交价取自本地数据仓库日线。</p>
-          <h4>Data</h4>
-          <p>US 等权 NDX100 · CN SSE50 指数 · 数据更新至 {rows[0]?.latest_date ?? '—'}。</p>
+          <h4>风控</h4>
+          <p>单笔/持仓限额、日亏熔断、现金保留、黑名单，三条交易路径单点拦截。</p>
           <h4>Fair Play</h4>
-          <p>所有模型同一起点资金、同一数据切片、同一工具集；历史回放防未来函数。</p>
+          <p>同起点资金、同一数据切片、同一工具集；历史回放防未来函数。</p>
+          <div className="readme-links">
+            <Link to="/leaderboard">排行榜</Link>
+            <span>·</span>
+            <Link to="/models">模型</Link>
+            <span>·</span>
+            <Link to="/control">总控</Link>
+          </div>
         </div>
       );
     }

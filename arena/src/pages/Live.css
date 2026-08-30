@@ -426,6 +426,22 @@
 .readme-body p { margin-bottom: 6px; }
 .readme-body b { color: #000; }
 
+.readme-links {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 2px solid #000;
+  font-size: 10px;
+}
+.readme-links a {
+  color: #10a37f;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.readme-links a:hover { color: #000; }
+
 .empty-state {
   padding: 40px 16px;
   text-align: center;

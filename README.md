@@ -16,7 +16,8 @@
 | 📝 **交易记忆系统** | 每市场独立记忆文件，agent 开盘读心得、收盘写经验，超 200 行自动归档 |
 | 🛡️ **风控网关** | 单笔/持仓限额、日亏熔断（权益口径）、现金保留、黑名单，三条交易路径单点拦截 |
 | 🔌 **Broker 可插拔** | sandbox（模拟盘）/ tdx（通达信桥，下单待移植）/ futu / tiger / ibkr（规划中） |
-| ⚡ **前端实时化** | FastAPI 代理层（8091），交易结果即时可见，无需手动同步快照 |
+| ⚡ **双前端实时化** | AI-agent 实时看板（8080，四页：实盘/排行榜/模型/总控）+ Arena 竞技场（8092，coke-nof1 终端风：实况/排行榜/模型/总控/关于），同接 FastAPI 8091，交易结果即时可见 |
+| 🤖 **双模型对决** | DeepSeek V4 Flash · V4 Pro 零样本竞技：同一数据、同一工具集、同一起点资金公平对决 |
 
 ---
 
@@ -81,8 +82,9 @@ docker compose logs -f mcp-cn
 
 | 服务 | 地址 | 说明 |
 |------|------|------|
-| 前端（排行榜/模型） | http://192.168.31.68:8080 | 三市场切换、净值曲线、成交面板 |
-| API | http://192.168.31.68:8091 | `/api/status` `/api/agents?market=` `/api/data/*` |
+| AI-agent 实时看板 | http://192.168.31.68:8080 | 实盘（净值/持仓/成交/分析）/ 排行榜 / 模型 / 总控，三市场切换 |
+| Arena 竞技场 | http://192.168.31.68:8092 | coke 终端风：实况 / 排行榜 / 模型 / 总控 / 关于（nginx 同源反代 8091，token 自动注入） |
+| API | http://192.168.31.68:8091 | `/api/overview` `/api/metrics` `/api/agents?market=` `/api/data/*` |
 | dsh Web | http://localhost:3081 | agent 会话/工具调用可视化（绑宿主 127.0.0.1） |
 
 ---
@@ -156,11 +158,14 @@ class MySource(DataSource):
 
 | 端点 | 说明 |
 |------|------|
+| `GET /api/overview` | 三市场 agent 聚合（含 summary 扩展指标、最新日期） |
+| `GET /api/metrics` | 服务健康（api/mcp_us/mcp_cn/mcp_hk/dsh）+ 各市场统计 + 最近交易时间 |
 | `GET /api/status` | 服务健康 + 当前运行状态 |
 | `GET /api/config` | 后端配置（脱敏） |
 | `GET /api/agents?market=` | agent 列表（按市场过滤） |
-| `GET /api/agents/{a}/positions` | 持仓序列 |
-| `GET /api/agents/{a}/trades` | 交易流水 |
+| `GET /api/agents/{a}/positions` | 持仓序列（每日快照） |
+| `GET /api/agents/{a}/trades` | 交易流水（顶层 `{date, action, symbol, amount, cash_after}`） |
+| `GET /api/agents/{a}/logs` | 决策日志（`{signature, new_messages[]}`） |
 | `GET /api/agents/{a}/performance?market=` | 净值/收益/回撤（排行榜按市场切换） |
 | `GET /api/data/{path}` | 实时代理（根目录 data/ 优先） |
 
@@ -206,7 +211,8 @@ config/backend.yaml   # 后端总配置（server/markets/broker/datasource/risk�
 configs/              # agent 配置（default_config.json US / astock_config.json CN / deepseek_*_test.json）
 scripts/              # sync_from_quantmind.py / backfill_us_agent.sh / serve_nof0.py / 探活自愈
 dsh/                  # DeepSeek Harness 集成（persona + MCP 挂载）
-nof0/                 # 前端（实时看板，中文化，响应式）
+nof0/                 # AI-agent 实时看板前端（8080，中文化，响应式，浏览器带 token）
+arena/                # Arena 竞技场前端（8092，coke-nof1 终端风复刻，React+Vite，nginx 注入 token）
 data/                 # 交易数据（gitignore；价格文件 + agent_data/ US + agent_data_astock/ CN）
 docs/                 # 规划与架构文档
 ```
@@ -236,10 +242,13 @@ docs/                 # 规划与架构文档
 - [x] 交易记忆系统（每市场独立，自动归档）
 - [x] 风控网关（单笔/持仓/熔断/黑名单）
 - [x] Broker + 数据源抽象层
+- [x] 双模型对决（DeepSeek V4 Flash / V4 Pro 零样本竞技）
+- [x] 双前端（AI-agent 看板 8080 + Arena 竞技场 8092）
+- [x] summary 扩展指标（夏普/胜率/盈亏比/费用/平均持仓）
 - [ ] TDX 实盘下单移植（风控已就位）
 - [ ] 富途 OpenD / 老虎 / IBKR adapter
 - [ ] dsh 定时收盘复盘 + 多渠道推送
-- [ ] SQLite 元数据 + 事件流
+- [ ] 每日自动调度（daily_trade.sh + cron）
 
 ---
 

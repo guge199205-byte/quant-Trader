@@ -1,0 +1,140 @@
+/* 模型页 —— 参考 nof0 models.html，coke 视觉（白卡黑边 + 模型色条） */
+
+.models-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.models-title {
+  font-size: 24px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-family: 'Courier New', monospace;
+}
+
+.models-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+@media (max-width: 900px) {
+  .models-stats { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 560px) {
+  .models-stats { grid-template-columns: 1fr; }
+}
+
+/* 卡片网格 */
+.models-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.model-card-lg {
+  background: #fff;
+  border: 2px solid #000;
+  border-radius: 0;
+  padding: 14px 16px;
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.model-card-lg::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 4px;
+  background: var(--card-accent, #000);
+}
+
+.model-card-lg:hover {
+  transform: translateY(-2px);
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.12);
+}
+
+.md-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.md-logo { font-size: 20px; line-height: 1; }
+.md-name { font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.3px; }
+
+.md-market {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border: 1px solid #000;
+}
+
+.md-badge {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  font-family: 'Courier New', monospace;
+}
+.md-badge.win { color: #10a37f; border-color: #10a37f; }
+.md-badge.loss { color: #ef4444; border-color: #ef4444; }
+
+.md-equity {
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  font-family: 'Courier New', monospace;
+  margin-bottom: 8px;
+}
+.md-equity small { font-size: 12px; font-weight: 700; margin-left: 6px; }
+
+.md-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+}
+.md-metrics .m { display: flex; justify-content: space-between; }
+.md-metrics .k { color: #666; }
+.md-metrics .v { font-variant-numeric: tabular-nums; font-weight: 500; }
+
+.md-holdings {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.holding-chip {
+  font-size: 9px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  padding: 2px 6px;
+  background: #f5f5f5;
+  border: 1px solid #000;
+}
+.holding-more { font-size: 9px; color: #666; font-family: 'Courier New', monospace; align-self: center; }
+
+.md-status {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #000;
+  font-size: 10px;
+  color: #666;
+  display: flex;
+  justify-content: space-between;
+  font-family: 'Courier New', monospace;
+}

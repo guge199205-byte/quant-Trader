@@ -68,6 +68,7 @@ export default function Live() {
 
   const [tab, setTab] = useState<Tab>('all');
   const [chartRange, setChartRange] = useState<TimeRange>('all');
+  const [chartMode, setChartMode] = useState<'pct' | 'dollar'>('pct');
   const [selectedModel, setSelectedModel] = useState<string>('all');
 
   // 总控聚合（三市场一次拉取）
@@ -309,13 +310,20 @@ export default function Live() {
               <button className={`time-btn ${chartRange === '5d' ? 'active' : ''}`} onClick={() => setChartRange('5d')}>
                 近5日
               </button>
+              <span style={{ width: 1, height: 16, background: '#000', margin: '0 2px' }} />
+              <button className={`time-btn ${chartMode === 'dollar' ? 'active' : ''}`} onClick={() => setChartMode('dollar')}>
+                $
+              </button>
+              <button className={`time-btn ${chartMode === 'pct' ? 'active' : ''}`} onClick={() => setChartMode('pct')}>
+                %
+              </button>
             </div>
           </div>
           {overview.loading && !rows.length ? (
             <div className="loading"><div className="spinner" />加载中…</div>
           ) : (
             <>
-              <EquityChart lines={lines} benchmark={benchLine} currency={meta.currency} timeRange={chartRange} />
+              <EquityChart lines={lines} benchmark={benchLine} currency={meta.currency} mode={chartMode} timeRange={chartRange} />
               <div className="chart-legend" style={{ marginTop: 6 }}>
                 {lines.map((l) => (
                   <span className="legend-item" key={l.id}>

@@ -42,6 +42,10 @@ export default function Navbar() {
           <li className="separator">|</li>
           <li><NavLink to="/leaderboard" className={({ isActive }) => (isActive ? 'active' : '')}>排行榜</NavLink></li>
           <li className="separator">|</li>
+          <li><NavLink to="/models" className={({ isActive }) => (isActive ? 'active' : '')}>模型</NavLink></li>
+          <li className="separator">|</li>
+          <li><NavLink to="/control" className={({ isActive }) => (isActive ? 'active' : '')}>总控</NavLink></li>
+          <li className="separator">|</li>
           <li><NavLink to="/about" className={({ isActive }) => (isActive ? 'active' : '')}>关于</NavLink></li>
         </ul>
 

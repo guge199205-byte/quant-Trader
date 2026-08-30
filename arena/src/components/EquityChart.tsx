@@ -26,37 +26,41 @@ export interface BenchLine {
 const margin = { top: 16, right: 16, bottom: 34, left: 62 };
 
 /** 多模型净值对比图（visx，浅色终端风）。
- *  多市场币种不同 → 始终归一化到 100 起点，基准天然同轴。
+ *  mode: 'pct' = 归一化 100 起点（多市场/多币种可对比，基准天然同轴）；
+ *        'dollar' = 绝对净值（同币种单市场对比）。
  *  timeRange: 'all' | '5d' 控制时间窗（5d = 最近 5 个交易日）。 */
 export default function EquityChart({
   lines,
   benchmark,
   currency = '$',
+  mode = 'pct',
   timeRange = 'all',
   height = 380,
 }: {
   lines: ChartLine[];
   benchmark?: BenchLine | null;
   currency?: string;
+  mode?: 'pct' | 'dollar';
   timeRange?: 'all' | '5d';
   height?: number;
 }) {
   const [hover, setHover] = useState<{ x: number; y: number; label: string; v: number } | null>(null);
 
-  // 时间窗裁剪 + 归一化 100 起点
+  // 时间窗裁剪 + 归一化（pct）/ 绝对（dollar）
   const display = useMemo(() => {
     const windowed = (pts: { t: number; v: number }[]) =>
       timeRange === '5d' && pts.length > 5 ? pts.slice(-5) : pts;
-    const norm = (pts: { t: number; v: number }[]) => {
+    const toDisplay = (pts: { t: number; v: number }[]) => {
       const w = windowed(pts);
+      if (mode === 'dollar') return w;
       const base = w[0]?.v || 1;
       return w.map((p) => ({ t: p.t, v: (p.v / base) * 100 }));
     };
     return {
-      lines: lines.map((l) => ({ ...l, points: norm(l.points) })),
-      bench: benchmark ? { ...benchmark, points: norm(benchmark.points) } : null,
+      lines: lines.map((l) => ({ ...l, points: toDisplay(l.points) })),
+      bench: benchmark && mode === 'pct' ? { ...benchmark, points: toDisplay(benchmark.points) } : null,
     };
-  }, [lines, benchmark, timeRange]);
+  }, [lines, benchmark, mode, timeRange]);
 
   const domain = useMemo(() => {
     const all = [...display.lines, ...(display.bench ? [display.bench] : [])];
@@ -71,9 +75,10 @@ export default function EquityChart({
       }
     }
     if (!Number.isFinite(vMin) || vMin === vMax) { vMin = 0; vMax = 1; }
+    if (mode === 'dollar' && vMin < 0) vMin = 0; // 绝对净值不画负区
     const pad = (vMax - vMin) * 0.07 || 1;
     return { tMin, tMax, vMin: vMin - pad, vMax: vMax + pad };
-  }, [display]);
+  }, [display, mode]);
 
   if (!lines.length) {
     return <div className="loading">暂无净值数据</div>;
@@ -148,7 +153,7 @@ export default function EquityChart({
                       <circle cx={x} cy={y} r={3.2} fill={l.color} stroke="#fff" strokeWidth={1.5} />
                       <text x={x + 8} y={y - 7} fill={l.color} fontSize={11} fontWeight={700}
                         fontFamily="'Courier New', monospace">
-                        {Number(last.v).toFixed(1)}
+                        {mode === 'pct' ? Number(last.v).toFixed(1) : fmtMoney(last.v, currency, 0)}
                       </text>
                     </Group>
                   );
@@ -160,7 +165,7 @@ export default function EquityChart({
                       fill="#fff" stroke="#000" strokeWidth={1} />
                     <text x={Math.min(hover.x + 12, iw - 130)} y={Math.max(hover.y - 16, 12)} fill="#000" fontSize={10}
                       fontFamily="'Courier New', monospace">
-                      {hover.label}: {Number(hover.v).toFixed(1)}
+                      {hover.label}: {mode === 'pct' ? Number(hover.v).toFixed(1) : fmtMoney(hover.v, currency, 0)}
                     </text>
                   </Group>
                 )}

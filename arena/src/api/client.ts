@@ -82,6 +82,22 @@ export interface Overview {
   markets: Record<MarketId, OverviewRow[]>;
 }
 
+/** /api/metrics：服务健康 + 各市场统计 + 最近交易时间 */
+export interface Metrics {
+  services: Record<string, 'up' | 'down'>;
+  markets?: Record<MarketId, { agents: number; position_records: number; memory_lines: number }>;
+  latest_trade_age_sec: number | null;
+  generated_at?: number;
+}
+
+export const SERVICE_NAMES: Record<string, string> = {
+  api: 'API',
+  mcp_us: '美股 MCP',
+  mcp_cn: 'A股 MCP',
+  mcp_hk: '港股 MCP',
+  dsh: 'dsh 引擎',
+};
+
 // ---------- 端点封装 ----------
 
 /** 解包 {success, data} 信封（先 await 再取 data） */
@@ -90,6 +106,9 @@ const unwrap = async <T>(promise: Promise<{ data: { success: boolean; data: T } 
 
 export const fetchOverview = () =>
   unwrap<Overview>(api.get('/overview')).then((d) => d);
+
+export const fetchMetrics = () =>
+  unwrap<Metrics>(api.get('/metrics')).then((d) => d);
 
 export const fetchAgents = (market: MarketId) =>
   unwrap<AgentInfo[]>(api.get('/agents', { params: { market } }));

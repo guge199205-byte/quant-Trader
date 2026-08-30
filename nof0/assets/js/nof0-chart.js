@@ -302,13 +302,35 @@ class Nof0ChartManager {
             const baseColor = this.colors[agentName] || this.generateColor(agentName);
 
             // 渐变填充（线条下方淡出，透明度调低避免大面积深色"黑底"）
+            // 注意：baseColor 可能是 hex（#4d6bfe）或 hsl（hsl(320, 70%, 50%)），
+            // 直接拼接 8 位 alpha 对 hsl 是无效颜色，Chart.js 会回退黑色填充 → 黑底
             const chartCtx = this.chart ? this.chart.ctx : null;
-            let fillGradient = baseColor + '0A';
+            // Chart.js 的颜色解析不支持 8 位 hex / hsl 空格 alpha 语法（解析失败会回退成深色填充），
+            // 统一转成经典 rgba() 格式
+            const withAlpha = (color, alpha) => {
+                if (typeof color !== 'string') return color;
+                let m;
+                if ((m = color.match(/^#([0-9a-f]{6})$/i))) {
+                    const n = parseInt(m[1], 16);
+                    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+                }
+                if ((m = color.match(/^hsl\((\d+),\s*([\d.]+)%,\s*([\d.]+)%\)$/i))) {
+                    const h = parseFloat(m[1]) / 360, s = parseFloat(m[2]) / 100, l = parseFloat(m[3]) / 100;
+                    const f = n => {
+                        const k = (n + h * 12) % 12;
+                        const a = s * Math.min(l, 1 - l);
+                        return Math.round((l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))) * 255);
+                    };
+                    return `rgba(${f(0)}, ${f(8)}, ${f(4)}, ${alpha})`;
+                }
+                return color;
+            };
+            let fillGradient = withAlpha(baseColor, 0.04);
             if (chartCtx && chartCtx.canvas) {
                 try {
                     const g = chartCtx.createLinearGradient(0, 0, 0, chartCtx.canvas.height);
-                    g.addColorStop(0, baseColor + '14');
-                    g.addColorStop(1, baseColor + '00');
+                    g.addColorStop(0, withAlpha(baseColor, 0.08));
+                    g.addColorStop(1, withAlpha(baseColor, 0));
                     fillGradient = g;
                 } catch (e) { /* fallback 透明色 */ }
             }
@@ -316,7 +338,7 @@ class Nof0ChartManager {
             datasets.push({
                 label: this.getAgentDisplayName(agentName),
                 data: filteredData,
-                borderColor: isSelected ? baseColor : baseColor + '40', // 未选中时透明度降低
+                borderColor: isSelected ? baseColor : withAlpha(baseColor, 0.25), // 未选中时透明度降低
                 backgroundColor: fillGradient,
                 fill: isSelected, // 选中线条带渐变填充
                 tension: 0.38, // 更顺滑的曲线

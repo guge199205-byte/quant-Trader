@@ -191,6 +191,16 @@ class DataLoader {
         }
     }
 
+    // 兼容多种价格文件字段命名：AlphaVantage（'4. close' / '4. sell price'）与
+    // quantmind 同步格式（'close'）。返回 float，无效返回 null。
+    getCloseValue(day) {
+        if (!day) return null;
+        const raw = day['4. close'] ?? day['4. sell price'] ?? day['close'];
+        if (raw === undefined || raw === null || raw === '') return null;
+        const v = parseFloat(raw);
+        return isNaN(v) ? null : v;
+    }
+
     // Get closing price for a symbol on a specific date/time
     async getClosingPrice(symbol, dateOrTimestamp) {
         const prices = await this.loadStockPrice(symbol);
@@ -199,28 +209,26 @@ class DataLoader {
         }
 
         // Try exact match first (for hourly data like "2025-10-01 10:00:00")
-        if (prices[dateOrTimestamp]) {
-            const closePrice = prices[dateOrTimestamp]['4. close'] || prices[dateOrTimestamp]['4. sell price'];
-            return closePrice ? parseFloat(closePrice) : null;
+        const exact = this.getCloseValue(prices[dateOrTimestamp]);
+        if (exact !== null) {
+            return exact;
         }
 
         // For A-shares: Extract date only for daily data matching
         if (['cn', 'hk', 'us'].includes(this.currentMarket)) {
             const dateOnly = dateOrTimestamp.split(' ')[0]; // "2025-10-01 10:00:00" -> "2025-10-01"
-            if (prices[dateOnly]) {
-                const closePrice = prices[dateOnly]['4. close'] || prices[dateOnly]['4. sell price'];
-                return closePrice ? parseFloat(closePrice) : null;
+            const byDate = this.getCloseValue(prices[dateOnly]);
+            if (byDate !== null) {
+                return byDate;
             }
 
             // If still not found, try to find the closest timestamp on the same date (for hourly data)
-            const datePrefix = dateOnly;
-            const matchingKeys = Object.keys(prices).filter(key => key.startsWith(datePrefix));
+            const matchingKeys = Object.keys(prices).filter(key => key.startsWith(dateOnly));
 
             if (matchingKeys.length > 0) {
                 // Use the last (most recent) timestamp for that date
                 const lastKey = matchingKeys.sort().pop();
-                const closePrice = prices[lastKey]['4. close'] || prices[lastKey]['4. sell price'];
-                return closePrice ? parseFloat(closePrice) : null;
+                return this.getCloseValue(prices[lastKey]);
             }
         }
 
@@ -545,11 +553,9 @@ class DataLoader {
                 if (startDate && date < startDate) continue;
                 if (endDate && date > endDate) continue;
 
-                // Support both US format ('4. close') and A-share format ('4. sell price')
-                const closePrice = timeSeries[date]['4. close'] || timeSeries[date]['4. sell price'];
-                if (!closePrice) continue;
-
-                const price = parseFloat(closePrice);
+                // 兼容 AlphaVantage（'4. close' / '4. sell price'）与 quantmind 同步格式（'close'）
+                const price = this.getCloseValue(timeSeries[date]);
+                if (price === null) continue;
                 if (!benchmarkStartPrice) {
                     benchmarkStartPrice = price;
                 }

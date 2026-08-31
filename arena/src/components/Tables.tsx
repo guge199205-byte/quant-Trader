@@ -1,8 +1,20 @@
 import { ClosedTradeDetail, Holdings, PositionRecord, TradeRecord } from '../api/client';
 import { fmtDate, fmtNum } from '../utils/format';
 
+/** 证券单元格：有中文名 → 名称 + 小字灰代码；无 → 代码加粗（风格对齐 Live 实盘 pos-name/code） */
+const SymCell = ({ sym, names }: { sym: string; names?: Record<string, string> }) => {
+  const n = names?.[sym];
+  if (!n) return <b>{sym}</b>;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap' }}>
+      <b>{n}</b>
+      <span className="faint" style={{ fontSize: 10, fontWeight: 400, fontVariantNumeric: 'tabular-nums' }}>{sym}</span>
+    </span>
+  );
+};
+
 /** LAST 25 TRADES 平仓明细表（中文列结构：日期/方向/证券/买入价/卖出价/数量/持仓时长/买入金额/卖出金额/总费用/净盈亏）。 */
-export function LastTradesTable({ trades, currency = '$' }: { trades: ClosedTradeDetail[]; currency?: string }) {
+export function LastTradesTable({ trades, currency = '$', names }: { trades: ClosedTradeDetail[]; currency?: string; names?: Record<string, string> }) {
   const holdText = (days: number | null): string => {
     if (days == null) return '—';
     if (days < 1) return `${Math.round(days * 24)}H 0M`;
@@ -36,7 +48,7 @@ export function LastTradesTable({ trades, currency = '$' }: { trades: ClosedTrad
               <tr key={`${t.exit_date}-${t.symbol}-${i}`}>
                 <td className="faint">{fmtDate(t.exit_date)}</td>
                 <td className="up">买入</td>
-                <td><b>{t.symbol}</b></td>
+                <td><SymCell sym={t.symbol} names={names} /></td>
                 <td>{fmtNum(t.entry_price)}</td>
                 <td>{fmtNum(t.exit_price)}</td>
                 <td>{t.qty.toLocaleString('en-US')}</td>
@@ -57,7 +69,7 @@ export function LastTradesTable({ trades, currency = '$' }: { trades: ClosedTrad
 }
 
 /** 持仓明细表：数量/成本/最新价/市值/浮动盈亏/占比（含现金行）。 */
-export function HoldingsTable({ data, currency = '$' }: { data: Holdings | null; currency?: string }) {
+export function HoldingsTable({ data, currency = '$', names }: { data: Holdings | null; currency?: string; names?: Record<string, string> }) {
   if (!data) return null;
   const rows = data.holdings;
   return (
@@ -87,7 +99,7 @@ export function HoldingsTable({ data, currency = '$' }: { data: Holdings | null;
           )}
           {rows.map((h) => (
             <tr key={h.symbol}>
-              <td><b>{h.symbol}</b></td>
+              <td><SymCell sym={h.symbol} names={names} /></td>
               <td>{h.qty.toLocaleString('en-US')}</td>
               <td>{fmtNum(h.price)}</td>
               <td className="faint">{fmtNum(h.entry_price)}</td>
@@ -107,7 +119,7 @@ export function HoldingsTable({ data, currency = '$' }: { data: Holdings | null;
 }
 
 /** 持仓记录表：{date, positions}；positions: {CASH: number, SYMBOL: qty}。 */
-export function PositionsTable({ records, currency = '$' }: { records: PositionRecord[]; currency?: string }) {
+export function PositionsTable({ records, currency = '$', names }: { records: PositionRecord[]; currency?: string; names?: Record<string, string> }) {
   const last = records[records.length - 1];
   const rows = last ? Object.entries(last.positions) : [];
 
@@ -129,7 +141,7 @@ export function PositionsTable({ records, currency = '$' }: { records: PositionR
           {rows.map(([sym, qty]) => (
             <tr key={sym}>
               <td>{fmtDate(last?.date)}</td>
-              <td>{sym === 'CASH' ? <span className="accent">CASH</span> : sym}</td>
+              <td>{sym === 'CASH' ? <span className="accent">CASH</span> : <SymCell sym={sym} names={names} />}</td>
               <td>{qty === 0 ? '—' : Number(qty).toLocaleString('en-US')}</td>
               <td>{sym === 'CASH' ? `${currency}${Number(qty).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}</td>
             </tr>
@@ -141,7 +153,7 @@ export function PositionsTable({ records, currency = '$' }: { records: PositionR
 }
 
 /** 交易明细表：/trades 顶层字段 {date, action, symbol, amount, cash_after} */
-export function TradesTable({ records, currency = '$' }: { records: TradeRecord[]; currency?: string }) {
+export function TradesTable({ records, currency = '$', names }: { records: TradeRecord[]; currency?: string; names?: Record<string, string> }) {
   return (
     <div className="table-wrap">
       <table className="data">
@@ -164,7 +176,7 @@ export function TradesTable({ records, currency = '$' }: { records: TradeRecord[
               <tr key={`${t.date}-${i}`}>
                 <td>{fmtDate(t.date)}</td>
                 <td className={buy ? 'up' : 'down'}>{buy ? '▲ BUY' : '▼ SELL'}</td>
-                <td>{t.symbol}</td>
+                <td><SymCell sym={t.symbol} names={names} /></td>
                 <td>{t.amount}</td>
                 <td className="faint">{currency}{Number(t.cash_after ?? 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</td>
               </tr>

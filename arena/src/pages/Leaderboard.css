@@ -112,3 +112,22 @@
   font-family: 'Courier New', monospace;
   letter-spacing: 0.5px;
 }
+
+/* 融合页：排行榜表格下方模型卡片区块标题 */
+.leaderboard-cards-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 28px;
+  margin-bottom: 12px;
+  border-top: 1px dashed #999;
+  padding-top: 20px;
+}
+
+.leaderboard-cards-title {
+  font-size: 16px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}

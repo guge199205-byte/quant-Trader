@@ -1,9 +1,8 @@
-import { Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import Home from './pages/Home';
 import Live from './pages/Live';
 import Leaderboard from './pages/Leaderboard';
-import Models from './pages/Models';
 import Control from './pages/Control';
 import TradingSettings from './pages/TradingSettings';
 import DataPlatform from './pages/DataPlatform';
@@ -19,7 +18,8 @@ export default function App() {
         <Route path="/" element={<Home />} />
         <Route path="/live" element={<Live />} />
         <Route path="/leaderboard" element={<Leaderboard />} />
-        <Route path="/models" element={<Models />} />
+        {/* 原"模型"页已融合进"模型排行榜"（/leaderboard），旧链接重定向 */}
+        <Route path="/models" element={<Navigate to="/leaderboard" replace />} />
         <Route path="/control" element={<Control />} />
         <Route path="/trading" element={<TradingSettings />} />
         <Route path="/data-platform" element={<DataPlatform />} />

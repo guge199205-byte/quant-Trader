@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { MarketId, OverviewRow, fetchOverview, marketMeta } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
 import { logoOf } from '../components/ModelCard';
+import ModelCards from '../components/ModelCards';
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format';
 import './Leaderboard.css';
 
@@ -16,7 +17,7 @@ interface RankRow {
   summary: NonNullable<OverviewRow['summary']>;
 }
 
-/** 排行榜 —— 终端风：统计卡 + 可排序排名表（3 市场 × 2 模型，扩展指标列） */
+/** 模型排行榜 —— 终端风：统计卡 + 可排序排名表 + 模型卡片网格（原"模型"页融合于此） */
 export default function Leaderboard() {
   const nav = useNavigate();
   const [filter, setFilter] = useState<MarketId | 'all'>('cn');
@@ -97,7 +98,7 @@ export default function Leaderboard() {
   return (
     <div className="page">
       <div className="leaderboard-header">
-        <h1 className="leaderboard-title">排行榜</h1>
+        <h1 className="leaderboard-title">模型排行榜</h1>
         <div className="market-chips">
           {([
             ['all', '全部'],
@@ -260,6 +261,12 @@ export default function Leaderboard() {
         每 30 秒刷新 · 第 1 赛季(08-24~08-28 回放) ·{' '}
         {[...new Set(rows.map((r) => r.agent.replace('deepseek-v4-', 'V4 ')))].sort().join(' · ')}
       </div>
+
+      <div className="leaderboard-cards-head">
+        <span className="leaderboard-cards-title">模型卡片</span>
+        <span className="faint" style={{ fontSize: 11, letterSpacing: '0.08em' }}>CLICK TO VIEW DETAIL</span>
+      </div>
+      <ModelCards filter={filter} />
     </div>
   );
 }

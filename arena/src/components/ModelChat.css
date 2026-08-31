@@ -156,11 +156,12 @@
   min-width: 0;
 }
 
-.mc-field:nth-child(2n) {
+.mc-field:nth-child(2n),
+.mc-field-wide {
   border-right: none;
 }
 
-.mc-field:nth-last-child(-n + 2) {
+.mc-field:nth-last-child(-n + 1) {
   border-bottom: none;
 }
 
@@ -182,6 +183,40 @@
 .mc-val.na {
   color: #bbb;
   font-weight: 400;
+}
+
+/* 决策卡：证券中文名 + 小字灰代码 */
+.mc-sym-name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+
+.mc-sym-code {
+  font-size: 9px;
+  font-weight: 400;
+  color: #999;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 买入红 / 卖出绿（跟随全局 up/down 语义） */
+.mc-side.buy {
+  color: #e0483e;
+}
+
+.mc-side.sell {
+  color: #12b886;
+}
+
+/* 决策理由：全宽行 + 正文（非粗体，可换行） */
+.mc-field-wide {
+  grid-column: 1 / -1;
+}
+
+.mc-reason {
+  font-weight: 400;
+  line-height: 1.6;
 }
 
 .mc-no-trade {

@@ -7,6 +7,7 @@ import {
   fetchLogs,
   fetchPerformance,
   fetchPositions,
+  fetchStockNames,
   fetchTradeDetail,
   fetchTrades,
   marketMeta,
@@ -49,6 +50,9 @@ export default function ModelDetail() {
     30000,
   );
   const bench = usePolling(() => fetchBenchmark(m), [m], 300000);
+  // 股票中文名表（上证50/恒指/纳指 + quantdb 全市场），10 分钟缓存
+  const stockNames = usePolling(() => fetchStockNames(m), [m], 600000);
+  const names = stockNames.data ?? {};
 
   const benchLine = useMemo(
     () =>
@@ -143,17 +147,17 @@ export default function ModelDetail() {
         </div>
         {tab === 'positions' && (
           <>
-            <HoldingsTable data={holdings.data ?? null} currency={meta.currency} />
+            <HoldingsTable data={holdings.data ?? null} currency={meta.currency} names={names} />
             <div className="panel-title" style={{ marginTop: 18 }}>持仓历史快照</div>
-            <PositionsTable records={positions.data ?? []} currency={meta.currency} />
+            <PositionsTable records={positions.data ?? []} currency={meta.currency} names={names} />
           </>
         )}
         {tab === 'trades' && (
           <>
             <div className="panel-title">LAST {tradeDetail.data?.length ?? 0} TRADES <span className="faint">FIFO 平仓明细</span></div>
-            <LastTradesTable trades={tradeDetail.data ?? []} currency={meta.currency} />
+            <LastTradesTable trades={tradeDetail.data ?? []} currency={meta.currency} names={names} />
             <div className="panel-title" style={{ marginTop: 18 }}>原始成交记录</div>
-            <TradesTable records={trades.data ?? []} currency={meta.currency} />
+            <TradesTable records={trades.data ?? []} currency={meta.currency} names={names} />
           </>
         )}
         {tab === 'logs' && (
@@ -163,6 +167,7 @@ export default function ModelDetail() {
             positions={positions.data ?? []}
             model={name}
             currency={meta.currency}
+            names={names}
           />
         )}
       </div>

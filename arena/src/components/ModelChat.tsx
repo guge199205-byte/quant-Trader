@@ -24,19 +24,21 @@ export default function ModelChat({
   positions,
   model,
   currency = '$',
+  names = {},
 }: {
   logs: LogLine[];
   trades: TradeRecord[];
   positions?: PositionRecord[];
   model: string;
   currency?: string;
+  names?: Record<string, string>;
 }) {
   const [open, setOpen] = useState<Set<number>>(new Set());
   const [sections, setSections] = useState<Record<number, Set<string>>>({});
 
-  /** user prompt 里提取日期：如 "Please analyze and update today's (2026-08-25) positions." */
+  /** user prompt 里提取日期：英文 "today's (2026-08-25) positions." 或中文 "今日（2026-08-25）的持仓"。 */
   const extractDate = (content: string): string | null => {
-    const m = content.match(/\((\d{4}-\d{2}-\d{2})\)/);
+    const m = content.match(/[（(](\d{4}-\d{2}-\d{2})[）)]/);
     return m ? m[1] : null;
   };
 
@@ -103,7 +105,10 @@ export default function ModelChat({
   return (
     <div className="mc-list">
       {rounds.map((r, i) => {
-        const dayTrades = r.date ? tradesByDate.get(r.date) ?? [] : [];
+        // 只算真实成交（buy/sell）——no_trade 记录不进决策卡
+        const dayTrades = r.date
+          ? (tradesByDate.get(r.date) ?? []).filter((t) => t.action === 'buy' || t.action === 'sell')
+          : [];
         const isOpen = open.has(i);
         const sec = sections[i] ?? new Set<string>();
         const status = dayTrades.length ? 'DAILY DECISION' : r.thought ? 'NO TRADE' : 'PROMPT';
@@ -161,6 +166,7 @@ export default function ModelChat({
                             isAdd={hadPositionBefore(t.date, t.symbol)}
                             currency={currency}
                             thought={r.thought}
+                            names={names}
                           />
                         ))}
                       </div>
@@ -179,42 +185,59 @@ export default function ModelChat({
   );
 }
 
-/** nof1 决策卡：字段网格对齐 nof1.ai 交易决策 布局。
- *  有数据的填真实值；我们没有的结构化字段（止损/止盈/置信度/杠杆/风控位）显示 —。 */
+/** 决策卡：证券/方向/数量/加仓/成交后现金 + 决策理由（全宽）。
+ *  只显示真实存在的字段 —— 我们没有结构化数据（止损/止盈/置信度等）就不占位，
+ *  证券显示中文名 + 代码，买入/卖出带色。 */
 function DecisionCard({
   trade,
   isAdd,
   currency,
   thought,
+  names,
 }: {
   trade: TradeRecord;
   isAdd: boolean;
   currency: string;
   thought: string;
+  names: Record<string, string>;
 }) {
   const side = (trade.action ?? '').toLowerCase() === 'buy' ? 'buy' : 'sell';
-  const fields: [string, string][] = [
-    ['证券', `xyz:${trade.symbol}`],
-    ['信号', side],
-    ['数量', String(trade.amount)],
-    ['加仓', String(isAdd)],
-    ['成交后现金', fmtMoney(trade.cash_after ?? 0, currency)],
-    ['杠杆', '—'],
-    ['止损', '—'],
-    ['止盈', '—'],
-    ['置信度', '—'],
-    ['风险金额', '—'],
-    ['失效条件', '—'],
-    ['决策理由', thought ? thought.replace(/\s+/g, ' ').slice(0, 160) + '…' : '—'],
-  ];
+  const name = names[trade.symbol];
+  const reason = thought ? thought.replace(/\s+/g, ' ').slice(0, 160) + '…' : '—';
   return (
     <div className="mc-decision">
-      {fields.map(([k, v]) => (
-        <div className="mc-field" key={k}>
-          <span className="mc-key">{k}</span>
-          <span className={`mc-val ${v === '—' ? 'na' : ''}`}>{v}</span>
-        </div>
-      ))}
+      <div className="mc-field">
+        <span className="mc-key">证券</span>
+        <span className="mc-val">
+          {name ? (
+            <span className="mc-sym-name">
+              {name} <span className="mc-sym-code">{trade.symbol}</span>
+            </span>
+          ) : (
+            trade.symbol
+          )}
+        </span>
+      </div>
+      <div className="mc-field">
+        <span className="mc-key">信号</span>
+        <span className={`mc-val mc-side ${side}`}>{side === 'buy' ? '买入 BUY' : '卖出 SELL'}</span>
+      </div>
+      <div className="mc-field">
+        <span className="mc-key">数量</span>
+        <span className="mc-val">{Number(trade.amount).toLocaleString('en-US')}</span>
+      </div>
+      <div className="mc-field">
+        <span className="mc-key">加仓</span>
+        <span className="mc-val">{isAdd ? '是' : '否'}</span>
+      </div>
+      <div className="mc-field mc-field-wide">
+        <span className="mc-key">成交后现金</span>
+        <span className="mc-val">{fmtMoney(trade.cash_after ?? 0, currency)}</span>
+      </div>
+      <div className="mc-field mc-field-wide">
+        <span className="mc-key">决策理由</span>
+        <span className={`mc-val mc-reason ${reason === '—' ? 'na' : ''}`}>{reason}</span>
+      </div>
     </div>
   );
 }

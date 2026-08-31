@@ -87,8 +87,11 @@ export default function EquityChart({
   }, [lines, benchmark, mode, timeRange]);
 
   // 全数据时间域(X 轴窗口由 view 平移/缩放决定; Y 域按窗口内数据在渲染时算)
+  // 注意: 只取主曲线(lines)的时间范围 —— 基准指数常为全历史(如 SSE50 24 天)而模型
+  // 是赛季回放(如 5 天), 若基准也参与 X 域会把模型曲线挤到画面右侧一小段(看起来像
+  // 曲线从中间冒出来)。基准只作参照, 对齐到模型窗口, 超窗部分由 clipPath 裁掉。
   const domain = useMemo(() => {
-    const all = [...display.lines, ...(display.bench ? [display.bench] : [])];
+    const all = display.lines;
     if (!all.length) return { tMin: 0, tMax: 1 };
     let tMin = Infinity, tMax = -Infinity;
     for (const l of all) {

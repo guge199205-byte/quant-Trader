@@ -482,8 +482,12 @@ def compute_extended_summary(
         out["win_rate"] = round(win_rate, 4)
         avg_win = sum(t["pnl"] for t in wins) / len(wins) if wins else 0.0
         avg_loss = abs(sum(t["pnl"] for t in losses) / len(losses)) if losses else 0.0
+        # 盈亏比 = 盈利合计 / 亏损合计（总 PnL 之比，非均值之比）；
+        # 均价比(avg_win/avg_loss)是 payoff ratio，口径不同，前端文案按合计展示
+        sum_win = sum(t["pnl"] for t in wins)
+        sum_loss = abs(sum(t["pnl"] for t in losses))
         out["profit_factor"] = (
-            round(avg_win / avg_loss, 3) if avg_loss > 0 else (None if not wins else 999.0)
+            round(sum_win / sum_loss, 3) if sum_loss > 0 else (None if not wins else 999.0)
         )
         out["closed_trades"] = len(closed)
         out["biggest_win"] = round(max(t["pnl"] for t in wins), 2) if wins else None

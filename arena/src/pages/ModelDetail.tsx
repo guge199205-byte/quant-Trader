@@ -1,12 +1,16 @@
 import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import dayjs from 'dayjs';
 import {
+  Holdings,
   MarketId,
   fetchBenchmark,
   fetchHoldings,
+  fetchLiveEquity,
   fetchLogs,
   fetchPerformance,
   fetchPositions,
+  fetchRealAccount,
   fetchStockNames,
   fetchTradeDetail,
   fetchTrades,
@@ -53,22 +57,65 @@ export default function ModelDetail() {
   // 股票中文名表（上证50/恒指/纳指 + quantdb 全市场），10 分钟缓存
   const stockNames = usePolling(() => fetchStockNames(m), [m], 600000);
   const names = stockNames.data ?? {};
+  // 通达信桥实盘（A股）：净值分账线 + 实盘账户持仓 —— 用户口径"有 TDX 数据，模拟盘不计入"
+  const liveEquity = usePolling(() => fetchLiveEquity(), [], 20000);
+  const realAccount = usePolling(() => fetchRealAccount(), [], 20000);
+
+  // 该模型是否有 TDX 实盘分账序列（≥2 采样点才算有效）
+  const livePts = m === 'cn' ? (liveEquity.data?.agents?.[name] ?? null) : null;
+  const isLive = !!livePts && livePts.length >= 2;
+  // 该模型是否有 TDX 实盘持仓（账户连通且非空）
+  const realAcc = m === 'cn' ? realAccount.data : null;
+  const hasReal = !!realAcc && (realAcc.positions ?? []).length > 0;
 
   const benchLine = useMemo(
     () =>
-      bench.data && bench.data.length
+      !isLive && bench.data && bench.data.length
         ? toBenchLine(m === 'us' ? 'NDX100' : m === 'cn' ? 'SSE50' : '', BENCH_COLOR, bench.data)
         : null,
-    [bench.data, m],
+    [bench.data, m, isLive],
   );
 
-  const chartLine = useMemo(
-    () =>
-      perf.data
-        ? toChartLine(perf.data.agent, perf.data.agent, MODEL_COLOR[name] ?? '#5a5a5a', perf.data.points)
-        : null,
-    [perf.data, name],
-  );
+  const chartLine = useMemo(() => {
+    // A股实盘优先：模型有 TDX 分账序列 → 实盘净值（¥10 万名义基准），模拟盘回放不计入
+    if (livePts && livePts.length >= 2) {
+      return {
+        id: `live-${name}`,
+        label: name,
+        color: MODEL_COLOR[name] ?? '#5a5a5a',
+        points: livePts.map((p) => ({ t: dayjs(p.ts).valueOf(), v: p.value })),
+        notional: 100000,
+      };
+    }
+    return perf.data
+      ? toChartLine(perf.data.agent, perf.data.agent, MODEL_COLOR[name] ?? '#5a5a5a', perf.data.points)
+      : null;
+  }, [livePts, perf.data, name]);
+
+  // A股实盘持仓（通达信桥账户）→ Holdings 结构；有实盘则模拟盘持仓/快照不计入
+  const tdxHoldings = useMemo<Holdings | null>(() => {
+    if (!realAcc || !(realAcc.positions ?? []).length) return null;
+    const total = realAcc.total_asset || 1;
+    return {
+      cash: realAcc.cash,
+      total_market_value: realAcc.market_value,
+      total_equity: realAcc.total_asset,
+      holdings: (realAcc.positions ?? []).map((p) => {
+        const qty = Number(p.volume);
+        return {
+          symbol: p.symbol,
+          qty,
+          entry_price: p.cost_price,
+          price: p.price,
+          market_value: p.market_value,
+          pnl: p.market_value - qty * p.cost_price,
+          pnl_pct: p.cost_price ? p.price / p.cost_price - 1 : null,
+          change_pct: null,
+          weight_pct: p.market_value / total,
+        };
+      }),
+    };
+  }, [realAcc]);
 
   const s = perf.data?.summary;
 
@@ -129,7 +176,14 @@ export default function ModelDetail() {
       </div>
 
       <div className="panel" style={{ marginBottom: 20 }}>
-        <div className="panel-title">账户净值 <span className="faint">虚线 = 基准指数</span></div>
+        <div className="panel-title">
+          账户净值{' '}
+          {isLive ? (
+            <span className="accent" style={{ fontSize: 11 }}>通达信桥实盘 · 模拟盘不计入</span>
+          ) : (
+            <span className="faint">虚线 = 基准指数</span>
+          )}
+        </div>
         <EquityChart lines={chartLine ? [chartLine] : []} benchmark={benchLine} currency={meta.currency} height={340} />
       </div>
 
@@ -147,9 +201,16 @@ export default function ModelDetail() {
         </div>
         {tab === 'positions' && (
           <>
-            <HoldingsTable data={holdings.data ?? null} currency={meta.currency} names={names} />
-            <div className="panel-title" style={{ marginTop: 18 }}>持仓历史快照</div>
-            <PositionsTable records={positions.data ?? []} currency={meta.currency} names={names} />
+            {hasReal ? (
+              /* 通达信桥实盘持仓为准；模拟盘持仓不计入（"持仓历史快照"也隐藏） */
+              <HoldingsTable data={tdxHoldings} currency={meta.currency} names={names} />
+            ) : (
+              <>
+                <HoldingsTable data={holdings.data ?? null} currency={meta.currency} names={names} />
+                <div className="panel-title" style={{ marginTop: 18 }}>持仓历史快照</div>
+                <PositionsTable records={positions.data ?? []} currency={meta.currency} names={names} />
+              </>
+            )}
           </>
         )}
         {tab === 'trades' && (

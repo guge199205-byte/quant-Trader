@@ -155,6 +155,13 @@ python3 scripts/sync_from_quantmind.py                          # 生产:从量�
 ## 💬 交流与协议
 
 - 技术交流:提 Issue / Discussion;实盘接入问题优先看 [`brokers/tdx-bridge/README.md`](brokers/tdx-bridge/README.md)
-- 💬 **QQ 交流群:1097406397**(QuantMind 量化交流群,量化算法 / 模型调优 / 部署心得,AI 交易玩家聚集地) <img src="docs/figs/quantmind-qq-group.png" alt="QQ 群二维码" width="180"/>
+
+<p align="center">
+  <b>💬 QQ 交流群:1097406397</b><br/>
+  <sub>QuantMind 量化交流群——量化算法 / 模型调优 / 部署心得,AI 交易玩家聚集地</sub>
+  <br/><br/>
+  <img src="docs/figs/quantmind-qq-group.png" alt="QQ 群二维码" width="200"/>
+</p>
+
 - **风险提示**:本项目为研究实验性质,模拟盘不涉及真实资金;A股实盘功能请自行评估风险,盈亏自负
 - License:MIT

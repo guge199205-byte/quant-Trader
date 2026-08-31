@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { LogLine } from '../api/client';
 import { logoOf, modelColor, shortName } from './ModelCard';
+import { renderInline } from '../utils/markdown';
 import './ModelChat.css';
 
 /** 一个分析回合：单条日志（一次 LLM 分析 = user prompt + assistant 总结） */
@@ -100,7 +101,7 @@ export default function ChatStream({
               <span className="mc-date">{r.ts ? r.ts.slice(5, 16) : '—'}</span>
               <span className={`mc-expand ${isOpen ? 'open' : ''}`}>{isOpen ? '▼' : '▶'}</span>
             </div>
-            <div className="mc-summary">{summary}</div>
+            <div className="mc-summary">{renderInline(summary)}</div>
             {isOpen && (
               <div className="mc-body">
                 {r.user && (
@@ -109,7 +110,7 @@ export default function ChatStream({
                       <span className="mc-caret">{sec.has('prompt') ? '▶' : '▼'}</span>
                       用户提示词
                     </div>
-                    {!sec.has('prompt') && <pre className="mc-code">{r.user}</pre>}
+                    {!sec.has('prompt') && <pre className="mc-code">{renderInline(r.user)}</pre>}
                   </div>
                 )}
                 {r.thought && (
@@ -118,7 +119,7 @@ export default function ChatStream({
                       <span className="mc-caret">{sec.has('thought') ? '▶' : '▼'}</span>
                       分析内容
                     </div>
-                    {!sec.has('thought') && <pre className="mc-code mc-thought">{r.thought}</pre>}
+                    {!sec.has('thought') && <pre className="mc-code mc-thought">{renderInline(r.thought)}</pre>}
                   </div>
                 )}
               </div>

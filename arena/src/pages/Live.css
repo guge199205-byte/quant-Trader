@@ -9,7 +9,8 @@
   max-width: 1440px;
   margin: 8px auto 16px;
   padding: 0;
-  border: 2px solid #000; /* 终端外框 */
+  border: 3px solid #000; /* 终端外框（加粗强化可见性） */
+  box-shadow: 0 0 0 1px #fff, 6px 6px 0 rgba(0, 0, 0, 0.15); /* 白描边 + 硬投影，让框感明显 */
   background: #fff;
   font-family: 'Courier New', monospace;
 }
@@ -287,12 +288,12 @@
   font-weight: 700;
 }
 
-/* ---------- 右侧 360px 面板 ---------- */
+/* ---------- 右侧 420px 面板 ---------- */
 
 .right-section {
-  width: 360px;
+  width: 420px;
   flex-shrink: 0;
-  border-left: 2px solid #000;
+  border-left: 3px solid #000;
   display: flex;
   flex-direction: column;
   background: #fff;
@@ -678,7 +679,7 @@
 /* ---------- 响应式 ---------- */
 
 @media (max-width: 1024px) {
-  .right-section { width: 320px; }
+  .right-section { width: 380px; }
   .model-card-mini { min-width: 150px; }
 }
 

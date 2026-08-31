@@ -2,7 +2,6 @@
 
 > **LLM 智能体自主交易竞技场**:DeepSeek V4 Flash · V4 Pro · GLM 5.3 Flash 三个 AI 模型,以独立资金池在美股/A股/港股自主分析、决策、买卖——**模拟盘三市场竞技 + A股实盘(通达信桥)双轨运行**。
 > 不是写死规则的量化脚本,是"会推理的交易员":读行情 → 分析推理 → 调工具下单 → 收盘写经验,全程零人工干预。
-> 行情数据来自开源的 **QuantDB 数据仓库**(后复权日线/分钟/tick/财务/因子,56GB)。
 
 ---
 
@@ -17,7 +16,7 @@
 | ⏰ **盘中智能分析调度** | 9:30 开盘 + 每小时定时 + **波动触发**(持仓盈亏较上次 ±3pp 或个股涨跌 ≥5% 立即加跑,20 分钟节流),LLM 逐只简评+操作建议 |
 | ⚡ **token 消耗透明** | 每次 LLM 调用记录真实 usage,`/api/token-usage` 按模型累计,前端模型卡 ⚡ 实时显示 |
 | 🐳 **Docker 化部署** | compose 编排全部服务(MCP×3/API/前端×2/dsh),宿主 cron 探活自愈,防交易中断 |
-| 📊 **QuantDB 数据底座** | 行情来自开源 QuantDB 仓库:后复权/前复权/不复权日线、分钟线、tick、财务三大报表、行业板块、ML 因子,开箱即用 |
+| 📊 **本地数据仓库** | 行情来自本机量化数据仓库(后复权/前复权日线、指数),不依赖免费行情 API |
 | 📝 **交易记忆系统** | agent 开盘读心得、收盘写经验,超 200 行自动归档,策略越用越好用 |
 | 🛡️ **风控网关** | 单笔/持仓限额、日亏熔断、现金保留、黑名单,三条交易路径单点拦截 |
 | 🔌 **Broker 可插拔** | sandbox(模拟盘) / tdx(通达信桥,实盘在用) / futu / tiger / ibkr,`backend.yaml` 一键切换 |
@@ -71,7 +70,7 @@
 
 **盘中分析调度**:`scripts/live_hourly_analysis.py`(cron:9:30 开盘 + 10-15 点整点 + 每分钟采样检测波动)→ LLM 逐只简评 → 落盘 agent 对话日志 → 前端模型对话混合流。
 
-**数据链路**:QuantDB 仓库(Hive 分区 parquet)→ `scripts/sync_from_quantmind.py` → `data/` AlphaVantage 格式价格文件 → agent 与前端共用。
+**数据链路**:本机量化数据仓库(Hive 分区 parquet)→ `scripts/sync_from_quantmind.py` → `data/` AlphaVantage 格式价格文件 → agent 与前端共用。
 
 ---
 
@@ -144,31 +143,19 @@ docker compose logs -f mcp-cn
 
 ---
 
-## 📊 QuantDB — 开源量化数据仓库
+## 📊 数据源:本机量化数据仓库
 
-本项目的行情数据底座来自 **QuantMind 开源平台**的 QuantDB 数据仓库——按数据集组织的本地数据仓库,
-**56 GB / 13 万文件**,A股全覆盖,数据包(`quant_data.7z`)随版本发布,解压即用,零依赖外部行情 API。
+价格数据来自本机自建量化数据仓库(Hive 分区 parquet),模拟盘回放无前视偏差:
 
-| 链接 | 地址 |
-|------|------|
-| GitHub(开源版) | [github.com/guge199205-byte/QuantMind-oss](https://github.com/guge199205-byte/QuantMind-oss) |
-| Gitee | [gitee.com/qusong0627/QuantMind](https://gitee.com/qusong0627/QuantMind) |
-| 数据解压指南 | `docs/QuantDB_数据包解压指南.md`(数据包发布在 releases) |
-
-### 数据集目录
-
-| 目录 | 内容 | 大小 |
+| 市场 | 来源 | 输出 |
 |------|------|------|
-| `1_kline_data/` | K线:日线 **后复权/前复权/不复权**、指数、1/5 分钟线、tick | ~7.4 GB |
-| `2_base_sector/` | 基础板块:申万行业、概念、交易日历、指数权重、融资融券、个股详情 | ~0.4 GB |
-| `3_financial_data/` | 财务:资产负债表、利润表、现金流、股本、**分红因子** | ~0.85 GB |
-| `4_bond_etf/` | 债券 / ETF(含 ETF PCF) | 小 |
-| `5_technical_derived/` | 技术衍生:估值、技术指标、**市场情绪** | ~9.3 GB |
-| `6_ml_datasets/` | **ML 因子数据集**:features_daily、alpha 因子库(含标签)、l1/l2 因子 | ~39 GB |
+| A股 | 本地日线仓库(后复权)+ 指数 000016.SH | `data/A_stock/daily_prices_sse_50.csv`、`merged.jsonl`、`index_daily_sse_50.json` |
+| 美股 | 本地日线仓库(前复权)+ NDX 指数 | `data/daily_prices_*.json`、`Adaily_prices_QQQ.json`(纳指100 指数,作 QQQ 基准) |
+| 港股 | 腾讯行情 | `HK_stock/merged.jsonl`、`hsi_daily.json` |
 
-> 与本项目的关系:模拟盘行情 `sync_from_quantmind.py` 从 QuantDB 同步**后复权日线**(A股 50/50 全覆盖),
-> 美股用 quantus 前复权 + NDX 基准,保证回放无前视偏差。想要更深度的数据研究(因子挖掘、ML 建模),
-> 直接使用 QuantDB 的 `6_ml_datasets/` —— 与本项目同一套数据,无缝衔接。
+```bash
+python scripts/sync_from_quantmind.py   # 从本机仓库同步,覆盖前自动备份
+```
 
 ---
 
@@ -278,7 +265,7 @@ class MySource(DataSource):
 | `scripts/live_hourly_analysis.py` | 盘中分析（9:30/整点/波动触发）+ 净值采样;`--record-only` 只采样,`--force` 忽略时段 |
 | `scripts/live_trade_picks.py` | 实盘选股 + 桥下单（分账买入/卖出） |
 | `scripts/live_ledger.py` | 分账账本（额度分配/释放,持仓归属） |
-| `scripts/sync_from_quantmind.py` | 从 QuantDB 仓库同步三市场价格 |
+| `scripts/sync_from_quantmind.py` | 从本机数据仓库同步三市场价格 |
 | `scripts/backfill_us_agent.sh` | 补跑 US agent 缺失交易日 |
 | `scripts/serve_nof0.py` | 前端静态服务（跟随 symlink） |
 
@@ -332,7 +319,7 @@ docs/                 # 规划与架构文档
 
 - [x] 三市场并行交易（US + CN + HK 独立 MCP 组）
 - [x] Docker 化部署 + 宿主 cron 探活自愈
-- [x] QuantDB 数据底座（不再依赖免费行情 API）
+- [x] 本地数据仓库底座（不再依赖免费行情 API）
 - [x] 交易记忆系统（每市场独立,自动归档）
 - [x] 风控网关（单笔/持仓/熔断/黑名单）
 - [x] Broker + 数据源抽象层
@@ -343,7 +330,7 @@ docs/                 # 规划与架构文档
 - [x] 实盘分账（每 agent ¥10 万额度,买入分配/卖出释放）
 - [x] 盘中智能分析调度（9:30 开盘 + 每小时 + 波动触发）
 - [x] LLM token 消耗统计（/api/token-usage + 前端 ⚡ 显示）
-- [ ] cn-agent 分析接入 quantdb + duckdb 查询
+- [ ] cn-agent 分析接入本地仓库 + duckdb 查询
 - [ ] 富途 OpenD / IB Gateway 实盘验证
 - [ ] dsh 定时收盘复盘 + 多渠道推送
 
@@ -352,7 +339,6 @@ docs/                 # 规划与架构文档
 ## 🙏 致谢
 
 - **DeepSeek Harness**（[github.com/deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)）—— 项目 agent 执行链路与交易引擎基于 DeepSeek Harness 开发
-- **QuantMind 开源平台**（[github.com/guge199205-byte/QuantMind-oss](https://github.com/guge199205-byte/QuantMind-oss)）—— QuantDB 数据仓库与交易框架移植来源
 - **上游开源框架**（MIT License）—— agent/数据/前端体系二次开发,版权归原作者所有
 
 ---
@@ -360,11 +346,11 @@ docs/                 # 规划与架构文档
 ## 💬 交流社区
 
 <p align="center">
-  <img src="docs/images/1097406397.png" alt="QuantMind 交流群二维码" width="220"/>
+  <img src="docs/images/1097406397.png" alt="量化交流群二维码" width="220"/>
   <br/>
   <b>QQ 交流群:1097406397</b>
   <br/>
-  <i>QuantDB 数据交流 · 量化算法 · 模型调优 · 部署心得</i>
+  <i>量化数据交流 · 量化算法 · 模型调优 · 部署心得</i>
 </p>
 
 ## 📄 License

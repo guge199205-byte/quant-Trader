@@ -6,10 +6,13 @@
 - 前端通过 config.yaml 的 api_base 一行切换即可实时化
 """
 
+import functools
 import json
 import logging
 import os
 import shutil
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +49,51 @@ from dotenv import load_dotenv as _load_dotenv
 
 _load_dotenv(_os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), ".env"))
 _API_TOKEN = _os.getenv("API_TOKEN", "").strip('"')
+
+
+# ---------- 轻量 TTL 缓存（热接口加固） ----------
+# 背景：/api/overview 无缓存全量重算（3 市场 × agent × 净值/汇总），Live 页轮询
+# 下曾两次把 api 线程池打满死锁。这里给热接口加线程安全 TTL 缓存限频：
+# 同签名在 TTL 内直接返回缓存值，不重算；数据根目录变更时用 ttl_invalidate 作废。
+
+_TTL_OVERVIEW_S = 30   # 总控聚合（最重，30s 内多次请求只算一次）
+_TTL_PRICES_S = 10     # Live 价格条（轮询频率最高，10s 限频）
+_TTL_CATALOG_S = 60    # 数据平台目录扫描（文件系统遍历，60s）
+
+_ttl_lock = threading.Lock()
+_ttl_cache: dict = {}
+
+
+def ttl_cache(seconds: float):
+    """线程安全 TTL 缓存装饰器：key = (module, fn_name, *args, **kwargs)。"""
+
+    def deco(fn):
+        key_base = (fn.__module__, fn.__name__)
+
+        # wraps 让 FastAPI 看到原始函数签名（否则 *args/**kwargs 会被当成查询参数）
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            key = key_base + args + tuple(sorted(kwargs.items()))
+            now = time.monotonic()
+            with _ttl_lock:
+                hit = _ttl_cache.get(key)
+                if hit and now - hit[0] < seconds:
+                    return hit[1]
+            value = fn(*args, **kwargs)
+            with _ttl_lock:
+                _ttl_cache[key] = (now, value)
+            return value
+
+        return wrapper
+
+    return deco
+
+
+def ttl_invalidate(prefix: tuple):
+    """使 key 以 prefix 开头的缓存项失效（如数据根目录被修改后）。"""
+    with _ttl_lock:
+        for key in [k for k in _ttl_cache if k[: len(prefix)] == prefix]:
+            del _ttl_cache[key]
 
 # 前端静态资源（nof0 主题）：assets / 页面 / data 快照
 _UI_DIR = get_ui_dir(load_backend_config())
@@ -341,6 +389,7 @@ def get_stock_names(market: str = Query("us")):
 # ---------- 最新价格（Live 滚动价格条） ----------
 
 @app.get("/api/prices")
+@ttl_cache(_TTL_PRICES_S)
 def get_latest_prices(market: str = Query("us")):
     cfg = config()
     return {"success": True, "data": agent_data.load_latest_prices(cfg, market)}
@@ -349,6 +398,7 @@ def get_latest_prices(market: str = Query("us")):
 # ---------- 总控聚合 ----------
 
 @app.get("/api/overview")
+@ttl_cache(_TTL_OVERVIEW_S)
 def get_overview():
     """总控台聚合：三市场 × agent（净值/收益/风控/记忆/运行状态）。"""
     cfg = config()
@@ -410,6 +460,7 @@ def dp_markets():
 
 
 @app.get("/api/data-platform/{market}/catalog")
+@ttl_cache(_TTL_CATALOG_S)
 def dp_catalog(market: str):
     if market not in _DP_MARKETS:
         raise HTTPException(status_code=400, detail=f"未知市场: {market}")
@@ -441,6 +492,7 @@ def dp_preview(
 
 
 @app.get("/api/data-platform/{market}/root")
+@ttl_cache(_TTL_CATALOG_S)
 def dp_root(market: str):
     if market not in _DP_MARKETS:
         raise HTTPException(status_code=400, detail=f"未知市场: {market}")
@@ -462,6 +514,9 @@ async def dp_set_root(market: str, request: Request):
         raise HTTPException(status_code=400, detail="root 不能为空")
     if not dp.Path(root).is_dir():
         raise HTTPException(status_code=404, detail=f"目录不存在: {root}")
+    # 根目录变了：该市场的 catalog/root 缓存作废，下次请求重扫
+    ttl_invalidate(("api_server", "dp_catalog", market))
+    ttl_invalidate(("api_server", "dp_root", market))
     return {"success": True, "data": {"market": market, "root": dp.set_data_root(market, root)}}
 
 

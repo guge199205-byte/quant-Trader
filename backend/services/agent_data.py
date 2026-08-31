@@ -176,39 +176,87 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     return lines
 
 
-def _load_price_lookup(config: dict, market: str) -> Dict[str, Dict[str, float]]:
-    """构建 {date: {symbol: price}} 查询表（用每日第一个小时价作为当日价）。
-
-    仅当市场为小时级数据时逐 key 取日期前缀；日级数据直接使用。
-    """
-    market_cfg = config.get("markets", {}).get(market, {})
+def _merged_file(config: dict, market: str) -> Path:
+    """各市场合并价格文件（merged.jsonl，Alpha Vantage 格式，每行一只股票）。"""
     if market == "cn":
-        merged = get_data_root(config) / "A_stock" / "merged.jsonl"
-    elif market == "hk":
-        merged = get_data_root(config) / "HK_stock" / "merged.jsonl"
-    else:
-        merged = get_data_root(config) / "merged.jsonl"
-    lookup: Dict[str, Dict[str, float]] = {}
-    if not merged.exists():
-        return lookup
-    for line in _read_raw_lines(merged):
+        return get_data_root(config) / "A_stock" / "merged.jsonl"
+    if market == "hk":
+        return get_data_root(config) / "HK_stock" / "merged.jsonl"
+    return get_data_root(config) / "merged.jsonl"
+
+
+def _duckdb_price_rows(path: Path, field_chain: tuple[str, ...]) -> List[tuple]:
+    """DuckDB 展开 merged.jsonl → [(symbol, date_key, price)]。
+
+    时间序列的日期是列名（"Time Series (Daily)" 的 struct key），取值须走
+    json 路径 $."1. open"；field_chain 为 bar 内价格字段优先级（coalesce）。
+    文件缺失 / duckdb 不可用 / 解析失败一律返回 []（调用方走逐行兜底）。
+    """
+    if not path.exists():
+        return []
+    try:
+        import duckdb
+    except ImportError:
+        return []
+    coalesce = ",\n".join(
+        f"try_cast(json_extract_string(ts_json, '$.' || k.key || '.\"{f}\"') AS DOUBLE)"
+        for f in field_chain
+    )
+    sql = f"""
+    WITH raw AS (
+        SELECT "Meta Data"."2. Symbol" AS symbol,
+               to_json("Time Series (Daily)") AS ts_json
+        FROM read_json_auto(?, format='newline_delimited')
+    ),
+    flat AS (
+        SELECT symbol, k.key AS date_key, coalesce({coalesce}) AS price
+        FROM raw, LATERAL unnest(json_keys(ts_json)) AS k(key)
+    )
+    SELECT symbol, date_key, price FROM flat WHERE price IS NOT NULL
+    """
+    try:
+        con = duckdb.connect()
+        try:
+            return con.execute(sql, [str(path)]).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+
+def _fallback_price_rows(path: Path, field_chain: tuple[str, ...]) -> List[tuple]:
+    """逐行 json.loads 兜底（duckdb 不可用或解析失败时），口径同 duckdb 路径。"""
+    rows: List[tuple] = []
+    for line in _read_raw_lines(path):
         doc = json.loads(line) if line else None
         if not doc:
             continue
-        symbol = None
-        meta = doc.get("Meta Data", {})
-        symbol = meta.get("2. Symbol")
+        symbol = (doc.get("Meta Data") or {}).get("2. Symbol")
         if not symbol:
             continue
         for key, value in doc.items():
             if not key.startswith("Time Series") or not isinstance(value, dict):
                 continue
             for ts_key, bar in value.items():
-                date_key = ts_key[:10]
-                buy_price = bar.get("1. buy price") or bar.get("1. open")
-                if buy_price is None:
+                price = next((bar.get(f) for f in field_chain if bar.get(f) is not None), None)
+                if price is None:
                     continue
-                lookup.setdefault(date_key, {}).setdefault(symbol, float(buy_price))
+                rows.append((symbol, ts_key[:10], float(price)))
+    return rows
+
+
+def _load_price_lookup(config: dict, market: str) -> Dict[str, Dict[str, float]]:
+    """构建 {date: {symbol: price}} 查询表（优先 DuckDB，逐行兜底）。
+
+    价格取每日首条记录（"1. buy price" → "1. open" 优先级，口径同旧实现）。
+    """
+    merged = _merged_file(config, market)
+    rows = _duckdb_price_rows(merged, ("1. buy price", "1. open"))
+    if not rows:
+        rows = _fallback_price_rows(merged, ("1. buy price", "1. open"))
+    lookup: Dict[str, Dict[str, float]] = {}
+    for symbol, date_key, price in rows:
+        lookup.setdefault(date_key, {}).setdefault(symbol, price)
     return lookup
 
 
@@ -218,40 +266,19 @@ def load_latest_prices(config: dict, market: str) -> Dict[str, Dict[str, Any]]:
     - 收盘价优先 `4. sell price`（US/HK）/`4. close`（CN），回退开盘价
     - 返回 {symbol: {price, date, prev_close, change_pct}}，无昨收时 change_pct 为 None
     """
-    market_cfg = config.get("markets", {}).get(market, {})
-    if market == "cn":
-        merged = get_data_root(config) / "A_stock" / "merged.jsonl"
-    elif market == "hk":
-        merged = get_data_root(config) / "HK_stock" / "merged.jsonl"
-    else:
-        merged = get_data_root(config) / "merged.jsonl"
+    merged = _merged_file(config, market)
+    rows = _duckdb_price_rows(merged, ("4. sell price", "4. close", "1. buy price", "1. open"))
+    if not rows:
+        rows = _fallback_price_rows(merged, ("4. sell price", "4. close", "1. buy price", "1. open"))
     per_symbol: Dict[str, List[tuple]] = {}
-    if merged.exists():
-        for line in _read_raw_lines(merged):
-            doc = json.loads(line) if line else None
-            if not doc:
-                continue
-            symbol = (doc.get("Meta Data") or {}).get("2. Symbol")
-            if not symbol:
-                continue
-            for key, value in doc.items():
-                if not key.startswith("Time Series") or not isinstance(value, dict):
-                    continue
-                for ts_key, bar in value.items():
-                    close = bar.get("4. sell price")
-                    if close is None:
-                        close = bar.get("4. close")
-                    if close is None:
-                        close = bar.get("1. buy price") or bar.get("1. open")
-                    if close is None:
-                        continue
-                    per_symbol.setdefault(symbol, []).append((ts_key[:10], float(close)))
+    for symbol, date_key, price in rows:
+        per_symbol.setdefault(symbol, []).append((date_key, price))
     out: Dict[str, Dict[str, Any]] = {}
-    for symbol, rows in per_symbol.items():
-        rows.sort()
-        latest = rows[-1]
-        prev = rows[-2] if len(rows) >= 2 else None
-        date, price = latest  # rows 元素为 (date_str, price_float)
+    for symbol, rows_ in per_symbol.items():
+        rows_.sort()
+        latest = rows_[-1]
+        prev = rows_[-2] if len(rows_) >= 2 else None
+        date, price = latest  # rows_ 元素为 (date_str, price_float)
         out[symbol] = {
             "price": round(price, 4),
             "date": date,

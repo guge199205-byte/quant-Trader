@@ -1,4 +1,4 @@
-import { Link, NavLink, useLocation } from 'react-router-dom';
+import { Link, NavLink } from 'react-router-dom';
 import { MarketId } from '../api/client';
 import './Navbar.css';
 
@@ -33,7 +33,6 @@ export function MarketSwitcher({
 }
 
 export default function Navbar() {
-  const { pathname } = useLocation();
   return (
     <nav className="navbar">
       <div className="navbar-container">
@@ -57,14 +56,6 @@ export default function Navbar() {
           <li className="separator">|</li>
           <li><NavLink to="/about" className={({ isActive }) => (isActive ? 'active' : '')}>关于</NavLink></li>
         </ul>
-
-        {pathname !== '/' && (
-          <div className="navbar-right">
-            <Link to="/live" className="navbar-link">
-              3 市场 × 2 模型 · 第 1 赛季
-            </Link>
-          </div>
-        )}
       </div>
     </nav>
   );

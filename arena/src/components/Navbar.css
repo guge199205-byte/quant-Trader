@@ -80,31 +80,8 @@
   color: #10a37f;
 }
 
-.navbar-right {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-}
-
-.navbar-link {
-  color: #000000;
-  text-decoration: underline;
-  font-size: 10px;
-  font-weight: 400;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  transition: color 0.2s;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-}
-
-.navbar-link:hover {
-  color: #10a37f;
-}
-
 @media (max-width: 768px) {
-  /* 手机：菜单紧跟 logo 之后一行排开；赛季文字整条不显示 */
+  /* 手机：菜单紧跟 logo 之后一行排开 */
   .navbar-container {
     flex-wrap: wrap; /* 极窄时菜单整体换行，不裁切 */
     justify-content: flex-start;
@@ -121,7 +98,6 @@
     flex-shrink: 0;
   }
   .navbar-menu-center li a { font-size: 10px; white-space: nowrap; }
-  .navbar-right { display: none; }
   .logo-alpha { font-size: 16px; }
   .logo-arena { font-size: 12px; }
 }

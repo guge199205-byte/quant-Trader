@@ -149,10 +149,9 @@ export default function Control() {
                   {exchange.data.tdx.health?.error ? '不可达' : '在线'}
                   {exchange.data.tdx.health?.tdx_connected ? '· 客户端已连' : ''}
                 </span>
-                <span className={`exch-sub ${exchange.data.tdx.real_trading_enabled ? 'exch-on' : ''}`}>
-                  实盘{exchange.data.tdx.real_trading_enabled ? '开' : '关'}
+                <span className="exch-sub">
+                  实盘{exchange.data.tdx.real_trading_enabled ? '开' : '关'} · 推送{exchange.data.tdx.enabled ? '开' : '关'}
                 </span>
-                <span className="exch-sub">推送{exchange.data.tdx.enabled ? '开' : '关'}</span>
               </span>
             )}
             {exchange.data.brokers.map((b) => (
@@ -177,7 +176,7 @@ export default function Control() {
       </section>
 
       {/* A股实盘分账(通达信桥) —— 总账户持仓 + 每 agent ¥10 万虚拟子账户 */}
-      {liveAcct.data && (
+      {liveAcct.data ? (
         <section className="mk-section">
           <div className="mk-head">
             <span>🇨🇳 A股实盘(通达信桥)</span>
@@ -222,6 +221,15 @@ export default function Control() {
               </tbody>
             </table>
           </div>
+        </section>
+      ) : (
+        /* 数据未回来时占位，保持两列布局稳定（否则 grid 空半边更乱） */
+        <section className="mk-section">
+          <div className="mk-head">
+            <span>🇨🇳 A股实盘(通达信桥)</span>
+            <span className="mk-count">等待实盘账户数据…</span>
+          </div>
+          <div className="mk-empty">实盘账户连接中…</div>
         </section>
       )}
       </div>

@@ -23,24 +23,26 @@
   font-family: 'Courier New', monospace;
 }
 
-/* 服务健康条 */
+/* 服务健康条：等宽网格徽章（原零散 chips 一行挤着 → 乱，改 grid 对齐） */
 .svc-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
   gap: 8px;
   margin-bottom: 16px;
-  flex-wrap: wrap;
 }
 
 .svc-chip {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
+  padding: 8px 12px;
   border: 2px solid #000;
   background: #fff;
   font-size: 11px;
   font-weight: 700;
   font-family: 'Courier New', monospace;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .svc-dot { width: 8px; height: 8px; border-radius: 50%; }
@@ -81,13 +83,27 @@
   font-family: 'Courier New', monospace;
 }
 
-/* ---------- 交易所状态行 ---------- */
+/* ---------- 交易所状态行：等宽网格（每项一个完整小卡片） ---------- */
 
 .exch-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
   font-family: 'Courier New', monospace;
+}
+
+.exch-row .svc-chip {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+}
+
+/* 状态细节小字统一换行到第二行，与名称左对齐（dot 8px + gap 6px） */
+.exch-row .exch-sub {
+  flex-basis: 100%;
+  margin-left: 0;
+  padding-left: 14px;
 }
 
 .exch-sub {

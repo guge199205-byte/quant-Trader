@@ -331,6 +331,52 @@ export const fetchCompConfig = () =>
 export const saveCompConfig = (selection: CompSelection) =>
   unwrap<{ selection: CompSelection }>(api.put('/comp-config', { selection }));
 
+// ---------- 实盘同步数据（quantmind PG，通达信实盘账户） ----------
+
+export interface RealAccountPosition {
+  symbol: string;
+  name: string;
+  volume: number;
+  cost_price: number;
+  price: number;
+  market_value: number;
+  available_volume: number;
+}
+
+export interface RealAccount {
+  ts: string | null;
+  total_asset: number;
+  cash: number;
+  market_value: number;
+  today_pnl: number;
+  total_pnl: number;
+  positions: RealAccountPosition[];
+}
+
+export interface RealLedgerRow {
+  date: string;
+  total_asset: number;
+  cash: number;
+  market_value: number;
+  daily_return_pct: number | null;
+  total_return_pct: number | null;
+  position_count: number | null;
+  source: string;
+}
+
+export interface L2FactorRow {
+  ts: string;
+  symbol: string;
+  stock_code: string;
+  now_price: number | null;
+  factors: Record<string, number | null>;
+}
+
+export const fetchRealAccount = () => unwrap<RealAccount>(api.get('/live/real-account'));
+export const fetchRealLedger = () => unwrap<RealLedgerRow[]>(api.get('/live/real-ledger'));
+export const fetchL2Factors = (limit = 200) =>
+  unwrap<L2FactorRow[]>(api.get('/live/l2-factors', { params: { limit } }));
+
 export const fetchBenchmark = async (market: MarketId): Promise<BenchPoint[]> => {
   try {
     const file =

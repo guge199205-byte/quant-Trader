@@ -404,6 +404,155 @@ def live_ledger():
     return {"success": True, "data": {"agents": out}}
 
 
+# ---------- 实盘同步数据（quantmind PG，同机通达信实盘账户） ----------
+# quantmind 的 trade 服务实时采集通达信桥账户/持仓（real_account_snapshots，每 30s）、
+# 日终账本（real_account_ledger_daily_snapshots）与 L2 因子（tdx_l2_snapshot，每 60s）。
+# BayMax 只读同步展示与分析用；连接失败降级返回错误，不影响主链路。
+# PG 连接配置在 .env：QM_PG_HOST/PORT/DB/USER/PASSWORD（默认 172.17.0.1:5432）。
+
+_QM_PG = None
+
+
+def _qm_pg_conn():
+    global _QM_PG
+    if _QM_PG is None:
+        _QM_PG = {
+            "host": os.getenv("QM_PG_HOST", "172.17.0.1"),
+            "port": int(os.getenv("QM_PG_PORT", "5432")),
+            "dbname": os.getenv("QM_PG_DB", "quantmind"),
+            "user": os.getenv("QM_PG_USER", "quantmind"),
+            "password": os.getenv("QM_PG_PASSWORD", ""),
+            "connect_timeout": 3,
+        }
+    import psycopg2
+
+    return psycopg2.connect(**_QM_PG)
+
+
+@app.get("/api/live/real-account")
+def live_real_account():
+    """quantmind 实盘账户最新快照（总资产/现金/持仓），每 30s 由 TDX 桥同步。"""
+    import psycopg2.extras
+
+    try:
+        conn = _qm_pg_conn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT snapshot_at, total_asset, cash, market_value,
+                           today_pnl_raw, total_pnl_raw, payload_json
+                    FROM real_account_snapshots
+                    ORDER BY snapshot_at DESC LIMIT 1
+                    """
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("real-account 读取失败: %s", e)
+        return {"success": False, "error": f"quantmind PG 读取失败: {e}"}
+    if not row:
+        return {"success": True, "data": None}
+    payload = row.get("payload_json") or {}
+    return {"success": True, "data": {
+        "ts": row["snapshot_at"].isoformat() if row["snapshot_at"] else None,
+        "total_asset": row["total_asset"],
+        "cash": row["cash"],
+        "market_value": row["market_value"],
+        "today_pnl": row["today_pnl_raw"],
+        "total_pnl": row["total_pnl_raw"],
+        "positions": payload.get("positions") or [],
+    }}
+
+
+@app.get("/api/live/real-ledger")
+def live_real_ledger():
+    """quantmind 日终账本（每日总资产/日收益），供净值曲线与日收益展示。"""
+    import psycopg2.extras
+
+    try:
+        conn = _qm_pg_conn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT snapshot_date, total_asset, cash, market_value,
+                           daily_return_pct, total_return_pct, position_count, source
+                    FROM real_account_ledger_daily_snapshots
+                    ORDER BY snapshot_date
+                    """
+                )
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("real-ledger 读取失败: %s", e)
+        return {"success": False, "error": f"quantmind PG 读取失败: {e}"}
+    return {"success": True, "data": [
+        {
+            "date": r["snapshot_date"].isoformat() if r["snapshot_date"] else None,
+            "total_asset": r["total_asset"],
+            "cash": r["cash"],
+            "market_value": r["market_value"],
+            "daily_return_pct": r["daily_return_pct"],
+            "total_return_pct": r["total_return_pct"],
+            "position_count": r["position_count"],
+            "source": r["source"],
+        }
+        for r in rows
+    ]}
+
+
+@app.get("/api/live/l2-factors")
+def live_l2_factors(
+    symbol: Optional[str] = Query(default=None),
+    limit: int = Query(60, ge=1, le=500),
+):
+    """L2 因子快照（quantmind tdx_l2_snapshot）：最近 limit 条，可选 symbol 过滤。
+    每 60s 由 TDX L2 采集任务更新（13 因子在 factors jsonb）。"""
+    import psycopg2.extras
+
+    try:
+        conn = _qm_pg_conn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                if symbol:
+                    cur.execute(
+                        """
+                        SELECT ts, symbol, stock_code, now_price, factors
+                        FROM tdx_l2_snapshot WHERE symbol = %s
+                        ORDER BY ts DESC LIMIT %s
+                        """,
+                        (symbol, limit),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT ts, symbol, stock_code, now_price, factors
+                        FROM tdx_l2_snapshot
+                        ORDER BY ts DESC LIMIT %s
+                        """,
+                        (limit,),
+                    )
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("l2-factors 读取失败: %s", e)
+        return {"success": False, "error": f"quantmind PG 读取失败: {e}"}
+    return {"success": True, "data": [
+        {
+            "ts": r["ts"].isoformat() if r["ts"] else None,
+            "symbol": r["symbol"],
+            "stock_code": r["stock_code"],
+            "now_price": r["now_price"],
+            "factors": r["factors"] or {},
+        }
+        for r in rows
+    ]}
+
+
 @app.get("/api/live/equity")
 def live_equity():
     """实盘净值点（logs/live_equity.jsonl，北京 日期+小时+口径 一条）。

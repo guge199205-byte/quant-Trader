@@ -24,6 +24,7 @@ import {
 } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
 import EquityChart, { toBenchLine, toChartLine } from '../components/EquityChart';
+import RealAccountPanel from '../components/RealAccountPanel';
 import ModelCard, { modelColor } from '../components/ModelCard';
 import ModelChat from '../components/ModelChat';
 import ChatStream from '../components/ChatStream';
@@ -35,7 +36,7 @@ import './Live.css';
 
 const BENCH_COLOR = '#10a37f';
 
-type Tab = 'completed' | 'trades' | 'chat' | 'positions' | 'comp' | 'details';
+type Tab = 'completed' | 'trades' | 'chat' | 'positions' | 'comp' | 'real' | 'details';
 type TimeRange = 'all' | '5d';
 
 /** 右侧 tab：已完成交易 / 成交 / 模型对话 / 持仓 / 比赛配置 / 详情 */
@@ -45,6 +46,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'chat', label: '模型对话' },
   { id: 'positions', label: '持仓' },
   { id: 'comp', label: '比赛配置' },
+  { id: 'real', label: '实盘' },
   { id: 'details', label: '详情' },
 ];
 
@@ -315,6 +317,10 @@ export default function Live() {
   const renderList = () => {
     if (tab === 'comp') {
       return <CompConfigPanel models={rows.map((r) => r.name)} />;
+    }
+
+    if (tab === 'real') {
+      return <RealAccountPanel />;
     }
 
     if (tab === 'details') {

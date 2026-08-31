@@ -80,6 +80,7 @@ export default function Live() {
   const [chartMode, setChartMode] = useState<'pct' | 'dollar'>('pct');
   const [selectedModel, setSelectedModel] = useState<string>('all');
   const [compMode, setCompMode] = useState(1);
+  const [completedCount, setCompletedCount] = useState(0);
 
   // 总控聚合（三市场一次拉取）
   const overview = usePolling(() => fetchOverview(), [], 30000);
@@ -478,14 +479,15 @@ export default function Live() {
       );
     }
 
-    // COMPLETED —— 当前市场全部模型平仓消息流（nof1 风格）
+    // COMPLETED —— 当前市场平仓消息流（nof1 风格；按筛选模型过滤，'all' = 全部）
     if (tab === 'completed') {
       return (
         <CompletedFeed
-          agents={rows.map((r) => r.name)}
+          agents={selectedModel === 'all' ? rows.map((r) => r.name) : [selectedModel]}
           market={market}
           currency={meta.currency}
           stockNames={stockNames.data ?? {}}
+          onCount={setCompletedCount}
         />
       );
     }
@@ -699,7 +701,7 @@ export default function Live() {
           </div>
           <div className="filter-bar">
             <span className="filter-label">模型</span>
-            {tab === 'trades' || tab === 'chat' || tab === 'positions' ? (
+            {tab === 'completed' || tab === 'trades' || tab === 'chat' || tab === 'positions' ? (
               <select
                 className="filter-select"
                 value={selectedModel}
@@ -714,15 +716,17 @@ export default function Live() {
               <span className="filter-static">全部模型</span>
             )}
             <span className="filter-count">
-              {tab === 'trades'
-                ? tradeEvents.length
-                : tab === 'chat'
-                  ? selectedModel === 'all'
-                    ? (chatAll.data ?? []).reduce((n, a) => n + a.lines.length, 0)
-                    : (logs.data ?? []).length
-                  : tab === 'positions'
-                    ? Object.keys(positions.data?.[positions.data.length - 1]?.positions ?? {}).length
-                    : ''}
+              {tab === 'completed'
+                ? completedCount
+                : tab === 'trades'
+                  ? tradeEvents.length
+                  : tab === 'chat'
+                    ? selectedModel === 'all'
+                      ? (chatAll.data ?? []).reduce((n, a) => n + a.lines.length, 0)
+                      : (logs.data ?? []).length
+                    : tab === 'positions'
+                      ? Object.keys(positions.data?.[positions.data.length - 1]?.positions ?? {}).length
+                      : ''}
             </span>
           </div>
           <div className="trade-list">{renderList()}</div>

@@ -20,7 +20,7 @@ const nonNull = <T,>(list: (T | null)[]): T[] => list.filter((x): x is T => x !=
 /** 模型页 —— 参考 nof0 models.html：统计条 + 模型卡片网格（coke 视觉） */
 export default function Models() {
   const nav = useNavigate();
-  const [filter, setFilter] = useState<MarketId | 'all'>('all');
+  const [filter, setFilter] = useState<MarketId | 'all'>('cn');
 
   const overview = usePolling(() => fetchOverview(), [], 60000);
 

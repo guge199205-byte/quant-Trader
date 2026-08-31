@@ -37,8 +37,17 @@ export default function ModelDetail() {
   const holdings = usePolling(() => fetchHoldings(name, m), [name, m], 30000);
   const positions = usePolling(() => fetchPositions(name, m), [name, m], 30000);
   const trades = usePolling(() => fetchTrades(name, m), [name, m], 30000);
-  const tradeDetail = usePolling(() => fetchTradeDetail(name, m, 25), [name, m], 30000);
-  const logs = usePolling(() => fetchLogs(name, m), [name, m], 30000);
+  // 懒加载：FIFO 平仓明细与决策日志数据量大，只在对应 tab 激活时才拉（首屏提速）
+  const tradeDetail = usePolling(
+    () => (tab === 'trades' ? fetchTradeDetail(name, m, 25) : Promise.resolve(null)),
+    [name, m, tab],
+    30000,
+  );
+  const logs = usePolling(
+    () => (tab === 'logs' ? fetchLogs(name, m) : Promise.resolve(null)),
+    [name, m, tab],
+    30000,
+  );
   const bench = usePolling(() => fetchBenchmark(m), [m], 300000);
 
   const benchLine = useMemo(

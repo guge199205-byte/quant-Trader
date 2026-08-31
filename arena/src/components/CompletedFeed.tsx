@@ -5,10 +5,11 @@ import { logoOf, shortName } from './ModelCard';
 import './CompletedFeed.css';
 
 interface Props {
-  agents: string[]; // 当前市场全部 agent
+  agents: string[]; // 当前市场全部 agent（外部可按模型筛选后传入）
   market: MarketId;
   currency: string;
   stockNames?: Record<string, string>; // symbol → 中文名（缺失时回退显示代码）
+  onCount?: (n: number) => void; // 平仓消息条数回调（供父级 filter-bar 计数）
 }
 
 interface AgentTrades {
@@ -30,7 +31,7 @@ const holdText = (days: number | null): string => {
 const fmtQty = (v: number): string => v.toLocaleString('en-US', { maximumFractionDigits: 2 });
 
 /** COMPLETED —— nof1 风格"completed a trade"平仓消息流（当前市场全部模型，最新在前）。 */
-export default function CompletedFeed({ agents, market, currency, stockNames = {} }: Props) {
+export default function CompletedFeed({ agents, market, currency, stockNames = {}, onCount }: Props) {
   const key = agents.join('|');
   const feeds = usePolling(
     () =>
@@ -54,6 +55,7 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
     out.sort((a, b) => (a.exit_date < b.exit_date ? 1 : -1));
     return out;
   }, [feeds.data]);
+  onCount?.(items.length);
 
   if (!agents.length) return <div className="empty-state">该市场暂无 Agent</div>;
   if (feeds.loading && !items.length) {

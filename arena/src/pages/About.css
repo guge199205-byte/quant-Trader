@@ -1,4 +1,189 @@
-/* About 页：系统结构说明 + 赛制与方法论 */
+/* About 页：系统结构说明 + 赛制与方法论（终端风专业排版） */
+
+/* ---------- 头部 ---------- */
+
+.about-head {
+  border: 2px solid #000;
+  background: #fff;
+  margin-bottom: 14px;
+}
+
+.about-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px 10px;
+  border-bottom: 2px solid #000;
+}
+
+.about-title-row h1 {
+  font-size: 20px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-family: 'Courier New', monospace;
+}
+
+.about-ver {
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  border: 1px solid #000;
+  padding: 2px 8px;
+  color: #666;
+}
+
+.about-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  padding: 10px 18px;
+  font-size: 10px;
+  font-family: 'Courier New', monospace;
+}
+
+.about-meta-item b {
+  display: inline-block;
+  margin-right: 6px;
+  color: #fff;
+  background: #000;
+  padding: 1px 6px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
+/* ---------- 目录 ---------- */
+
+.about-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.about-toc-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1.5px solid #000;
+  background: #fff;
+  color: #000;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  text-decoration: none;
+  transition: all 0.15s;
+}
+
+.about-toc-item:hover {
+  background: #000;
+  color: #fff;
+}
+
+.about-toc-num {
+  font-size: 9px;
+  opacity: 0.6;
+}
+
+/* ---------- 区块 ---------- */
+
+.about-sec {
+  padding: 18px 20px;
+  margin-bottom: 14px;
+  scroll-margin-top: 12px;
+}
+
+.about-sec .panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid #000;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.about-sec-num {
+  background: #000;
+  color: #fff;
+  font-size: 9px;
+  padding: 2px 6px;
+  letter-spacing: 0.1em;
+}
+
+/* ---------- 统计条 ---------- */
+
+.about-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.about-stat {
+  border: 1.5px solid #000;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.about-stat-v {
+  font-size: 20px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+}
+
+.about-stat-k {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #000;
+}
+
+.about-stat-d {
+  font-size: 9px;
+  color: #888;
+  font-family: 'Courier New', monospace;
+}
+
+/* ---------- 表格 ---------- */
+
+.about-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10.5px;
+  font-family: 'Courier New', monospace;
+  margin-bottom: 10px;
+}
+
+.about-table th {
+  background: #000;
+  color: #fff;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.about-table td {
+  padding: 6px 10px;
+  border: 1px solid #ddd;
+  color: #333;
+}
+
+.about-table tr:nth-child(even) td {
+  background: #fafafa;
+}
+
+.about-table td b { color: #000; }
+
+/* ---------- 原有元素 ---------- */
 
 .about-arch {
   border: 2px solid #000;

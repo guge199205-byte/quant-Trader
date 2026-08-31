@@ -104,32 +104,32 @@
 }
 
 @media (max-width: 768px) {
+  /* 手机：菜单紧跟 logo 之后一行排开；赛季文字整条不显示 */
   .navbar-container {
-    flex-wrap: wrap;
+    flex-wrap: wrap; /* 极窄时菜单整体换行，不裁切 */
+    justify-content: flex-start;
     height: auto;
     padding: 8px 16px;
   }
   .navbar-menu-center {
     position: static;
     transform: none;
-    width: 100%;
-    justify-content: center;
-    order: 3;
-    margin-top: 8px;
-    gap: 12px;
+    width: auto;
+    justify-content: flex-start;
+    margin: 0 0 0 12px;
+    gap: 8px;
+    flex-shrink: 0;
   }
-  .navbar-menu-center li a { font-size: 10px; }
-  .navbar-right { flex-direction: row; gap: 8px; }
-  .navbar-link { font-size: 8px; }
+  .navbar-menu-center li a { font-size: 10px; white-space: nowrap; }
+  .navbar-right { display: none; }
   .logo-alpha { font-size: 16px; }
   .logo-arena { font-size: 12px; }
 }
 
 @media (max-width: 480px) {
   .navbar-container { padding: 6px 10px; }
-  .navbar-menu-center { gap: 8px; }
-  .navbar-menu-center li a { font-size: 9px; }
-  .navbar-link { font-size: 7px; }
+  .navbar-menu-center { gap: 4px; margin-left: 8px; }
+  .navbar-menu-center li a { font-size: 8.5px; }
   .logo-alpha { font-size: 15px; }
   .logo-arena { font-size: 11px; }
 }

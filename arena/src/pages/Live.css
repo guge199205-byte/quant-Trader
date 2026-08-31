@@ -113,8 +113,9 @@
   font-weight: 700;
 }
 
-/* 当日实时指数组：6 个指数固定 2 行 × 3 列（用户指定设计），
-   等宽单元格填满整行，内容居中；行/列间 1px 分隔线 */
+/* 当日实时指数组：单元格内 名称·价格·涨跌 单行横排；行/列间 1px 分隔线。
+   自适应三态（用户指定）：
+   ≥1060px 6 格单行排满；621-1059px 2 行 × 3 列；≤620px 手机 3 行 × 2 列 */
 .index-bar {
   flex: 1;
   display: grid;
@@ -127,12 +128,13 @@
 
 .index-item {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
   min-width: 0;
-  padding: 6px 8px;
+  padding: 8px 10px;
   border-right: 1px solid #eee;
+  white-space: nowrap;
 }
 
 /* 2×3 表格分隔线：每行第 3 列无右边线，第 1 行有下边线 */
@@ -145,17 +147,55 @@
   font-weight: 700;
   letter-spacing: 0.5px;
   white-space: nowrap;
+  /* 极端窄时名称先省略号收缩，价格/涨跌保持完整 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .index-last {
   font-size: 15px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
 .index-chg {
   font-size: 11px;
   font-weight: 700;
+  flex-shrink: 0;
+}
+
+/* 宽屏（≥1060px）：6 格单行排满（自适应——拉长就显示一行）。
+   清除 2×3 的行下边线；第 1-5 格右边线，第 6 格无。
+   选择器 .status-group 前缀压住基础 nth-child 规则（vite @media 重排问题） */
+@media (min-width: 1060px) {
+  .top-status-bar .index-bar {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .status-group .index-item:nth-child(n) { border-bottom: none; }
+  .status-group .index-item:nth-child(-n+5) { border-right: 1px solid #eee; }
+  .status-group .index-item:nth-child(6) { border-right: none; }
+}
+
+/* 手机窄屏（≤620px）：3 列单元格放不下"名称+价格+涨跌"单行 → 2 列 × 3 行。
+   分隔线重排：奇数列右边线、前 2 行下边线 */
+@media (max-width: 620px) {
+  .top-status-bar .index-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .status-group .index-item {
+    gap: 4px;
+    padding: 6px 8px;
+  }
+  .status-group .index-item:nth-child(odd) { border-right: 1px solid #eee; }
+  .status-group .index-item:nth-child(even) { border-right: none; }
+  .status-group .index-item:nth-child(-n+4) { border-bottom: 1px solid #eee; }
+  .status-group .index-item:nth-child(n+5) { border-bottom: none; }
+  /* 字号收缩：320px 时 2 列 ~142px 才放得下 */
+  .status-group .index-item .index-last { font-size: 13px; }
+  .status-group .index-item .index-chg { font-size: 10px; }
+  .status-group .index-item .index-name { font-size: 8px; }
 }
 
 /* 最高/最低表演者：位于交易时段条(mh-bar)内，水平并排 */

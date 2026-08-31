@@ -16,7 +16,7 @@
 | ⏰ **盘中智能分析调度** | 9:30 开盘 + 每小时定时 + **波动触发**(持仓盈亏较上次 ±3pp 或个股涨跌 ≥5% 立即加跑,20 分钟节流),LLM 逐只简评+操作建议 |
 | ⚡ **token 消耗透明** | 每次 LLM 调用记录真实 usage,`/api/token-usage` 按模型累计,前端模型卡 ⚡ 实时显示 |
 | 🐳 **Docker 化部署** | compose 编排全部服务(MCP×3/API/前端×2/dsh),宿主 cron 探活自愈,防交易中断 |
-| 📊 **本地数据仓库** | 行情来自本机量化数据仓库(后复权/前复权日线、指数),不依赖免费行情 API |
+| 📊 **QuantDB 数据底座** | A股十年数据 + 315 维 AI 因子本地化(parquet+DuckDB);新用户可免费接口一键初始化(无需任何数据 Key) |
 | 📝 **交易记忆系统** | agent 开盘读心得、收盘写经验,超 200 行自动归档,策略越用越好用 |
 | 🛡️ **风控网关** | 单笔/持仓限额、日亏熔断、现金保留、黑名单,三条交易路径单点拦截 |
 | 🔌 **Broker 可插拔** | sandbox(模拟盘) / tdx(通达信桥,实盘在用) / futu / tiger / ibkr,`backend.yaml` 一键切换 |
@@ -70,55 +70,75 @@
 
 **盘中分析调度**:`scripts/live_hourly_analysis.py`(cron:9:30 开盘 + 10-15 点整点 + 每分钟采样检测波动)→ LLM 逐只简评 → 落盘 agent 对话日志 → 前端模型对话混合流。
 
-**数据链路**:本机量化数据仓库(Hive 分区 parquet)→ `scripts/sync_from_quantmind.py` → `data/` AlphaVantage 格式价格文件 → agent 与前端共用。
+**数据链路**:`scripts/bootstrap_data.py`(免费接口,新用户)或 QuantDB 数据底座/本机仓库(`sync_from_quantmind.py`)→ `data/` AlphaVantage 格式价格文件 → agent 与前端共用;A股 agent 行情另走 QuantDB parquet + duckdb 直查(优先)。
 
 ---
 
-## 🚀 快速开始（Docker）
+## 🚀 快速开始（5 步）
 
-### 环境准备
+> 无需数据源 Key、无需量化仓库——内置一键初始化脚本走免费接口拉全市场日线。
+
+### 第 1 步:环境准备
+
+- 安装 **Docker**（≥24,含 `docker compose` 插件）
+- 安装 **curl**（拉美股数据用;大多数 Linux 自带）
+
+### 第 2 步:拉代码 + 填密钥
 
 ```bash
-# 1. .env（密钥,不入镜像,仅 env_file 注入）
-OPENAI_API_BASE="https://api.deepseek.com/v1"
-OPENAI_API_KEY="你的Key"
-GLM_API_BASE="https://open.bigmodel.cn/api/paas/v4"   # GLM 5.3 走智谱
-GLM_API_KEY="你的Key"
-JINA_API_KEY="你的Key"
-RUNTIME_ENV_PATH="/path/to/quant-agent-trader/runtime_env.json"
+git clone <你的仓库地址> && cd quant-agent-trader
+cp .env.example .env    # 若无此文件则手动创建
 ```
 
-### 启动
+`.env`（密钥不入镜像,仅 env_file 注入）:
+
+```bash
+OPENAI_API_BASE="https://api.deepseek.com/v1"
+OPENAI_API_KEY="你的Key"          # DeepSeek 开放平台注册即用
+GLM_API_BASE="https://open.bigmodel.cn/api/paas/v4"   # GLM 5.3 走智谱
+GLM_API_KEY="你的Key"             # 智谱开放平台
+JINA_API_KEY="你的Key"            # 市场信息搜索(Jina Reader,免费额度够用)
+```
+
+### 第 3 步:一键初始化数据（免费接口,约 3~6 分钟）
+
+```bash
+python3 scripts/bootstrap_data.py
+# 拉取:A股 SSE50(腾讯,前复权)+ 美股 NASDAQ100(Yahoo)+ 港股恒指权重(腾讯,后复权)
+# 输出与生产数据格式完全一致,后续可随时换 QuantDB 底座增强
+```
+
+### 第 4 步:启动
 
 ```bash
 # 启动全部常驻服务（MCP×3 + API + 前端×2 + dsh）
 docker compose up -d
 
-# 跑交易 agent（按市场,LLM 逐日执行）
-docker compose --profile agents run --rm agent-us   # 美股
-docker compose --profile agents run --rm agent-cn   # A股
-docker compose --profile agents run --rm agent-hk   # 港股
-# 指定日期范围（环境变量覆盖 config 的 date_range）
-docker compose --profile agents run --rm -e INIT_DATE=2026-08-25 -e END_DATE=2026-08-25 agent-us
-
-# 查看状态 / 日志
-docker compose ps
-docker compose logs -f mcp-cn
+# 跑交易 agent（按市场,LLM 逐日执行;先跑 1 天验证链路）
+docker compose --profile agents run --rm -e INIT_DATE=2026-08-28 -e END_DATE=2026-08-28 agent-us
+docker compose --profile agents run --rm -e INIT_DATE=2026-08-28 -e END_DATE=2026-08-28 agent-cn
+# 指定市场全区间回放:去掉 -e 日期,走 configs 的 date_range
 ```
 
-### 访问
+### 第 5 步:打开页面
 
 | 服务 | 地址 | 说明 |
 |------|------|------|
-| Quant-Agent-Trader 实时看板 | http://192.168.31.68:8080 | 实盘(净值/持仓/成交/分析)/ 排行榜 / 模型 / 总控,三市场切换 |
-| Arena 竞技场 | http://192.168.31.68:8092 | 终端风九页:实况/排行榜/模型/总控/交易所/数据平台/Harness/详情/关于 |
-| 交易所设置 | http://192.168.31.68:8092/trading | 通达信交易桥(地址/Token/自动推送/止损止盈)+ 券商接入(富途/老虎/IB) |
-| API | http://192.168.31.68:8091 | 见下方 API 端点表 |
+| Quant-Agent-Trader 实时看板 | http://<服务器IP>:8080 | 实盘(净值/持仓/成交/分析)/ 排行榜 / 模型 / 总控,三市场切换 |
+| Arena 竞技场 | http://<服务器IP>:8092 | 终端风九页:实况/排行榜/模型/总控/交易所/数据平台/Harness/详情/关于 |
+| 交易所设置 | http://<服务器IP>:8092/trading | 券商接入(富途/老虎/IB)配置 |
+| API | http://<服务器IP>:8091 | 见下方 API 端点表 |
 | dsh Web | http://localhost:3081 | agent 会话/工具调用可视化 |
+
+> 💡 **A股实盘是可选功能**:需要一台 Windows 交易机(装通达信客户端)+ 通达信交易桥,
+> 安装 3 步见 [`brokers/tdx-bridge/README.md`](brokers/tdx-bridge/README.md)。没桥也能完整跑模拟盘三市场竞技。
 
 ---
 
 ## 💰 A股实盘（通达信桥）
+
+> 🛠️ **桥安装(Windows 交易机)**:通达信客户端登录 → 共享目录跑 `setup.ps1` → 确认桥监听 8550。
+> 完整 3 步 + 故障排查见 [`brokers/tdx-bridge/README.md`](brokers/tdx-bridge/README.md)(桥程序随仓库分发,无外部依赖)。
 
 ### 交易链路
 
@@ -143,21 +163,39 @@ docker compose logs -f mcp-cn
 
 ---
 
-## 📊 数据源:本机量化数据仓库
+## 📦 QuantDB 数据底座
 
-价格数据来自本机自建量化数据仓库(Hive 分区 parquet),模拟盘回放无前视偏差:
+QuantDB 是付费 CDN 量化数据源,为 BayMax 提供 **A 股全市场十年数据**(2016-01 ~ 至今),本地 parquet 落盘,agent 行情/复盘/因子分析走 DuckDB 直查,零时延零配额消耗:
 
-| 市场 | 来源 | 输出 |
+| 特性 | 说明 |
+|------|------|
+| **覆盖** | 6 大类 **28 个数据集**:日线/分钟线/逐笔 Tick 全级别,2016 年起十年数据 |
+| **K 线** | 前复权/后复权/不复权三口径日线 + 指数日线 + 5分钟/1分钟线 + Tick 逐笔 |
+| **财务** | 资产负债表 / 利润表 / 现金流量表 / 股本结构 / 每股指标 / 分红因子 / 股东户数 |
+| **估值** | PE/PB/市值/股息率 18 列估值表 + 均线/RSI/KDJ/MACD/波动率 37 列技术指标 + 市场情绪 19 列 |
+| **AI 因子** | **315 维因子**:L1 因子 **98 个**(动量/波动/流动性/基本面/风格/行业/筹码/概念)+ L2 高频微观因子 **216 个**(VPIN/资金流/价差/深度/订单/竞价/跳跃/冲击) |
+| **个股详情** | **152 列基本面快照**(instrument_detail,全市场) |
+| **板块** | 板块概念 / 指数权重(沪深300/中证500/1000)/ 交易日历 / 融资融券 |
+| **债券/ETF** | ETF 申赎清单 / 可转债 |
+| **消费链路** | parquet 落盘 → **DuckDB 查询**(agent 行情/复盘/因子)→ PostgreSQL 快照(API 服务)→ **Qlib 二进制**(回测/训练) |
+
+> **订阅方式**:QuantDB SDK(CDN 分发,API Key 认证),按数据集同步到本地 parquet。
+> 未订阅也能完整使用本框架——内置免费初始化脚本兜底(见下方数据源表),可随时平滑升级到 QuantDB。
+
+## 📊 数据源
+
+| 市场 | 免费初始化(内置,bootstrap_data.py) | 生产增强(本机仓库) |
 |------|------|------|
-| A股 | 本地日线仓库(后复权)+ 指数 000016.SH | `data/A_stock/daily_prices_sse_50.csv`、`merged.jsonl`、`index_daily_sse_50.json` |
-| 美股 | 本地日线仓库(前复权)+ NDX 指数 | `data/daily_prices_*.json`、`Adaily_prices_QQQ.json`(纳指100 指数,作 QQQ 基准) |
-| 港股 | 腾讯行情 | `HK_stock/merged.jsonl`、`hsi_daily.json` |
+| A股 | 腾讯行情(前复权),`data/A_stock/` | **QuantDB 数据底座**(后复权 daily_backward + 因子,duckdb 直查) |
+| 美股 | Yahoo Finance(免 key),`data/daily_prices_*.json` | 本机量化仓库(前复权) |
+| 港股 | 腾讯行情(后复权),`data/HK_stock/merged.jsonl` | — |
 
 ```bash
-python scripts/sync_from_quantmind.py   # 从本机仓库同步,覆盖前自动备份
+python3 scripts/bootstrap_data.py          # 新用户/重建:免费接口一键拉全市场(3~6 分钟)
+python3 scripts/sync_from_quantmind.py     # 生产:从本机量化仓库同步(覆盖前自动备份)
 ```
 
----
+模拟盘回放无前视偏差:agent 只能读到 `TODAY_DATE` 及以前的数据。
 
 ## 🧠 交易记忆（越用越好用）
 
@@ -265,7 +303,8 @@ class MySource(DataSource):
 | `scripts/live_hourly_analysis.py` | 盘中分析（9:30/整点/波动触发）+ 净值采样;`--record-only` 只采样,`--force` 忽略时段 |
 | `scripts/live_trade_picks.py` | 实盘选股 + 桥下单（分账买入/卖出） |
 | `scripts/live_ledger.py` | 分账账本（额度分配/释放,持仓归属） |
-| `scripts/sync_from_quantmind.py` | 从本机数据仓库同步三市场价格 |
+| `scripts/bootstrap_data.py` | **新用户一键初始化**:免费接口(腾讯/Yahoo)拉三市场日线,无需数据 Key |
+| `scripts/sync_from_quantmind.py` | 生产:从本机量化仓库同步三市场价格(覆盖前备份) |
 | `scripts/backfill_us_agent.sh` | 补跑 US agent 缺失交易日 |
 | `scripts/serve_nof0.py` | 前端静态服务（跟随 symlink） |
 
@@ -306,7 +345,7 @@ docs/                 # 规划与架构文档
 |------|------|
 | 前端不实时 | 确认 `nof0/config.yaml` 的 `api_base` 指向 API 地址;浏览器强刷(Ctrl+Shift+R) |
 | 前端改了 JS 不生效 | `cd arena && npm run build`(nginx 挂 dist 秒级生效,无需重启容器) |
-| A股/港股曲线空白 | 跑 `python scripts/sync_from_quantmind.py`(A股);HK 确认 `data/HK_stock/merged.jsonl` 非空 |
+| A股/港股曲线空白 | 先跑 `python3 scripts/bootstrap_data.py` 初始化数据(免费);HK 确认 `data/HK_stock/merged.jsonl` 非空 |
 | 实盘净值重复点 | 每分钟采样与整点分析并发双写 → fcntl 文件锁内重扫去重(已修复,勿回退) |
 | 桥价午休假折线 | 11:31-12:59 桥价冻结不采样(`record_window` 已跳过) |
 | agent 报 EBUSY | 容器 bind-mount 不可 unlink,main.py 已降级为截断(无需处理) |
@@ -319,7 +358,8 @@ docs/                 # 规划与架构文档
 
 - [x] 三市场并行交易（US + CN + HK 独立 MCP 组）
 - [x] Docker 化部署 + 宿主 cron 探活自愈
-- [x] 本地数据仓库底座（不再依赖免费行情 API）
+- [x] QuantDB 数据底座（十年 A股数据 + 315 维因子,duckdb 直查）
+- [x] 免费一键初始化脚本（bootstrap_data.py,新用户零 Key 起步）
 - [x] 交易记忆系统（每市场独立,自动归档）
 - [x] 风控网关（单笔/持仓/熔断/黑名单）
 - [x] Broker + 数据源抽象层
@@ -330,9 +370,10 @@ docs/                 # 规划与架构文档
 - [x] 实盘分账（每 agent ¥10 万额度,买入分配/卖出释放）
 - [x] 盘中智能分析调度（9:30 开盘 + 每小时 + 波动触发）
 - [x] LLM token 消耗统计（/api/token-usage + 前端 ⚡ 显示）
-- [ ] cn-agent 分析接入本地仓库 + duckdb 查询
+- [x] cn-agent 分析接入 QuantDB(duckdb 查询,行情/股票名/复盘全链路)
 - [ ] 富途 OpenD / IB Gateway 实盘验证
-- [ ] dsh 定时收盘复盘 + 多渠道推送
+- [x] dsh 每日复盘 skill(QuantDB + 新闻情绪 + L1/L2 因子)
+- [ ] dsh 定时收盘自动复盘 + 多渠道推送(待做)
 
 ---
 

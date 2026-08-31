@@ -111,3 +111,6 @@ releases/
 arena/shot_live.mjs
 arena/shot_*.mjs
 dsh/root-dsh/
+
+# 本机私有 compose 覆盖（TdxAiData 挂载等）
+docker-compose.override.yml

@@ -1,7 +1,8 @@
 import json
 import os
 import sys
-from datetime import datetime
+import time
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -357,7 +358,106 @@ def get_price_local_function(symbol: str, date: str, filename: str = "merged.jso
     return {"error": f"No records found for stock {symbol} in local data", "symbol": symbol, "date": date}
 
 
+# ---------- A股盘中 L2 级行情（TdxAiData 通达信官方接口） ----------
+
+_L2_CACHE_TTL = 30  # 秒；TdxAiData 测试版限流严重（放行 2-3 次后冷却），必须低频调用
+_l2_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
+
+
+@mcp.tool()
+def get_l2_market_data(symbol: str, ticks: int = 100) -> Dict[str, Any]:
+    """A股盘中 L2 级行情：五档盘口 + 最近逐笔成交（主动买卖聚合）。仅支持 A 股（如 600519.SH）。
+
+    数据源 TdxAiData（通达信官方接口）。⚠️ 限流严格：每只股票 30 秒内重复调用返回缓存；
+    只对持仓/候选股使用，不要对全市场循环调用。
+
+    Args:
+        symbol: A股代码（后缀式），如 '600519.SH'、'000001.SZ'
+        ticks: 逐笔条数上限（1-500，默认 100）
+
+    Returns:
+        snapshot: 五档盘口/最新价/开高低/昨收/内外盘/涨速
+        ticks: 最近逐笔 [{time, price, volume, side}]
+        agg: 逐笔聚合 {buy_vol, sell_vol, net_buy_vol, buy_pct, n}
+        ok/error: 结果状态
+    """
+    now = time.time()
+    cached = _l2_cache.get(symbol)
+    if cached and now - cached[0] < _L2_CACHE_TTL:
+        return {**cached[1], "cached": True}
+    try:
+        from agent_tools.datasources.tdx_aidata import get_quote, get_tick_data
+
+        if ticks < 1 or ticks > 500:
+            ticks = 100
+        q = get_quote(symbol)
+        if not isinstance(q, dict):
+            return {"ok": False, "error": f"快照异常: {q}", "symbol": symbol}
+        today = date.today().isoformat()
+        try:
+            tk = get_tick_data(symbol, today, startxh=0, wantnum=ticks)
+        except Exception as e:  # 盘中数据可能尚未就绪/接口限流
+            tk = {"error": f"{type(e).__name__}: {e}"}
+        ticks_out, buy_vol, sell_vol = [], 0, 0
+        if isinstance(tk, dict) and "Price" in tk:
+            for i, price in enumerate(tk["Price"]):
+                flag = str(tk.get("BSFlag", ["0"])[i] if i < len(tk.get("BSFlag", [])) else "0")
+                vol = int(float(tk.get("Volume", ["0"])[i]) if i < len(tk.get("Volume", [])) else 0)
+                side = {"1": "buy", "2": "sell"}.get(flag, "neutral")
+                if side == "buy":
+                    buy_vol += vol
+                elif side == "sell":
+                    sell_vol += vol
+                ticks_out.append({
+                    "time": tk.get("Time", [""])[i] if i < len(tk.get("Time", [])) else "",
+                    "price": float(price) if price not in ("", None) else None,
+                    "volume": vol,
+                    "side": side,
+                })
+        total = buy_vol + sell_vol
+        result = {
+            "ok": True,
+            "cached": False,
+            "symbol": symbol,
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "snapshot": {
+                "now": _l2_num(q.get("Now")),
+                "open": _l2_num(q.get("Open")),
+                "high": _l2_num(q.get("Max")),
+                "low": _l2_num(q.get("Min")),
+                "last_close": _l2_num(q.get("LastClose")),
+                "avg_price": _l2_num(q.get("Average")),
+                "speed_5min": _l2_num(q.get("Before5MinNow")),
+                "inside_vol": _l2_num(q.get("Inside")),
+                "outside_vol": _l2_num(q.get("Outside")),
+                "bid": [_l2_num(v) for v in q.get("Buyp", [])[:5]],
+                "bid_vol": [_l2_num(v) for v in q.get("Buyv", [])[:5]],
+                "ask": [_l2_num(v) for v in q.get("Sellp", [])[:5]],
+                "ask_vol": [_l2_num(v) for v in q.get("Sellv", [])[:5]],
+            },
+            "ticks": ticks_out[-ticks:],
+            "agg": {
+                "n": len(ticks_out),
+                "buy_vol": buy_vol,
+                "sell_vol": sell_vol,
+                "net_buy_vol": buy_vol - sell_vol,
+                "buy_pct": round(buy_vol / total * 100, 1) if total else None,
+            },
+        }
+        _l2_cache[symbol] = (now, result)
+        return result
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}", "symbol": symbol}
+
+
+def _l2_num(v: Any) -> Optional[float]:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 if __name__ == "__main__":
-    
+
     port = int(os.getenv("GETPRICE_HTTP_PORT", "8003"))
     mcp.run(transport="streamable-http", host="0.0.0.0", port=port)

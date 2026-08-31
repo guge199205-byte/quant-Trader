@@ -1,0 +1,103 @@
+import { useEffect, useState } from 'react';
+import { CompMode, CompSelection, fetchCompConfig, saveCompConfig } from '../api/client';
+import { modelColor } from './ModelCard';
+
+/** 比赛配置面板（实况页右侧 tab）：
+ *  每个模型一行，4 种分析配置多选开关；选中 N 个 → 分析引擎按 N 个配置各做一轮分析。
+ *  全部中文。保存后写后端 configs/comp-config.json（实盘分析脚本与回放 prompt 共用）。 */
+export default function CompConfigPanel({ models }: { models: string[] }) {
+  const [catalog, setCatalog] = useState<CompMode[]>([]);
+  const [draft, setDraft] = useState<Record<string, Set<string>>>({});
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetchCompConfig()
+      .then(({ catalog: cat, selection }) => {
+        if (!alive) return;
+        setCatalog(cat);
+        setDraft(
+          Object.fromEntries(
+            models.map((m) => [m, new Set(selection[m] ?? [])]),
+          ),
+        );
+      })
+      .catch(() => alive && setError('读取配置失败'));
+    return () => {
+      alive = false;
+    };
+  }, [models.join('|')]);
+
+  const toggle = (model: string, id: string) =>
+    setDraft((prev) => {
+      const next = new Set(prev[model] ?? []);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { ...prev, [model]: next };
+    });
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const selection: CompSelection = Object.fromEntries(
+        Object.entries(draft).map(([m, ids]) => [m, [...ids]]),
+      );
+      await saveCompConfig(selection);
+      setSavedAt(Date.now());
+    } catch {
+      setError('保存失败，请重试');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="comp-body">
+      {catalog.length === 0 && !error && <div className="empty-state">加载配置中…</div>}
+      {error && <div className="comp-error">{error}</div>}
+      {models.map((model) => (
+        <div className="comp-model" key={model}>
+          <div className="comp-model-head">
+            <span className="comp-model-name" style={{ color: modelColor(model) }}>
+              {model}
+            </span>
+            <span className="comp-model-count">{draft[model]?.size ?? 0} 个配置</span>
+          </div>
+          <div className="comp-model-switches">
+            {catalog.map((c) => {
+              const on = draft[model]?.has(c.id) ?? false;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={`comp-switch ${on ? 'on' : ''}`}
+                  onClick={() => toggle(model, c.id)}
+                  title={c.prompt}
+                  aria-pressed={on}
+                >
+                  <span className="comp-switch-box">{on ? '✓' : ''}</span>
+                  {c.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      <div className="comp-save-row">
+        <button type="button" className="comp-save" onClick={save} disabled={saving}>
+          {saving ? '保存中…' : '保存配置'}
+        </button>
+        {savedAt && Date.now() - savedAt < 3000 && (
+          <span className="comp-saved">✓ 已保存</span>
+        )}
+      </div>
+      <div className="comp-note">
+        选中 N 个配置 → 每次分析将按 N 个配置各执行一轮独立分析（实盘盘中 + 回放均生效）。
+        未选择 = 基线模式单轮。
+      </div>
+    </div>
+  );
+}

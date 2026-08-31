@@ -432,12 +432,119 @@
   margin-top: 2px;
 }
 
-/* 比赛配置（nof1 四模式） */
+/* 比赛配置（每模型多选分析配置，全中文） */
 .comp-body {
   padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.comp-model {
+  border: 1.5px solid #000;
+  padding: 8px 10px;
+}
+
+.comp-model-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.comp-model-name {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comp-model-count {
+  font-size: 9px;
+  color: #666;
+  white-space: nowrap;
+  margin-left: 8px;
+}
+
+.comp-model-switches {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.comp-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  font-size: 10px;
+  font-family: 'Courier New', monospace;
+  font-weight: 700;
+  border: 1.5px solid #000;
+  background: #fff;
+  color: #000;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.comp-switch:hover { background: #f5f5f5; }
+
+.comp-switch.on {
+  background: #000;
+  color: #fff;
+}
+
+.comp-switch-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.comp-save-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.comp-save {
+  flex: 1;
+  padding: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  border: 2px solid #000;
+  background: #fff;
+  color: #000;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.comp-save:hover { background: #000; color: #fff; }
+.comp-save:disabled { opacity: 0.5; cursor: wait; }
+
+.comp-saved {
+  font-size: 10px;
+  font-weight: 700;
+  color: #10a37f;
+}
+
+.comp-error {
+  border: 1.5px solid #d32f2f;
+  color: #d32f2f;
+  font-size: 10px;
+  padding: 6px 8px;
 }
 
 .comp-mode-list {

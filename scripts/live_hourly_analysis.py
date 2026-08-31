@@ -155,9 +155,10 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str) -> str
     return "\n".join(lines)
 
 
-def call_llm(user_content: str, model: str) -> tuple[str, dict | None]:
+def call_llm(user_content: str, model: str, system_prompt: str | None = None) -> tuple[str, dict | None]:
     """OpenAI 兼容接口调用指定模型；失败返回空串。
-    返回 (content, usage)：usage = {prompt_tokens, completion_tokens, total_tokens} 供累计统计。"""
+    返回 (content, usage)：usage = {prompt_tokens, completion_tokens, total_tokens} 供累计统计。
+    system_prompt 覆盖默认系统提示词（比赛配置多轮分析用）。"""
     import requests
 
     # 各模型走各自 API 供应商（glm 走智谱，其余走 deepseek）
@@ -169,15 +170,16 @@ def call_llm(user_content: str, model: str) -> tuple[str, dict | None]:
         key = os.getenv("OPENAI_API_KEY", "")
     if not base or not key:
         return "", None
+    base_prompt = system_prompt or (
+        f"你是 {model} 模型驱动的 A股 实盘交易助手盘中持仓分析师。"
+        "分析冷静客观，给可执行的操作建议，注意 A股 T+1 规则与风险。输出中文 markdown。")
     resp = requests.post(
         f"{base}/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
         json={
             "model": model,
             "messages": [
-                {"role": "system",
-                 "content": f"你是 {model} 模型驱动的 A股 实盘交易助手盘中持仓分析师。"
-                            "分析冷静客观，给可执行的操作建议，注意 A股 T+1 规则与风险。输出中文 markdown。"},
+                {"role": "system", "content": base_prompt},
                 {"role": "user", "content": user_content},
             ],
             "temperature": 0.3,
@@ -254,6 +256,34 @@ def record_equity(broker, asset: float, cash: float) -> None:
                 f.write(json.dumps(e, ensure_ascii=False) + "\n")
                 existing_keys.add((e["key"], e["agent"]))
         fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def build_leaderboard() -> str:
+    """今日各 agent 虚拟净值排行榜（读 live_equity.jsonl 今日最后一条/agent，零网络开销）。
+    供「情境感知」配置注入——让模型知道自己是领先还是落后。"""
+    path = ROOT / "logs" / "live_equity.jsonl"
+    if not path.is_file():
+        return ""
+    today = now_cn().strftime("%Y-%m-%d")
+    best: dict = {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            e = json.loads(line)
+            if e.get("agent") and e.get("date") == today:
+                best[e["agent"]] = e["value"]
+    except (json.JSONDecodeError, OSError):
+        return ""
+    if not best:
+        return ""
+    items = sorted(best.items(), key=lambda kv: -float(kv[1]))
+    return "\n".join(f"- {a}: ¥{float(v):,.0f}" for a, v in items)
+
+
+def system_prompt_for(model: str, mode: dict) -> str:
+    """比赛配置的系统提示词：基础分析师人设 + 该配置的中文分析要求。"""
+    base = (f"你是 {model} 模型驱动的 A股 实盘交易助手盘中持仓分析师。"
+            "分析冷静客观，给可执行的操作建议，注意 A股 T+1 规则与风险。输出中文 markdown。")
+    return base + f"\n\n【本次分析配置：{mode['name']}】\n{mode['prompt']}"
 
 
 def append_log(user_content: str, content: str, sig: str, usage: dict | None = None) -> Path:
@@ -373,25 +403,35 @@ def run_analysis(broker, reason: str) -> int:
         virtual_cash = agent_virtual_cash(ledger, agent)
         virtual_asset = virtual_cash + sum(r["price"] * r["volume"] for r in my_rows)
         user_content = build_user_content(my_rows, virtual_asset, virtual_cash, agent)
-        usage = None
-        try:
-            content, usage = call_llm(user_content, agent)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[{now:%F %T}] {agent} LLM 调用失败: {exc}")
-            content = ""
-        if not content:
-            # LLM 降级: 数据摘要（对话 tab 至少可看数据）—— 未调用 API，不计 token
+        # 比赛配置多选：选中 N 个配置 → 本轮按 N 个配置各做一轮独立分析（各自落盘一轮对话）
+        from prompts.analysis_modes import selected_modes
+
+        for mode in selected_modes(agent):
+            mode_prompt = mode["prompt"]
+            if mode["id"] == "awareness":  # 情境感知: 注入今日排行榜上下文
+                lb = build_leaderboard()
+                if lb:
+                    mode_prompt = mode_prompt + f"\n今日各 agent 虚拟净值排行榜（¥10 万起点）：\n{lb}"
+            labeled_content = f"【分析配置：{mode['name']}】\n\n" + user_content
             usage = None
-            summary = ["（LLM 分析暂不可用，附实时数据）"]
-            for r in my_rows:
-                summary.append(
-                    f"- {r['name']} {r['code']}: 现价 ¥{r['price']} / 成本 ¥{r['cost']} "
-                    f"/ {r['volume']}股 / 盈亏 ¥{r['pnl']:+,.0f}({r['pnl_pct']:+.2f}%)")
-            content = "\n".join(summary)
-        path = append_log(user_content, content, agent, usage)
-        tok = f", token {usage.get('total_tokens')} (入{usage.get('prompt_tokens')}/出{usage.get('completion_tokens')})" if usage else ""
-        print(f"[{now:%F %T}] {agent} 分析完成 {len(my_rows)} 只名下持仓{tok} → {path.relative_to(ROOT)}")
-        ok += 1
+            try:
+                content, usage = call_llm(labeled_content, agent, system_prompt_for(agent, {**mode, "prompt": mode_prompt}))
+            except Exception as exc:  # noqa: BLE001
+                print(f"[{now:%F %T}] {agent}·{mode['name']} LLM 调用失败: {exc}")
+                content = ""
+            if not content:
+                # LLM 降级: 数据摘要（对话 tab 至少可看数据）—— 未调用 API，不计 token
+                usage = None
+                summary = [f"（{mode['name']} LLM 分析暂不可用，附实时数据）"]
+                for r in my_rows:
+                    summary.append(
+                        f"- {r['name']} {r['code']}: 现价 ¥{r['price']} / 成本 ¥{r['cost']} "
+                        f"/ {r['volume']}股 / 盈亏 ¥{r['pnl']:+,.0f}({r['pnl_pct']:+.2f}%)")
+                content = "\n".join(summary)
+            path = append_log(labeled_content, content, agent, usage)
+            tok = f", token {usage.get('total_tokens')} (入{usage.get('prompt_tokens')}/出{usage.get('completion_tokens')})" if usage else ""
+            print(f"[{now:%F %T}] {agent}·{mode['name']} 分析完成 {len(my_rows)} 只名下持仓{tok} → {path.relative_to(ROOT)}")
+            ok += 1
 
     # 更新波动基线（全部持仓，跨 agent 汇总）
     save_state({

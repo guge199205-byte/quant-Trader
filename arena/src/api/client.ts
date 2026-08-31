@@ -315,6 +315,22 @@ const parseBenchFile = (doc: unknown): BenchPoint[] => {
     .filter((p) => Number.isFinite(p.close));
 };
 
+// ---------- 比赛配置（每模型多选分析配置） ----------
+
+export interface CompMode {
+  id: string;
+  name: string;
+  prompt: string;
+}
+
+export type CompSelection = Record<string, string[]>;
+
+export const fetchCompConfig = () =>
+  unwrap<{ catalog: CompMode[]; selection: CompSelection }>(api.get('/comp-config'));
+
+export const saveCompConfig = (selection: CompSelection) =>
+  unwrap<{ selection: CompSelection }>(api.put('/comp-config', { selection }));
+
 export const fetchBenchmark = async (market: MarketId): Promise<BenchPoint[]> => {
   try {
     const file =

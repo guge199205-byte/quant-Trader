@@ -28,6 +28,7 @@ import ModelCard, { modelColor } from '../components/ModelCard';
 import ModelChat from '../components/ModelChat';
 import ChatStream from '../components/ChatStream';
 import CompletedFeed from '../components/CompletedFeed';
+import CompConfigPanel from '../components/CompConfigPanel';
 import { MarketSwitcher } from '../components/Navbar';
 import { fmtMoney, fmtPct, pnlClass } from '../utils/format';
 import './Live.css';
@@ -79,7 +80,6 @@ export default function Live() {
   const [chartRange, setChartRange] = useState<TimeRange>('all');
   const [chartMode, setChartMode] = useState<'pct' | 'dollar'>('pct');
   const [selectedModel, setSelectedModel] = useState<string>('all');
-  const [compMode, setCompMode] = useState(1);
   const [completedCount, setCompletedCount] = useState(0);
 
   // 总控聚合（三市场一次拉取）
@@ -314,41 +314,7 @@ export default function Live() {
   // ---------- 右侧列表渲染 ----------
   const renderList = () => {
     if (tab === 'comp') {
-      const modes = [
-        { id: 1, name: 'New Baseline', enabled: true, desc: '数据管道升级：本地数据仓库（后复权日线）、每日数据更新、全自主零样本、支持加仓。三市场（美股 / A股 / 港股）独立竞技。' },
-        { id: 2, name: 'Monk Mode', enabled: false, desc: '提示词精简 50%（更短的系统提示词，减少无效推理），同时强化风控护栏：单笔/持仓限额、日亏熔断、现金保留、黑名单。' },
-        { id: 3, name: 'Situational Awareness', enabled: false, desc: '模型感知自身排名与对手盈亏：排行榜上下文注入提示词，知己知彼——知道领先多少、落后多少，据此调整进攻/防守节奏。' },
-        { id: 4, name: 'Max Leverage', enabled: false, desc: '强制最大杠杆：NDX 标的 20 倍、其他 10 倍，高风险高回报。' },
-      ];
-      const active = modes.find((m) => m.id === compMode) ?? modes[0];
-      return (
-        <div className="comp-body">
-          <div className="comp-mode-list">
-            {modes.map((m) => (
-              <button
-                key={m.id}
-                className={`comp-mode ${compMode === m.id ? 'active' : ''}`}
-                onClick={() => setCompMode(m.id)}
-              >
-                <span className="comp-mode-num">{m.id}</span>
-                <span className="comp-mode-name">{m.name}</span>
-                <span className={`comp-mode-badge ${m.enabled ? 'on' : ''}`}>
-                  {m.enabled ? '当前启用' : '未启用'}
-                </span>
-              </button>
-            ))}
-          </div>
-          <div className="comp-desc">
-            <h4>{active.id} · {active.name}</h4>
-            <p>{active.desc}</p>
-            {!active.enabled && (
-              <p className="comp-note">
-                规划中——当前系统实际运行 {modes.find((m) => m.enabled)?.name} 配置。
-              </p>
-            )}
-          </div>
-        </div>
-      );
+      return <CompConfigPanel models={rows.map((r) => r.name)} />;
     }
 
     if (tab === 'details') {

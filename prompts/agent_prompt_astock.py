@@ -116,7 +116,7 @@ def get_agent_system_prompt_astock(today_date: str, signature: str, stock_symbol
     yesterday_sell_prices_display = format_price_dict_with_names(yesterday_sell_prices, market="cn")
     today_buy_price_display = format_price_dict_with_names(today_buy_price, market="cn")
 
-    return agent_system_prompt_astock.format(
+    prompt = agent_system_prompt_astock.format(
         date=today_date,
         positions=today_init_position,
         STOP_SIGNAL=STOP_SIGNAL,
@@ -124,6 +124,10 @@ def get_agent_system_prompt_astock(today_date: str, signature: str, stock_symbol
         today_buy_price=today_buy_price_display,
         yesterday_profit=yesterday_profit,
     )
+    # 比赛配置：模型选中的分析配置追加进系统提示词（未选择 = 基线模式，行为不变）
+    from prompts.analysis_modes import comp_config_section
+
+    return prompt + comp_config_section(signature)
 
 
 if __name__ == "__main__":

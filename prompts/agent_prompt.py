@@ -89,7 +89,7 @@ def get_agent_system_prompt(
     today_init_position = get_today_init_position(today_date, signature)
     # yesterday_profit = get_yesterday_profit(today_date, yesterday_buy_prices, yesterday_sell_prices, today_init_position)
     
-    return agent_system_prompt.format(
+    prompt = agent_system_prompt.format(
         date=today_date,
         positions=today_init_position,
         STOP_SIGNAL=STOP_SIGNAL,
@@ -97,6 +97,10 @@ def get_agent_system_prompt(
         today_buy_price=today_buy_price,
         # yesterday_profit=yesterday_profit
     )
+    # 比赛配置：模型选中的分析配置追加进系统提示词（未选择 = 基线模式，行为不变）
+    from prompts.analysis_modes import comp_config_section
+
+    return prompt + comp_config_section(signature)
 
 
 if __name__ == "__main__":

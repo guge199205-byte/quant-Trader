@@ -28,6 +28,7 @@ from backend.config import (
     load_backend_config,
 )
 from backend.services import agent_data
+from prompts.analysis_modes import MODES, load_selection, save_selection
 
 app = FastAPI(title="BayMax-Trader API", version="0.1.0")
 
@@ -820,6 +821,35 @@ def _media_type(path: Path) -> str:
         ".css": "text/css",
         ".js": "application/javascript",
     }.get(suffix, "application/octet-stream")
+
+
+# ---------- 比赛配置（Arena「比赛配置」tab ↔ 分析引擎 的读写口） ----------
+
+@app.get("/api/comp-config")
+def get_comp_config():
+    """比赛配置：目录（4 种配置的中文名/要求）+ 每模型当前多选。"""
+    return {"success": True, "data": {"catalog": MODES, "selection": load_selection()}}
+
+
+@app.put("/api/comp-config")
+async def put_comp_config(request: Request):
+    """保存每模型多选：body = {"selection": {模型名: [配置id, ...]}}。"""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "请求体必须是 JSON")
+    sel = body.get("selection")
+    if not isinstance(sel, dict):
+        raise HTTPException(400, "selection 必须是对象 {模型名: [配置id]}")
+
+    valid = {m["id"] for m in MODES}
+    cleaned: dict = {}
+    for model, ids in sel.items():
+        if not isinstance(ids, list):
+            raise HTTPException(400, f"{model} 的配置必须是数组")
+        cleaned[model] = [i for i in ids if i in valid]
+    save_selection(cleaned)
+    return {"success": True, "data": {"selection": cleaned}}
 
 
 def main():

@@ -18,20 +18,28 @@ export default function RealAccountPanel() {
   const ledger = usePolling(() => fetchRealLedger(), [], 30000);
   const l2 = usePolling(() => fetchL2Factors(200), [], 20000);
 
-  // 账本 → 净值曲线（绝对净值，组件内归一化）
+  const acc = acct.data;
+  const ledgerRows = (ledger.data ?? []) as RealLedgerRow[];
+  const lastLedger = ledgerRows.length ? ledgerRows[ledgerRows.length - 1] : null;
+  const dailyReturn = lastLedger?.daily_return_pct ?? null;
+  // 过滤非交易日（周六日）账本行：TDX 桥周末也同步快照产生账本行，净值无变化，画在曲线上是平段
+  const tradingRows = ledgerRows.filter((r) => {
+    const d = dayjs(r.date).day();
+    return d !== 0 && d !== 6;
+  });
+
+  // 账本 → 净值曲线（绝对净值，组件内归一化；仅交易日行）
   const ledgerLine: ChartLine[] = useMemo(() => {
-    const rows: RealLedgerRow[] = ledger.data ?? [];
+    const rows = tradingRows.filter((r) => r.total_asset > 0);
     return [
       {
         id: 'real-ledger',
         label: '实盘总资产',
         color: '#111',
-        points: rows
-          .filter((r) => r.total_asset > 0)
-          .map((r) => ({ t: dayjs(r.date).valueOf(), v: r.total_asset })),
+        points: rows.map((r) => ({ t: dayjs(r.date).valueOf(), v: r.total_asset })),
       },
     ];
-  }, [ledger.data]);
+  }, [tradingRows]);
 
   // L2 因子：按 symbol 取最近一条
   const l2Latest = useMemo(() => {
@@ -41,12 +49,6 @@ export default function RealAccountPanel() {
     }
     return [...map.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
   }, [l2.data]);
-
-  const acc = acct.data;
-  const lastLedger = (ledger.data ?? []).length
-    ? (ledger.data as RealLedgerRow[])[(ledger.data as RealLedgerRow[]).length - 1]
-    : null;
-  const dailyReturn = lastLedger?.daily_return_pct ?? null;
 
   return (
     <div className="real-body">
@@ -74,8 +76,10 @@ export default function RealAccountPanel() {
               <div className="real-positions">
                 {acc.positions.map((p) => (
                   <div className="real-pos-row" key={p.symbol}>
-                    <span className="real-pos-name">{p.name || p.symbol}</span>
-                    <span className="real-pos-code">{p.symbol}</span>
+                    <span className="real-pos-id">
+                      <span className="real-pos-name">{p.name || p.symbol}</span>
+                      <span className="real-pos-code">{p.symbol}</span>
+                    </span>
                     <span className="real-pos-qty">{Number(p.volume).toLocaleString('en-US')}</span>
                     <span className="real-pos-val">{fmtMoney(Number(p.market_value), '¥')}</span>
                   </div>
@@ -92,8 +96,8 @@ export default function RealAccountPanel() {
 
       {/* 日终账本曲线 */}
       <div className="real-section">
-        <div className="real-section-title">日终账本（{ledger.data?.length ?? 0} 个交易日）</div>
-        {(ledger.data ?? []).length >= 2 ? (
+        <div className="real-section-title">日终账本（{tradingRows.length} 个交易日）</div>
+        {tradingRows.length >= 2 ? (
           <div className="real-chart">
             <EquityChart lines={ledgerLine} benchmark={null} currency="¥" mode="pct" timeRange="all" />
           </div>

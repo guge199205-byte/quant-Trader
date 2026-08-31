@@ -455,6 +455,19 @@ def live_real_account():
     if not row:
         return {"success": True, "data": None}
     payload = row.get("payload_json") or {}
+    positions = payload.get("positions") or []
+    # 补股票中文名（CN_STOCK_NAMES 覆盖 quantdb instrument_detail 全市场）
+    try:
+        from tools.stock_names import CN_STOCK_NAMES
+
+        names = dict(CN_STOCK_NAMES)
+    except Exception:  # noqa: BLE001
+        names = {}
+    names = {**names, **_quantdb_stock_names()}
+    for p in positions:
+        sym = str(p.get("symbol") or "")
+        if not p.get("name"):
+            p["name"] = names.get(sym, "")
     return {"success": True, "data": {
         "ts": row["snapshot_at"].isoformat() if row["snapshot_at"] else None,
         "total_asset": row["total_asset"],
@@ -462,7 +475,7 @@ def live_real_account():
         "market_value": row["market_value"],
         "today_pnl": row["today_pnl_raw"],
         "total_pnl": row["total_pnl_raw"],
-        "positions": payload.get("positions") or [],
+        "positions": positions,
     }}
 
 

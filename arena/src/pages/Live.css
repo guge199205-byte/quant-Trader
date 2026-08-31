@@ -834,9 +834,10 @@
 .real-up { color: #c0392b; font-weight: 700; }
 .real-down { color: #1e8449; font-weight: 700; }
 .real-positions { margin-top: 8px; border-top: 1px dashed #bbb; padding-top: 6px; max-height: 150px; overflow-y: auto; }
-.real-pos-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; font-size: 11px; padding: 3px 0; border-bottom: 1px dotted #ddd; }
+.real-pos-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; font-size: 12px; padding: 4px 0; border-bottom: 1px dotted #ddd; align-items: baseline; }
+.real-pos-id { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .real-pos-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.real-pos-code { color: #888; font-size: 10px; }
+.real-pos-code { color: #999; font-size: 9px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .real-pos-qty { color: #555; font-variant-numeric: tabular-nums; }
 .real-pos-val { font-variant-numeric: tabular-nums; text-align: right; }
 .real-section { border: 3px solid #111; padding: 10px 12px; background: #fff; }

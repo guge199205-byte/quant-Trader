@@ -67,7 +67,7 @@ services:
     ports:
       - "8300-8304:8300-8304"
 
-  # ---- 后端 API（托管 nof0 前端）----
+  # ---- 后端 API ----
   api:
     <<: *python-app
     container_name: baymax-api
@@ -80,7 +80,6 @@ services:
       - ./logs:/app/logs
       - ./configs:/app/configs
       - ./config:/app/config
-      - ./nof0:/app/nof0
       - ./trade_cache.sqlite:/app/trade_cache.sqlite
       # 数据平台：quantmind 仓库 parquet 只读直挂（宿主 /home/zbox/projects/quantmind/data/*）
       - /home/zbox/projects/quantmind/data/quantdb:/data/quantdb:ro
@@ -183,19 +182,6 @@ services:
     volumes:
       - ./dsh/proxy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./dsh/proxy/dsh.htpasswd:/etc/nginx/dsh.htpasswd:ro
-
-  # ---- nof0 主题界面（原 start_nof0.sh 的 8080）----
-  ui-nof0:
-    <<: *python-app
-    container_name: baymax-ui-nof0
-    working_dir: /app/nof0
-    # follow_symlinks=True：nof0/data 是指向 ../data 的符号链接，默认不跟随会 404
-    command: python /app/scripts/serve_nof0.py --port 8080 --dir /app/nof0
-    volumes:
-      - ./nof0:/app/nof0
-      - ./data:/app/data  # symlink 目标：容器内 /app/nof0/data -> /app/data
-    ports:
-      - "8080:8080"
 
   # ---- Arena 竞技场前端（React 静态产物 + nginx，8092）----
   # API token 由 nginx 经 envsubst 注入反代头，浏览器无需持 token。

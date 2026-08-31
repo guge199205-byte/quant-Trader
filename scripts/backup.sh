@@ -17,7 +17,6 @@ tar czf "$DEST" \
     data/agent_data data/agent_data_astock data/agent_data_hk \
     data/HK_stock data/A_stock \
     configs config backend.yaml 2>/dev/null \
-    dsh nof0/config.yaml \
     .env .service.env \
     runtime_env.json runtime_env_cn.json runtime_env_hk.json 2>/dev/null \
     2>/dev/null || true

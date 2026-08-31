@@ -1,7 +1,7 @@
 """BayMax-Trader API 服务（FastAPI，默认端口 8090）。
 
 核心能力：
-- /api/data/* 实时代理：优先读项目根 data/（实时交易数据），回退到 nof0/data/ 静态快照
+- /api/data/* 实时代理：优先读项目根 data/（实时交易数据）
 - 结构化端点：agents / positions / trades / performance / logs / status / config
 - 前端通过 config.yaml 的 api_base 一行切换即可实时化
 """
@@ -21,12 +21,10 @@ logger = logging.getLogger(__name__)
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 
 from backend.config import (
     get_data_root,
     get_enabled_markets,
-    get_ui_dir,
     load_backend_config,
 )
 from backend.services import agent_data
@@ -95,12 +93,6 @@ def ttl_invalidate(prefix: tuple):
         for key in [k for k in _ttl_cache if k[: len(prefix)] == prefix]:
             del _ttl_cache[key]
 
-# 前端静态资源（nof0 主题）：assets / 页面 / data 快照
-_UI_DIR = get_ui_dir(load_backend_config())
-if (_UI_DIR / "assets").is_dir():
-    app.mount("/assets", StaticFiles(directory=_UI_DIR / "assets"), name="assets")
-
-
 @app.middleware("http")
 async def auth_middleware(request, call_next):
     # CORS 预检直接放行（CORSMiddleware 处理）
@@ -112,7 +104,6 @@ async def auth_middleware(request, call_next):
         if (
             path.startswith("/api/data")
             or path == "/"
-            or path.startswith("/assets/")
             or path.startswith("/data/")
             or path.endswith((".html", ".ico"))
         ):
@@ -193,16 +184,12 @@ def get_markets():
 
 @app.get("/api/data/{path:path}")
 def proxy_data(path: str):
-    """优先返回项目根 data/ 下的实时文件；不存在时回退到前端静态快照。"""
+    """返回项目根 data/ 下的实时文件。"""
     cfg = config()
-    candidates = [
-        get_data_root(cfg) / path,
-        get_ui_dir(cfg) / "data" / path,
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            media = _media_type(candidate)
-            return FileResponse(candidate, media_type=media)
+    candidate = get_data_root(cfg) / path
+    if candidate.is_file():
+        media = _media_type(candidate)
+        return FileResponse(candidate, media_type=media)
     raise HTTPException(status_code=404, detail=f"数据文件不存在: {path}")
 
 
@@ -819,46 +806,6 @@ def dp_scan(market: str, root: Optional[str] = Query(None)):
     from backend.services import data_platform as dp
 
     return {"success": True, "data": dp.scan_folder(market, root or "")}
-
-
-# ---------- 静态托管（8090 直接出页面：index / 子页面 / data 快照） ----------
-
-@app.get("/")
-def index():
-    ui_dir = get_ui_dir(config())
-    index_file = ui_dir / "index.html"
-    if index_file.exists():
-        return FileResponse(index_file)
-    return {"success": True, "message": "BayMax-Trader API 运行中，前端请访问 8080"}
-
-
-@app.get("/{name}.html")
-def ui_page(name: str):
-    """nof0 子页面（portfolio / models / monitor 等）。"""
-    ui_dir = get_ui_dir(config())
-    page_file = ui_dir / f"{name}.html"
-    if page_file.exists():
-        return FileResponse(page_file)
-    raise HTTPException(status_code=404, detail=f"页面不存在: {name}.html")
-
-
-@app.get("/data/{path:path}")
-def ui_data(path: str):
-    """前端 data/ 静态快照（config.yaml、agent_data 等）。"""
-    ui_dir = get_ui_dir(config())
-    data_file = ui_dir / "data" / path
-    if data_file.is_file():
-        return FileResponse(data_file, media_type=_media_type(data_file))
-    raise HTTPException(status_code=404, detail=f"静态数据不存在: {path}")
-
-
-@app.get("/favicon.ico")
-def favicon():
-    ui_dir = get_ui_dir(config())
-    icon_file = ui_dir / "favicon.ico"
-    if icon_file.exists():
-        return FileResponse(icon_file, media_type="image/x-icon")
-    raise HTTPException(status_code=404)
 
 
 def _media_type(path: Path) -> str:

@@ -66,12 +66,6 @@ def get_data_root(config: dict) -> Path:
     return path if path.is_absolute() else PROJECT_ROOT / path
 
 
-def get_ui_dir(config: dict) -> Path:
-    ui_dir = config.get("server", {}).get("ui_dir", "./nof0")
-    path = Path(ui_dir)
-    return path if path.is_absolute() else PROJECT_ROOT / path
-
-
 def get_server_config(config: dict) -> dict:
     return config.get("server", {})
 

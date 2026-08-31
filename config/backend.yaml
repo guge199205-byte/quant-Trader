@@ -4,12 +4,9 @@
 server:
   host: "0.0.0.0"
   port: 8091
-  # 前端静态目录（API 可托管，也可用现有 8080 http.server）
-  ui_dir: "./nof0"
   # API 不可用时前端回退到静态快照
   fallback_to_static: true
 
-# 数据源：API /api/data/* 优先读取项目根 data/，其次读 ui_dir/data/
 data:
   root_dir: "./data"
 

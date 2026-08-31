@@ -17,11 +17,9 @@
 ├─────────────┤
 │ mcp-hk      │   8300-8304
 ├─────────────┤
-│ api (8091)  │   后端 API（数据/鉴权，双前端共用）
+│ api (8091)  │   后端 API（数据/鉴权，前端共用）
 ├─────────────┤
-│ ui-nof0     │   Quant-Agent-Trader 实时看板（8080，静态服务）
-├─────────────┤
-│ ui-arena    │   Arena 竞技场（8092，nginx 反代 8091 + token 注入）
+│ ui-arena    │   Arena 竞技场（唯一前端,8092，nginx 反代 8091 + token 注入）
 ├─────────────┤
 │ ui (8887)   │   docs 静态快照（8888 被 1Panel、8889 被 jupyter 占用）
 └─────────────┘
@@ -63,9 +61,8 @@ docker compose down
 | mcp-us | 8100-8104 | math/search/trade/price/memory |
 | mcp-cn | 8200-8204 | 同上 |
 | mcp-hk | 8300-8304 | 同上 |
-| api | 8091 | FastAPI 后端 API（数据/鉴权，双前端共用） |
-| ui-nof0 | 8080 | Quant-Agent-Trader 实时看板（原 start_nof0.sh 端口） |
-| ui-arena | 8092 | Arena 竞技场（nginx 反代 8091 + envsubst token 注入） |
+| api | 8091 | FastAPI 后端 API（数据/鉴权，前端共用） |
+| ui-arena | 8092 | Arena 竞技场（唯一前端，nginx 反代 8091 + envsubst token 注入） |
 | dsh | 3081 | DeepSeek Harness（绑定宿主 127.0.0.1，本机直连） |
 | dsh-proxy | 3081 (LAN IP) | dsh 局域网代理（nginx basic auth，密码在 `dsh/proxy/dsh.htpasswd`，改完重启容器） |
 | ui | 8887 | docs 静态快照（8888/8889 被占） |
@@ -79,7 +76,7 @@ docker compose down
 - `data/` `logs/` `configs/` `trade_cache.sqlite` — 全挂载
 - `config/backend.yaml` — api 配置
 - `runtime_env.json / _cn / _hk` — 各市场运行时环境（改 TODAY_DATE 等直接生效）
-- `docs/` `nof0/` — 前端静态文件
+- `docs/` — 静态快照
 - `dsh/proxy/` — dsh 局域网代理配置（nginx.conf + dsh.htpasswd，htpasswd 已 gitignore）
 - `.env` / `.service.env` — 密钥不打包进镜像，仅以 env_file 注入
 
@@ -106,18 +103,13 @@ docker compose down
 ```
 
 - `status-probe.sh`：宿主侧 socket 探活 api/mcp×3/dsh（容器内探不到宿主回环上的 dsh），结果 JSON 写 `logs/service_status.json`（bind-mount 进 api 容器，360s 新鲜度）
-- `auto-heal.sh`：检查 baymax-mcp-us/cn/hk、baymax-api、baymax-dsh、baymax-ui、baymax-ui-nof0 是否运行，掉线即拉起，日志 `logs/auto-heal.log`
+- `auto-heal.sh`：检查 baymax-mcp-us/cn/hk、baymax-api、baymax-dsh、baymax-ui-arena 是否运行，掉线即拉起，日志 `logs/auto-heal.log`
 - 模拟成交数据：`python scripts/simulate_demo_trades.py`（A股/港股追加 buy/sell 演示记录，价格取真实数据，运行前自动备份）
 
-## 前端交易面板数据链路（已修）
+## 前端交易面板数据链路
 
-"成交记录/分析"面板空白根因链：
-1. `nof0/data` 是指向 `../data` 的**符号链接**，`python -m http.server` 默认不跟随 → 8080 上相对路径 `data/...` 请求 404
-2. `transaction-loader.js` 硬编码相对路径 `data/${agentDataDir}/...`（没走 api_base）→ 修复：改走 `configLoader.getDataPath()`（有 api_base 时 = `http://192.168.31.68:8091/api/data`）
-3. ui-nof0 容器只挂 nof0/，容器内 symlink 目标 `/app/data` 不存在 → 补 `./data:/app/data` 挂载
-4. 静态服务改用 `scripts/serve_nof0.py`（`follow_symlinks=True` 子类；注意它是**类属性**不是 __init__ 参数）
-
-改 JS 后需 bump `index.html` 里的 `?v<时间戳>` 缓存版本号，否则浏览器命中旧缓存。
+Arena(8092) 经 nginx 反代 `/api` 到 FastAPI(8091)，token 由 envsubst 注入，浏览器无需持 key。
+改前端代码后 `cd arena && npm run build`（nginx 挂 dist 秒级生效，无需重启容器）。
 
 ## 已知注意事项
 

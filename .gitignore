@@ -107,3 +107,4 @@ dsh/proxy/dsh.htpasswd
 
 # 运行时交易缓存（不入库，随镜像/卷持久化）
 trade_cache.sqlite
+releases/

@@ -44,14 +44,10 @@
 ## 🏗️ 架构总览（Docker）
 
 ```
-┌──────────────────────┐  api_base   ┌─────────────────┐  /api/data  ┌─────────┐
-│ Quant-Agent-Trader   │ ───────────▶│  FastAPI        │ ──────────▶ │  data/  │
-│ 实时看板 (8080)      │             │  API (8091)     │             │ 实时数据 │
-└──────────────────────┘             └────────┬────────┘             └─────────┘
-┌──────────────────────┐                      │
-│ Arena 竞技场         │  /api 反代 + token 注入
-│ (8092, nginx)        │ ─────────────────────▶│
-└──────────────────────┘                      │
+┌──────────────────────┐  /api 反代 + token 注入  ┌─────────────────┐  /api/data  ┌─────────┐
+│ Arena 竞技场         │ ───────────────────────▶│  FastAPI        │ ──────────▶ │  data/  │
+│ (8092, nginx)        │                         │  API (8091)     │             │ 实时数据 │
+└──────────────────────┘                         └────────┬────────┘             └─────────┘
                                               │
         ┌─────────────────────────────────────┼─────────────────────────┐
         │ MCP 服务组（每市场 5 个：math/search/trade/price/memory）      │
@@ -124,8 +120,7 @@ docker compose --profile agents run --rm -e INIT_DATE=2026-08-28 -e END_DATE=202
 
 | 服务 | 地址 | 说明 |
 |------|------|------|
-| Quant-Agent-Trader 实时看板 | http://<服务器IP>:8080 | 实盘(净值/持仓/成交/分析)/ 排行榜 / 模型 / 总控,三市场切换 |
-| Arena 竞技场 | http://<服务器IP>:8092 | 终端风九页:实况/排行榜/模型/总控/交易所/数据平台/Harness/详情/关于 |
+| Arena 竞技场(唯一前端) | http://<服务器IP>:8092 | 终端风九页:实况/排行榜/模型/总控/交易所/数据平台/Harness/详情/关于 |
 | 交易所设置 | http://<服务器IP>:8092/trading | 券商接入(富途/老虎/IB)配置 |
 | API | http://<服务器IP>:8091 | 见下方 API 端点表 |
 | dsh Web | http://localhost:3081 | agent 会话/工具调用可视化 |
@@ -306,7 +301,6 @@ class MySource(DataSource):
 | `scripts/bootstrap_data.py` | **新用户一键初始化**:免费接口(腾讯/Yahoo)拉三市场日线,无需数据 Key |
 | `scripts/sync_from_quantmind.py` | 生产:从本机量化仓库同步三市场价格(覆盖前备份) |
 | `scripts/backfill_us_agent.sh` | 补跑 US agent 缺失交易日 |
-| `scripts/serve_nof0.py` | 前端静态服务（跟随 symlink） |
 
 ### 回退 systemd
 
@@ -330,8 +324,7 @@ configs/              # agent 配置（default_config.json US / astock_config.js
 scripts/              # live_hourly_analysis.py 盘中分析 / live_trade_picks.py 实盘选股 /
                       # live_ledger.py 分账 / sync_from_quantmind.py / 探活自愈
 dsh/                  # DeepSeek Harness 集成（persona + MCP 挂载）
-nof0/                 # Quant-Agent-Trader 实时看板前端（8080）
-arena/                # Arena 竞技场前端（8092,React+Vite,nginx 注入 token）
+arena/                # Arena 竞技场前端（唯一前端,8092,React+Vite,nginx 注入 token）
 data/                 # 交易数据（gitignore）
 logs/                 # 实盘运行日志（live_equity.jsonl / live_ledger.json / 分析日志）
 docs/                 # 规划与架构文档
@@ -343,7 +336,7 @@ docs/                 # 规划与架构文档
 
 | 问题 | 解决 |
 |------|------|
-| 前端不实时 | 确认 `nof0/config.yaml` 的 `api_base` 指向 API 地址;浏览器强刷(Ctrl+Shift+R) |
+| 前端不实时 | 浏览器强刷(Ctrl+Shift+R);确认 API(8091)与 nginx 反代正常 |
 | 前端改了 JS 不生效 | `cd arena && npm run build`(nginx 挂 dist 秒级生效,无需重启容器) |
 | A股/港股曲线空白 | 先跑 `python3 scripts/bootstrap_data.py` 初始化数据(免费);HK 确认 `data/HK_stock/merged.jsonl` 非空 |
 | 实盘净值重复点 | 每分钟采样与整点分析并发双写 → fcntl 文件锁内重扫去重(已修复,勿回退) |
@@ -364,7 +357,7 @@ docs/                 # 规划与架构文档
 - [x] 风控网关（单笔/持仓/熔断/黑名单）
 - [x] Broker + 数据源抽象层
 - [x] 三模型对决（DeepSeek V4 Flash / V4 Pro / GLM 5.3 Flash）
-- [x] 双前端（Quant-Agent-Trader 看板 8080 + Arena 竞技场 8092）
+- [x] 唯一前端 Arena 竞技场（8092,nginx 反代 + token 注入）
 - [x] 交易所设置页（TDX 桥配置 + 券商凭据 + 实时交易状态）
 - [x] **A股实盘首单**（通达信桥 8550,08-31 成交 5 只）
 - [x] 实盘分账（每 agent ¥10 万额度,买入分配/卖出释放）

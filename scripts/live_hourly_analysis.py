@@ -4,7 +4,7 @@
 - 数据: 桥 _account_query(持仓+实时价) + 日K昨收(涨跌) + quantdb/静态表(股票名称)
 - 分析: 每个 enabled agent 各自逐只简评 + 操作建议（LLM 失败时降级为数据摘要，不崩溃）
 - 落盘: data/agent_data_astock/deepseek-v4-flash/log/{北京日期}/log.jsonl (append)
-        → ARENA 模型对话 tab / 8080 对话 tab 直接可读
+        → ARENA(8092) 模型对话 tab 直接可读
 - 时段: 北京 9:30-11:30 / 13:00-15:00 工作日（本机 JST，不依赖系统时区）
 
 用法:

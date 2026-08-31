@@ -122,6 +122,7 @@ export default function RealAccountPanel() {
           <table className="real-l2-table">
             <thead>
               <tr>
+                <th>名称</th>
                 <th>代码</th>
                 <th>价</th>
                 <th>VPIN</th>
@@ -133,6 +134,7 @@ export default function RealAccountPanel() {
             <tbody>
               {l2Latest.map((r) => (
                 <tr key={r.symbol}>
+                  <td className="real-l2-name">{r.name || r.stock_code}</td>
                   <td className="real-l2-code">{r.stock_code}</td>
                   <td>{r.now_price ?? '—'}</td>
                   <td>{fmtFactor(r.factors['micro_vpin_vol_ratio'])}</td>

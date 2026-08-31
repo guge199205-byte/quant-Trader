@@ -368,6 +368,7 @@ export interface L2FactorRow {
   ts: string;
   symbol: string;
   stock_code: string;
+  name: string | null;
   now_price: number | null;
   factors: Record<string, number | null>;
 }

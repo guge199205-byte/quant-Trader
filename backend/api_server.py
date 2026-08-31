@@ -530,24 +530,19 @@ def live_l2_factors(
         conn = _qm_pg_conn()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # JOIN stocks 取股票名称：stocks 主键 symbol 为后缀格式
+                # （600097.SH），与 tdx_l2_snapshot 的 stock_code 一致；snapshot
+                # 的 symbol 是 SH600097 前缀格式，不能用于关联
+                join_sql = """
+                    SELECT s.ts, s.symbol, s.stock_code, s.now_price, s.factors,
+                           st.name
+                    FROM tdx_l2_snapshot s
+                    LEFT JOIN stocks st ON st.symbol = s.stock_code
+                """
                 if symbol:
-                    cur.execute(
-                        """
-                        SELECT ts, symbol, stock_code, now_price, factors
-                        FROM tdx_l2_snapshot WHERE symbol = %s
-                        ORDER BY ts DESC LIMIT %s
-                        """,
-                        (symbol, limit),
-                    )
+                    cur.execute(join_sql + " WHERE s.symbol = %s ORDER BY s.ts DESC LIMIT %s", (symbol, limit))
                 else:
-                    cur.execute(
-                        """
-                        SELECT ts, symbol, stock_code, now_price, factors
-                        FROM tdx_l2_snapshot
-                        ORDER BY ts DESC LIMIT %s
-                        """,
-                        (limit,),
-                    )
+                    cur.execute(join_sql + " ORDER BY s.ts DESC LIMIT %s", (limit,))
                 rows = cur.fetchall()
         finally:
             conn.close()
@@ -559,6 +554,7 @@ def live_l2_factors(
             "ts": r["ts"].isoformat() if r["ts"] else None,
             "symbol": r["symbol"],
             "stock_code": r["stock_code"],
+            "name": r["name"],
             "now_price": r["now_price"],
             "factors": r["factors"] or {},
         }

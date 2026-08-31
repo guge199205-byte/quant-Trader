@@ -973,6 +973,8 @@
 
 @media (max-width: 820px) {
   .main-content { flex-direction: column; }
+  /* 列布局下右面板按内容自适应，不再用桌面端 600px 最小高度撑出底部空白 */
+  .live .right-section { min-height: 0; }
   .right-section { width: 100%; border-left: none; border-top: 2px solid #000; }
   .trade-list { max-height: 420px; }
   .chart-area { padding: 12px 12px; }

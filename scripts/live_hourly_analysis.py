@@ -132,6 +132,32 @@ def build_rows(broker, positions: list, names: dict) -> list:
     return rows
 
 
+def load_l2_factors(codes: list[str]) -> dict:
+    """从 BayMax api（nginx 8092 反代，自动注入 token）读 L2 因子，
+    按持仓 code（后缀式，如 300308.SZ）匹配最近一条；失败返回空 dict（不阻塞分析）。"""
+    import requests
+
+    try:
+        resp = requests.get(
+            "http://127.0.0.1:8092/api/live/l2-factors", params={"limit": 500}, timeout=5
+        )
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        return {}
+    if not (data or {}).get("success"):
+        return {}
+    out: dict = {}
+    for r in (data.get("data") or []):
+        code = (r.get("stock_code") or "").strip()
+        if code and code not in out:
+            out[code] = r
+    return {c: out[c] for c in codes if c in out}
+
+
+def _fmt_factor(v) -> str:
+    return "—" if v is None else f"{v:.3f}"
+
+
 def build_user_content(rows: list, asset: float, cash: float, agent: str) -> str:
     lines = [
         f"现在是北京时间 {now_cn():%F %T}（A股{('盘中' if in_trading_window(now_cn()) else '盘前/盘后')}）。"
@@ -147,6 +173,34 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str) -> str
             f"| {r['name']} | {r['code']} | {r['price']} | {r['cost']} | {r['volume']} "
             f"| ¥{r['price'] * r['volume']:,.0f} | ¥{r['pnl']:+,.0f} | {r['pnl_pct']:+.2f}% | {day} |"
         )
+    # L2 微观结构因子（通达信实时采集，quantmind PG 同步）
+    l2 = load_l2_factors([r["code"] for r in rows])
+    if l2:
+        lines += [
+            "",
+            "L2 微观结构因子（通达信实时采集，最近一次）：",
+            "",
+            "| 代码 | VPIN(量) | 分时区分布 | 价量背离 | 冲击半衰 | 资金流失衡 |",
+            "|---|---|---|---|---|---|",
+        ]
+        for r in rows:
+            row = l2.get(r["code"])
+            if not row:
+                continue
+            f = row.get("factors") or {}
+            lines.append(
+                f"| {r['code']} | {_fmt_factor(f.get('micro_vpin_vol_ratio'))} | "
+                f"{_fmt_factor(f.get('micro_zone_distribution'))} | "
+                f"{_fmt_factor(f.get('vol_price_divergence'))} | "
+                f"{_fmt_factor(f.get('micro_impact_decay_half_life'))} | "
+                f"{_fmt_factor(f.get('flow_imbalance_revert_speed'))} |"
+            )
+        lines += [
+            "",
+            "说明：VPIN=委托量失衡（越高买方/卖方压力越强），分时区分布=成交时段集中度，"
+            "价量背离=价格与成交量方向背离，冲击半衰=价格冲击衰减速度，资金流失衡=主动买卖失衡。"
+            "L2 因子辅助判断盘中买卖压力，操作建议时可参考。",
+        ]
     lines += [
         "",
         "请逐只给出：①一句话简评（行情/基本面角度）②操作建议（持有/加仓/减仓/止损）③理由。"

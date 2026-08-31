@@ -457,6 +457,66 @@ def _l2_num(v: Any) -> Optional[float]:
         return None
 
 
+# ---------- A股盘中新闻（Huntly/RSSHub 聚合 → quantmind /api/v1/news） ----------
+
+NEWS_API_BASE = os.getenv("NEWS_API_BASE", "http://172.17.0.1:8000")
+_NEWS_CACHE_TTL = 60  # 秒
+_news_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
+
+
+@mcp.tool()
+def get_stock_news(symbol: str, hours: int = 24, limit: int = 10) -> Dict[str, Any]:
+    """A股个股盘中新闻：RSS 聚合（财联社/同花顺/界面等）+ 情感标签。仅支持 A 股。
+
+    数据源：Huntly + RSSHub 聚合（quantmind /api/v1/news/articles 按 ticker 检索），
+    每篇带 enrichment（tickers/情感）。60 秒内重复调用返回缓存。
+
+    Args:
+        symbol: A股代码（后缀式），如 '600519.SH'
+        hours: 回看小时数（1-168，默认 24；盘中分析建议 8）
+        limit: 返回条数上限（1-30，默认 10）
+
+    Returns:
+        articles: [{title, summary, source, published_at, url, sentiment}]
+        agg: 情感汇总 {bullish, bearish, neutral}
+        ok/error: 结果状态
+    """
+    import urllib.request
+    from datetime import datetime, timedelta, timezone
+
+    now = time.time()
+    cached = _news_cache.get(symbol)
+    if cached and now - cached[0] < _NEWS_CACHE_TTL:
+        return {**cached[1], "cached": True}
+    hours = max(1, min(168, hours))
+    limit = max(1, min(30, limit))
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = (f"{NEWS_API_BASE}/api/v1/news/articles?tickers={symbol}"
+           f"&since={since}&page_size={limit}&sort=time_desc")
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}", "symbol": symbol}
+    arts = payload.get("articles", []) or []
+    articles, agg = [], {"bullish": 0, "bearish": 0, "neutral": 0}
+    for a in arts:
+        en = a.get("enrichment") or {}
+        label = (en.get("sentiment_label") or "neutral").lower()
+        agg[label if label in agg else "neutral"] += 1
+        articles.append({
+            "title": a.get("title"),
+            "summary": (a.get("summary") or "")[:200],
+            "source": a.get("source_name"),
+            "published_at": (a.get("published_at") or "")[:16],
+            "url": a.get("url"),
+            "sentiment": label,
+        })
+    result = {"ok": True, "cached": False, "symbol": symbol, "articles": articles, "agg": agg}
+    _news_cache[symbol] = (now, result)
+    return result
+
+
 if __name__ == "__main__":
 
     port = int(os.getenv("GETPRICE_HTTP_PORT", "8003"))

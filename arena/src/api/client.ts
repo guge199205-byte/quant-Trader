@@ -218,6 +218,36 @@ export interface AgentLedger {
 export const fetchLiveLedger = () =>
   unwrap<{ agents: Record<string, AgentLedger> }>(api.get('/live/ledger'));
 
+// ---------- 盘中新闻（/live/news → quantmind /api/v1/news/articles，Huntly/RSS 聚合 + enrichment） ----------
+
+export interface NewsEnrichment {
+  tickers?: string[];
+  industries?: string[];
+  sentiment_label?: 'bullish' | 'bearish' | 'neutral' | null;
+  sentiment_score?: number | null;
+}
+
+export interface NewsArticle {
+  id: number;
+  title: string;
+  summary?: string | null;
+  url?: string | null;
+  source_name?: string | null;
+  published_at?: string | null;
+  enrichment?: NewsEnrichment | null;
+}
+
+export interface LiveNews {
+  articles: NewsArticle[];
+  error?: string | null;
+}
+
+/** 盘中实时新闻（tickers 逗号分隔；hours=回溯小时；按时间倒序） */
+export const fetchLiveNews = (tickers: string[], hours = 12, limit = 30) =>
+  unwrap<LiveNews>(
+    api.get('/live/news', { params: { tickers: tickers.join(','), hours, limit } }),
+  );
+
 // ---------- 实盘账户净值（总账户净值图） ----------
 
 export interface LiveEquityPoint {

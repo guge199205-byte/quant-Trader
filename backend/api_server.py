@@ -362,6 +362,30 @@ def live_orders():
     return {"success": True, "data": orders}
 
 
+@app.get("/api/live/news")
+def live_news(tickers: str = "", hours: int = 24, limit: int = 10):
+    """A股盘中新闻代理 → quantmind /api/v1/news/articles（Huntly/RSS 聚合 + enrichment）。
+    tickers 逗号分隔（600519.SH,000858.SZ）；按 published_at 增量 + 情感标注。"""
+    base = os.getenv("NEWS_API_BASE", "http://172.17.0.1:8000")
+    import requests  # noqa: PLC0415 局部导入（与文件既有惯例一致）
+
+    from datetime import datetime, timedelta, timezone
+
+    hours = max(1, min(168, hours))
+    limit = max(1, min(50, limit))
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    params = {"since": since, "page_size": limit, "sort": "time_desc"}
+    if tickers:
+        params["tickers"] = tickers
+    try:
+        resp = requests.get(f"{base}/api/v1/news/articles", params=params, timeout=10)
+        resp.raise_for_status()
+        # 统一信封（与 /api/live/ledger 等一致）：前端 unwrap 依赖 {success, data}
+        return {"success": True, "data": resp.json()}
+    except Exception as e:  # noqa: BLE001
+        return {"success": True, "data": {"articles": [], "error": f"{type(e).__name__}: {e}"}}
+
+
 @app.get("/api/live/ledger")
 def live_ledger():
     """实盘分账账本：每 agent ¥10 万虚拟子账户（scripts/live_ledger.py）。

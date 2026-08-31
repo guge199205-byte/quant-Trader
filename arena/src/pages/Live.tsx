@@ -29,6 +29,7 @@ import RealAccountPanel from '../components/RealAccountPanel';
 import ModelCard, { modelColor } from '../components/ModelCard';
 import ModelChat from '../components/ModelChat';
 import ChatStream from '../components/ChatStream';
+import NewsStream from '../components/NewsStream';
 import CompletedFeed from '../components/CompletedFeed';
 import CompConfigPanel from '../components/CompConfigPanel';
 import { MarketSwitcher } from '../components/Navbar';
@@ -37,14 +38,15 @@ import './Live.css';
 
 const BENCH_COLOR = '#10a37f';
 
-type Tab = 'completed' | 'trades' | 'chat' | 'positions' | 'comp' | 'real' | 'details';
+type Tab = 'completed' | 'trades' | 'chat' | 'news' | 'positions' | 'comp' | 'real' | 'details';
 type TimeRange = 'all' | '5d';
 
-/** 右侧 tab：已完成交易 / 成交 / 模型对话 / 持仓 / 比赛配置 / 详情 */
+/** 右侧 tab：已完成交易 / 成交 / 模型对话 / 新闻 / 持仓 / 比赛配置 / 详情 */
 const TABS: { id: Tab; label: string }[] = [
   { id: 'completed', label: '已完成' },
   { id: 'trades', label: '成交' },
   { id: 'chat', label: '模型对话' },
+  { id: 'news', label: '新闻' },
   { id: 'positions', label: '持仓' },
   { id: 'comp', label: '比赛配置' },
   { id: 'real', label: '实盘' },
@@ -314,6 +316,14 @@ export default function Live() {
     }
     return [...set];
   }, [marketPositions.data]);
+  /** 新闻 tab 关注列表 = 实盘分账持仓 + 模拟盘持仓（A股代码格式与 quantmind enrichment 一致） */
+  const newsTickers = useMemo(() => {
+    const set = new Set<string>(heldSymbols);
+    for (const rec of Object.values(liveLedger.data?.agents ?? {})) {
+      for (const p of rec.positions ?? []) set.add(p.code);
+    }
+    return [...set];
+  }, [heldSymbols, liveLedger.data]);
   const tickerItems = useMemo(() => {
     // A股实盘：优先滚动实盘持仓实时价（桥 quote）
     if (market === 'cn' && livePositions.length > 0) {
@@ -505,6 +515,16 @@ export default function Live() {
           positions={positions.data ?? []}
           model={effectiveModel}
           currency={meta.currency}
+        />
+      );
+    }
+
+    if (tab === 'news') {
+      return (
+        <NewsStream
+          tickers={market === 'cn' ? newsTickers : []}
+          hours={12}
+          limit={30}
         />
       );
     }
@@ -755,7 +775,7 @@ export default function Live() {
             ))}
           </div>
           <div className="filter-bar">
-            <span className="filter-label">模型</span>
+            <span className="filter-label">{tab === 'news' ? '关注' : '模型'}</span>
             {tab === 'completed' || tab === 'trades' || tab === 'chat' || tab === 'positions' ? (
               <select
                 className="filter-select"
@@ -767,6 +787,10 @@ export default function Live() {
                   <option key={r.name} value={r.name}>{r.name}</option>
                 ))}
               </select>
+            ) : tab === 'news' ? (
+              <span className="filter-static">
+                {market === 'cn' ? `${newsTickers.length} 只持仓` : '仅 A股'}
+              </span>
             ) : (
               <span className="filter-static">全部模型</span>
             )}

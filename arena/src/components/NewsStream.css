@@ -1,0 +1,109 @@
+.news-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.news-card {
+  border: 1.5px solid #000;
+  background: #fff;
+  padding: 10px 12px;
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.9);
+}
+
+.news-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.news-sent {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border: 1.5px solid #000;
+  margin-top: 1px;
+}
+
+.news-sent.bullish {
+  background: #e0483e;
+  color: #fff;
+}
+
+.news-sent.bearish {
+  background: #12b886;
+  color: #fff;
+}
+
+.news-sent.neutral {
+  background: #f1f1ef;
+  color: #555;
+}
+
+.news-title {
+  color: #000;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.45;
+  text-decoration: none;
+}
+
+.news-title:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.news-summary {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #444;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.news-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.news-tickers {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.news-ticker {
+  font-size: 10px;
+  font-weight: 700;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  border: 1px solid #000;
+  padding: 1px 4px;
+  background: #f1f1ef;
+}
+
+.news-source {
+  font-size: 11px;
+  color: #555;
+}
+
+.news-time {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color: #777;
+}
+
+.news-empty-sub {
+  display: block;
+  font-size: 11px;
+  color: #888;
+  margin-top: 4px;
+}

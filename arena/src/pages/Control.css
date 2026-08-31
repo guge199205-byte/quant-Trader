@@ -142,6 +142,29 @@
   margin-bottom: 0;
 }
 
+/* ---------- 窄屏（移动端）：单列堆叠，表格由 .table-wrap 横向滚动 ---------- */
+
+@media (max-width: 560px) {
+  /* 特异性 (.page + class) 高于 .control-grid-2 主定义——
+     vite 打包会把 @media 重排到主定义之前，同特异性会被覆盖。
+     列宽用 minmax(0,1fr) + 子项 min-width:0：grid 项默认
+     min-width:auto 会按内容 min-content 撑列（exch-sub nowrap 是根因） */
+  .page .control-grid-2,
+  .page .control-grid-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .page .control-grid-2 > *,
+  .page .control-grid-3 > * {
+    min-width: 0;
+  }
+  .page .exch-sub {
+    white-space: normal;
+  }
+  .page .mk-head {
+    padding: 8px 10px;
+  }
+}
+
 /* grid 卡片内表格：紧凑排版（3 列并排后列宽有限） */
 .mk-table .data {
   font-size: 11px;

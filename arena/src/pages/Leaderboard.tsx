@@ -130,10 +130,12 @@ export default function Leaderboard() {
         </div>
         <div className="stat-item">
           <div className="stat-label">最佳模型</div>
-          <div className="stat-value" style={{ fontSize: 16 }}>
+          <div className="stat-value" style={{ fontSize: 15 }}>
             {stats.best ? (
               <>
-                {logoOf(stats.best.agent)} {stats.best.agent.replace('deepseek-v4-', '').toUpperCase()}
+                {logoOf(stats.best.agent)}{' '}
+                {/* 显示模型全称（deepseek-v4-flash），缩写 FLASH 看不出是谁 */}
+                <span style={{ fontSize: 13 }}>{stats.best.agent}</span>
               </>
             ) : '—'}
           </div>

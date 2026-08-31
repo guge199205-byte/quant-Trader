@@ -3,8 +3,9 @@ import { api } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
 import './TradingSettings.css';
 
-/** 交易所设置页 —— 通达信交易桥 / 券商接入（复刻 quantmind 模拟交易设置）。
- *  数据经 Quant-Trader backend /api/quantmind 代理转发到 quantmind 8000（token 自动续期）。 */
+/** 交易所设置 —— 通达信交易桥 / 券商接入（复刻 quantmind 模拟交易设置）。
+ *  数据经 Quant-Trader backend /api/quantmind 代理转发到 quantmind 8000（token 自动续期）。
+ *  embedded=true 时作为总控页 tab 嵌入，隐藏自身页头（标题由外层提供）。 */
 
 // ---------- 数据类型（与 quantmind trade-core 对齐） ----------
 
@@ -157,7 +158,7 @@ async function putJson(path: string, body: unknown): Promise<{ ok: boolean; data
 
 // ============================================================
 
-export default function TradingSettings() {
+export default function TradingSettings({ embedded = false }: { embedded?: boolean }) {
   // ---- 通达信桥 ----
   const tdx = usePolling(() => getJson<TdxConfig>('/quantmind/tdx/config'), [], 30000);
   const overview = usePolling(() => getJson<TdxOverview>('/quantmind/tdx/overview'), [], 8000);
@@ -352,15 +353,17 @@ export default function TradingSettings() {
 
   return (
     <div className="ts">
-      <div className="ts-header">
-        <div>
-          <h1 className="ts-title">交易所设置</h1>
-          <div className="ts-sub">通达信交易桥（A股）· 券商实盘接入（港股/美股）· 实时交易状态</div>
+      {!embedded && (
+        <div className="ts-header">
+          <div>
+            <h1 className="ts-title">交易所设置</h1>
+            <div className="ts-sub">通达信交易桥（A股）· 券商实盘接入（港股/美股）· 实时交易状态</div>
+          </div>
+          <span className="ts-refresh-note">
+            局域网桥信息每 8s 自动刷新 · 配置经服务器保存（敏感字段只写不回显）
+          </span>
         </div>
-        <span className="ts-refresh-note">
-          局域网桥信息每 8s 自动刷新 · 配置经服务器保存（敏感字段只写不回显）
-        </span>
-      </div>
+      )}
 
       {/* ==================== 通达信交易桥 ==================== */}
       <section className="ts-card">

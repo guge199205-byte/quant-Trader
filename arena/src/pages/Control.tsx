@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   AgentLedger,
   MarketId,
@@ -14,6 +14,7 @@ import {
 } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
 import { fmtDate, fmtMoney, fmtPct, pnlClass } from '../utils/format';
+import TradingSettings from './TradingSettings';
 import './Control.css';
 
 const MARKET_FLAG: Record<MarketId, string> = { us: '🇺🇸', cn: '🇨🇳', hk: '🇭🇰' };
@@ -58,9 +59,12 @@ const brokerConfigured = (b: { fields: Record<string, string | boolean> }) =>
   Object.entries(b.fields).some(([k, v]) => k.endsWith('_configured') && v === true) ||
   Object.entries(b.fields).some(([k, v]) => !k.endsWith('_configured') && typeof v === 'string' && v.length > 0);
 
-/** 总控台 —— 参考 nof0 monitor.html：服务健康条 + 三市场汇总表 + 最近交易时间 */
+/** 总控台 —— 参考 nof0 monitor.html：服务健康条 + 三市场汇总表 + 最近交易时间。
+ *  交易所设置（原 /trading）并入本页 tab：/control?view=exchange。 */
 export default function Control() {
   const nav = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const view = params.get('view') === 'exchange' ? 'exchange' : 'overview';
 
   const metrics = usePolling(() => fetchMetrics(), [], 30000);
   const overview = usePolling(() => fetchOverview(), [], 30000);
@@ -91,6 +95,26 @@ export default function Control() {
         </span>
       </div>
 
+      {/* 视图 tab：总控 / 交易所设置（原 /trading 页已并入） */}
+      <div className="tabs" style={{ marginBottom: 14 }}>
+        <button
+          className={`tab ${view === 'overview' ? 'active' : ''}`}
+          onClick={() => setParams({})}
+        >
+          总控
+        </button>
+        <button
+          className={`tab ${view === 'exchange' ? 'active' : ''}`}
+          onClick={() => setParams({ view: 'exchange' })}
+        >
+          交易所设置
+        </button>
+      </div>
+
+      {view === 'exchange' ? (
+        <TradingSettings embedded />
+      ) : (
+      <>
       {/* 服务健康条 */}
       <div className="svc-row">
         {Object.entries(metrics.data?.services ?? {}).length === 0 && (
@@ -263,6 +287,8 @@ export default function Control() {
         );
       })}
       </div>
+      </>
+      )}
     </div>
   );
 }

@@ -154,6 +154,45 @@ def load_l2_factors(codes: list[str]) -> dict:
     return {c: out[c] for c in codes if c in out}
 
 
+def load_news(codes: list[str], hours: int = 8, limit: int = 30) -> list:
+    """盘中新闻（quantmind Huntly/RSS 聚合 + LLM 情感标注）→ 持仓相关条目。
+    按 ticker 过滤 + 北京时间转换；失败返回空列表（不阻塞分析，同 load_l2_factors）。"""
+    import requests
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        resp = requests.get(
+            "http://127.0.0.1:8000/api/v1/news/articles",
+            params={"tickers": ",".join(codes), "since": since,
+                    "page_size": limit, "sort": "time_desc"},
+            timeout=5,
+        )
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for a in (data.get("articles") or []):
+        en = a.get("enrichment") or {}
+        label = (en.get("sentiment_label") or "neutral").lower()
+        if label not in ("bullish", "bearish", "neutral"):
+            label = "neutral"
+        bj = ""
+        try:
+            ts = datetime.fromisoformat((a.get("published_at") or "").replace("Z", "+00:00"))
+            bj = (ts + timedelta(hours=8)).strftime("%m-%d %H:%M")
+        except ValueError:
+            pass
+        out.append({
+            "title": str(a.get("title") or "").strip()[:120],
+            "source": a.get("source_name") or "",
+            "time": bj,
+            "sentiment": label,
+            "codes": [c for c in (en.get("tickers") or []) if c in codes],
+        })
+    return out[:limit]
+
+
 def _fmt_factor(v) -> str:
     return "—" if v is None else f"{v:.3f}"
 
@@ -201,9 +240,18 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str) -> str
             "价量背离=价格与成交量方向背离，冲击半衰=价格冲击衰减速度，资金流失衡=主动买卖失衡。"
             "L2 因子辅助判断盘中买卖压力，操作建议时可参考。",
         ]
+    # 盘中新闻（Huntly/RSS 聚合 + LLM 情感标注），近 8 小时持仓相关
+    news = load_news([r["code"] for r in rows])
+    if news:
+        tag = {"bullish": "利好", "bearish": "利空", "neutral": "中性"}
+        lines += ["", "盘中新闻（近 8 小时，情感标注：利好/利空/中性）：", ""]
+        for n in news:
+            lines.append(
+                f"- [{tag[n['sentiment']]}] {n['title']}（{n['source']} {n['time']}）")
     lines += [
         "",
-        "请逐只给出：①一句话简评（行情/基本面角度）②操作建议（持有/加仓/减仓/止损）③理由。"
+        "请逐只给出：①一句话简评（行情/基本面/消息面角度）②操作建议（持有/加仓/减仓/止损）③理由。"
+        "简评请结合上面的 L2 因子与盘中新闻——新闻明显利好/利空时要明确提示风险与机会。"
         "今天买入的股票 T+1 明天才能卖，建议时注意这一点。输出简洁 markdown，不用复述表格。",
     ]
     return "\n".join(lines)

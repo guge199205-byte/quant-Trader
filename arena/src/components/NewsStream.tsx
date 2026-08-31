@@ -21,12 +21,21 @@ const SENTIMENT_CLASS: Record<string, string> = {
   neutral: 'neutral',
 };
 
-/** ISO 时间 → 北京时间 HH:MM（published_at 为 UTC）。 */
+/** ISO 时间 → 北京时间（published_at 为 UTC）。
+ *  用 UTC+8 平移后读 UTC 分量——getHours()+8 会把本机时区(如 JST)算进去，错一整天。 */
 const bjTime = (iso: string | null | undefined): string => {
   if (!iso) return '';
   const t = new Date(iso);
   if (Number.isNaN(t.getTime())) return '';
-  return `${String(t.getHours() + 8).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+  const bj = new Date(t.getTime() + 8 * 3600 * 1000); // UTC → 北京
+  const hh = String(bj.getUTCHours()).padStart(2, '0');
+  const mm = String(bj.getUTCMinutes()).padStart(2, '0');
+  const todayBj = new Date(Date.now() + 8 * 3600 * 1000);
+  const sameDay =
+    bj.getUTCFullYear() === todayBj.getUTCFullYear() &&
+    bj.getUTCMonth() === todayBj.getUTCMonth() &&
+    bj.getUTCDate() === todayBj.getUTCDate();
+  return sameDay ? `${hh}:${mm}` : `${String(bj.getUTCMonth() + 1).padStart(2, '0')}-${String(bj.getUTCDate()).padStart(2, '0')} ${hh}:${mm}`;
 };
 
 /** 匹配到当前关注列表的 ticker（enrichment.tickers 与持仓代码对拍）。 */

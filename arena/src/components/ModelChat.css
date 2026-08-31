@@ -37,22 +37,22 @@
 .mc-model {
   font-family: 'Courier New', monospace;
   font-weight: 700;
-  font-size: 12px;
+  font-size: 13px;
   letter-spacing: 0.04em;
 }
 
 .mc-status {
   font-family: 'Courier New', monospace;
-  font-size: 10px;
+  font-size: 11px;
   background: #000;
   color: #fff;
-  padding: 1px 6px;
+  padding: 2px 8px;
   letter-spacing: 0.08em;
 }
 
 .mc-date {
   font-family: 'Courier New', monospace;
-  font-size: 10px;
+  font-size: 11px;
   color: #666;
   margin-left: auto;
 }
@@ -69,8 +69,8 @@
 
 .mc-summary {
   font-family: 'Courier New', monospace;
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.55;
   color: #333;
   padding: 8px 10px;
   /* 完整摘要可滚动查看，不再截断 */
@@ -116,12 +116,14 @@
   margin: 0;
   padding: 8px 10px;
   font-family: 'Courier New', monospace;
-  font-size: 11px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.6;
   color: #222;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 260px;
+  /* 思考链长文（如盘中持仓分析）可视高度：260px 只够几行就滚动，
+     调高到 480px 让长分析一屏可见，超长仍可滚动 */
+  max-height: 480px;
   overflow-y: auto;
   background: #fafafa;
 }

@@ -241,8 +241,16 @@
 
 .model-card-mini.selected .model-name,
 .model-card-mini.selected .model-balance,
-.model-card-mini.selected .model-pnl {
+.model-card-mini.selected .model-pnl,
+.model-card-mini.selected .model-tokens {
   color: #fff;
+}
+
+.model-tokens {
+  font-size: 9px;
+  color: #888;
+  margin-top: 1px;
+  font-family: 'Courier New', monospace;
 }
 
 .model-logo {
@@ -390,8 +398,8 @@
   border: 1px solid currentColor;
 }
 
-.trade-side.buy { color: #10a37f; }
-.trade-side.sell { color: #ef4444; }
+.trade-side.buy { color: var(--up-color); }
+.trade-side.sell { color: var(--down-color); }
 .trade-side.info { color: #666; }
 
 .trade-details {
@@ -521,6 +529,13 @@
   letter-spacing: 0.03em;
 }
 
+.trade-card-code {
+  font-size: 10px;
+  color: #888;
+  font-weight: 400;
+  margin-left: 6px;
+}
+
 .trade-card-date {
   margin-left: auto;
   color: #888;
@@ -573,7 +588,48 @@
 }
 
 .pos-row .pos-sym { font-weight: 700; }
+.pos-row .pos-name { margin-right: 6px; }
+.pos-row .pos-code { font-weight: 400; font-size: 10px; color: #888; }
 .pos-row .pos-qty { color: #333; }
+
+/* 实盘持仓（通达信桥） */
+.pos-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #666;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.pos-section-sub {
+  float: right;
+  font-weight: 600;
+  color: #444;
+}
+.live-pos-card {
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.live-pos-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.live-pos-name { font-weight: 700; font-size: 13px; }
+.live-pos-code { font-size: 10px; color: #888; }
+.live-pos-pnl { font-weight: 700; margin-left: auto; }
+.live-pos-pnl.up { color: var(--up-color); }
+.live-pos-pnl.down { color: var(--down-color); }
+.live-pos-sub {
+  margin-top: 5px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: #777;
+}
 .pos-row .pos-cash { font-weight: 700; }
 
 /* README */

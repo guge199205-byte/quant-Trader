@@ -130,6 +130,8 @@
                 <div class="panel-tabs">
                     <button class="tab-btn active" data-tab="positions">持仓</button>
                     <button class="tab-btn" data-tab="trades">成交</button>
+                    <button class="tab-btn" data-tab="live">实盘</button>
+                    <button class="tab-btn" data-tab="chat">对话</button>
                     <button class="tab-btn" data-tab="analytics">分析</button>
                     <button class="tab-btn" data-tab="readme">README</button>
                 </div>
@@ -158,6 +160,38 @@
                         </div>
                         <div class="trades-list" id="tradesList">
                             <!-- Dynamic content -->
+                        </div>
+                    </div>
+
+                    <!-- Chat Tab（各模型对话记录，不限上证50） -->
+                    <div class="tab-panel" id="chat-panel">
+                        <div class="panel-header">
+                            <h3>模型对话</h3>
+                            <select class="agent-filter" id="chatAgentFilter">
+                                <option value="">所有Agent</option>
+                            </select>
+                        </div>
+                        <div class="chat-list" id="chatList">
+                            <!-- Dynamic content -->
+                        </div>
+                    </div>
+
+                    <!-- Live Tab（通达信桥实盘：资金/持仓/委托/记录） -->
+                    <div class="tab-panel" id="live-panel">
+                        <div class="panel-header">
+                            <h3>实盘账户 <span class="live-badge">TDX</span></h3>
+                        </div>
+                        <div class="live-assets" id="liveAssets">
+                            <div class="empty-state">加载中...</div>
+                        </div>
+                        <div class="live-positions" id="livePositions">
+                            <div class="empty-state">加载中...</div>
+                        </div>
+                        <div class="live-orders" id="liveOrders">
+                            <div class="empty-state">加载中...</div>
+                        </div>
+                        <div class="live-trades" id="liveTrades">
+                            <div class="empty-state">加载中...</div>
                         </div>
                     </div>
 

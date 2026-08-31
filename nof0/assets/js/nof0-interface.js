@@ -166,6 +166,12 @@ class Nof0Interface {
             case 'trades':
                 this.loadTrades();
                 break;
+            case 'live':
+                this.loadLive();
+                break;
+            case 'chat':
+                this.loadChat();
+                break;
             case 'analytics':
                 this.loadAnalytics();
                 break;
@@ -232,7 +238,8 @@ class Nof0Interface {
         const agentNames = Object.keys(this.agentsData);
         const selects = [
             document.getElementById('positionsAgentFilter'),
-            document.getElementById('tradesAgentFilter')
+            document.getElementById('tradesAgentFilter'),
+            document.getElementById('chatAgentFilter')
         ];
 
         selects.forEach(select => {
@@ -403,6 +410,169 @@ class Nof0Interface {
             console.error('Error loading trades:', error);
             tradesList.innerHTML = '<div class="empty-state">加载交易记录失败</div>';
         }
+    }
+
+    async loadLive() {
+        const apiBase = (window.configLoader && window.configLoader.getDataPath)
+            ? window.configLoader.getDataPath().replace(/\/api\/data$/, '/api') : 'http://192.168.31.68:8091/api';
+        const token = (window.configLoader && window.configLoader.getApiToken)
+            ? window.configLoader.getApiToken() : '';
+        const headers = token ? { 'x-api-token': token } : {};
+        const el = (id) => document.getElementById(id);
+        const empty = (el2, msg) => { if (el2) el2.innerHTML = `<div class="empty-state">${msg}</div>`; };
+
+        // 1) 账户：资金卡片 + 持仓列表
+        try {
+            const resp = await fetch(`${apiBase}/live/account`, { headers });
+            const d = await resp.json();
+            const acct = d.data || {};
+            const asset = acct.asset || {};
+            const total = asset.asset || asset.market_value || 0;
+            el('liveAssets').innerHTML = `
+                <div class="live-asset-card">
+                    <span class="live-asset-label">总资产</span>
+                    <span class="live-asset-value">¥${Number(total).toLocaleString('zh-CN', {minimumFractionDigits: 2})}</span>
+                </div>
+                <div class="live-asset-card">
+                    <span class="live-asset-label">可用资金</span>
+                    <span class="live-asset-value">¥${Number(asset.cash || 0).toLocaleString('zh-CN', {minimumFractionDigits: 2})}</span>
+                </div>
+                <div class="live-asset-card">
+                    <span class="live-asset-label">持仓市值</span>
+                    <span class="live-asset-value">¥${Number(asset.market_value || 0).toLocaleString('zh-CN', {minimumFractionDigits: 2})}</span>
+                </div>`;
+            const pos = acct.positions || [];
+            if (!pos.length) { empty(el('livePositions'), '暂无实盘持仓'); }
+            else {
+                el('livePositions').innerHTML = `<div class="live-section-title">持仓实时跟踪（今日买卖）</div>` +
+                    pos.map(p => {
+                        const pnlCls = (p.pnl_pct ?? 0) >= 0 ? 'pnl-up' : 'pnl-down';
+                        const pnlTxt = p.pnl_pct != null
+                            ? `<span class="live-pos-pnl ${pnlCls}">${p.pnl_pct >= 0 ? '+' : ''}${p.pnl_pct.toFixed(2)}% (${p.pnl >= 0 ? '+' : ''}${Number(p.pnl).toLocaleString('zh-CN', {maximumFractionDigits: 0})})</span>`
+                            : '';
+                        const name = p.name ? `<em class="live-pos-name">${p.name}</em>` : '';
+                        return `<div class="live-position-item">
+                            <div class="live-pos-main">
+                                <span class="live-pos-code">${p.stock_code}</span>
+                                ${name}
+                            </div>
+                            <div class="live-pos-sub">
+                                <span class="live-pos-time">买入 ${p.buy_time || '--'}</span>
+                                <span class="live-pos-vol">${p.total_volume} 股${p.available_volume ? `<em class="live-pos-avail">可卖 ${p.available_volume}</em>` : ''}</span>
+                                <span class="live-pos-cost">成本 ¥${Number(p.cost_price || 0).toFixed(2)} <em class="live-pos-last">现价 ¥${Number(p.last_price || 0).toFixed(2)}</em></span>
+                                <span class="live-pos-value">持仓 ¥${Number(p.position_value || 0).toLocaleString('zh-CN', {maximumFractionDigits: 0})}</span>
+                            </div>
+                            ${pnlTxt}
+                        </div>`;
+                    }).join('');
+            }
+        } catch (e) {
+            console.error('loadLive account:', e);
+            empty(el('liveAssets'), '实盘账户加载失败');
+            empty(el('livePositions'), '');
+        }
+
+        // 2) 当日委托
+        try {
+            const resp = await fetch(`${apiBase}/live/orders`, { headers });
+            const d = await resp.json();
+            const orders = d.data || [];
+            if (!orders.length) { empty(el('liveOrders'), '当日无委托'); }
+            else {
+                el('liveOrders').innerHTML = `<div class="live-section-title">当日委托</div>` +
+                    orders.map(o => `
+                    <div class="live-order-item">
+                        <span class="live-order-code">${o.stock_code}</span>
+                        <span class="live-order-side ${o.side}">${o.side === 'buy' ? '买入' : '卖出'}</span>
+                        <span>${o.total_volume} 股</span>
+                        <span class="live-order-status ${o.status}">${o.status}</span>
+                        <span class="live-order-id">#${o.order_id}</span>
+                    </div>`).join('');
+            }
+        } catch (e) {
+            console.error('loadLive orders:', e);
+            empty(el('liveOrders'), '委托查询失败');
+        }
+
+        // 3) 交易记录（logs/live_trade_*.jsonl）
+        try {
+            const resp = await fetch(`${apiBase}/live/trades`, { headers });
+            const d = await resp.json();
+            const trades = d.data || [];
+            if (!trades.length) { empty(el('liveTrades'), '暂无实盘交易记录'); }
+            else {
+                const ok = trades.filter(t => t.result);
+                el('liveTrades').innerHTML = `<div class="live-section-title">交易记录（最近 ${ok.length} 笔成功）</div>` +
+                    ok.slice(0, 10).map(t => {
+                        const st = t.result ? t.result.status : 'ERROR';
+                        return `<div class="live-trade-item">
+                            <span class="live-trade-ts">${(t.ts || '').slice(0, 16)}</span>
+                            <span class="live-order-code">${t.code}</span>
+                            <span class="live-order-side ${t.mode === 'execute' ? 'buy' : 'sell'}">${t.mode === 'execute' ? '买入' : '卖出'}</span>
+                            <span>${t.volume} 股 @ ¥${Number(t.price || 0).toFixed(2)}</span>
+                            <span class="live-order-status ${st}">${st}</span>
+                        </div>`;
+                    }).join('');
+            }
+        } catch (e) {
+            console.error('loadLive trades:', e);
+            empty(el('liveTrades'), '交易记录加载失败');
+        }
+    }
+
+    async loadChat() {
+        const chatList = document.getElementById('chatList');
+        if (!chatList) return;
+        chatList.innerHTML = '<div class="empty-state">加载中...</div>';
+        const apiBase = (window.configLoader && window.configLoader.getDataPath)
+            ? window.configLoader.getDataPath().replace(/\/api\/data$/, '/api') : 'http://192.168.31.68:8091/api';
+        const token = (window.configLoader && window.configLoader.getApiToken)
+            ? window.configLoader.getApiToken() : '';
+        const headers = token ? { 'x-api-token': token } : {};
+        const filter = document.getElementById('chatAgentFilter');
+        const selectedAgent = filter ? filter.value : '';
+        const agents = Object.keys(this.agentsData || {});
+
+        const results = [];
+        try {
+            const list = selectedAgent ? [selectedAgent] : agents;
+            for (const agentName of list) {
+                const resp = await fetch(`${apiBase}/agents/${encodeURIComponent(agentName)}/logs?market=cn&limit=100`, { headers });
+                if (!resp.ok) continue;
+                const d = await resp.json();
+                for (const entry of (d.data || [])) {
+                    for (const msg of (entry.new_messages || [])) {
+                        if (!msg || !msg.content) continue;
+                        results.push({
+                            agent: agentName,
+                            time: (entry.timestamp || '').slice(0, 16),
+                            role: msg.role || '',
+                            content: String(msg.content)
+                        });
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('loadChat:', e);
+            chatList.innerHTML = '<div class="empty-state">对话记录加载失败</div>';
+            return;
+        }
+
+        // 按时间倒序，最新在前
+        results.sort((a, b) => (a.time < b.time ? 1 : -1));
+        if (!results.length) {
+            chatList.innerHTML = '<div class="empty-state">暂无对话记录（agent 跑完才产生）</div>';
+            return;
+        }
+        chatList.innerHTML = results.slice(0, 100).map(m => `
+            <div class="chat-message ${m.role === 'user' ? 'chat-user' : 'chat-agent'}">
+                <div class="chat-meta">
+                    <span class="chat-agent-name">${m.agent}</span>
+                    <span class="chat-time">${m.time}</span>
+                    <span class="chat-role">${m.role}</span>
+                </div>
+                <div class="chat-content">${m.content.replace(/</g, '&lt;').replace(/\n/g, '<br>')}</div>
+            </div>`).join('');
     }
 
     async createTransactionItem(transaction) {

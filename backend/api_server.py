@@ -301,6 +301,233 @@ def get_logs(agent: str, market: str = Query("us"), date: Optional[str] = None):
     return {"success": True, "data": lines}
 
 
+# ---------- 实盘（通达信桥，逻辑同模拟盘那套） ----------
+
+def _live_broker():
+    from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
+
+    return TdxBridgeBroker()
+
+
+@app.get("/api/live/account")
+def live_account():
+    """实盘账户：可用资金/总资产/持仓明细（桥实时查询）。
+    持仓补实时价（桥 quote）与浮动盈亏——今天买卖的票要实时跟踪。"""
+    broker = _live_broker()
+    try:
+        acct = broker._account_query()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"桥查询失败: {e}") from e
+    positions = acct.get("positions") or []
+    # 股票名称映射：CN_STOCK_NAMES（上证50）→ quantdb instrument_detail（全市场，duckdb）→ 空
+    try:
+        from tools.stock_names import CN_STOCK_NAMES
+
+        names = dict(CN_STOCK_NAMES)
+    except Exception:  # noqa: BLE001
+        names = {}
+    names = {**names, **_quantdb_stock_names()}
+    # 买入时间：从交易日志取该 code 最近成功买入的 ts
+    logs_dir = Path(__file__).resolve().parents[1] / "logs"
+    buy_ts: dict = {}
+    for f in sorted(logs_dir.glob("live_trade_*.jsonl")):
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("mode") == "execute" and rec.get("result") and rec.get("code"):
+                buy_ts.setdefault(rec["code"], rec.get("ts", ""))
+    for p in positions:
+        code = p.get("stock_code") or ""
+        cost = float(p.get("cost_price") or 0)
+        price = float(p.get("last_price") or 0)
+        try:
+            if not price:
+                quote = broker.get_quote(code, "")
+                price = float((quote or {}).get("close") or 0)
+        except Exception:  # noqa: BLE001
+            price = 0
+        p["last_price"] = price
+        p["name"] = names.get(code, "")
+        p["buy_time"] = (buy_ts.get(code) or "")[:16]
+        p["position_value"] = round(price * float(p.get("total_volume") or 0), 2)
+        if cost and price:
+            p["pnl_pct"] = round((price - cost) / cost * 100, 2)
+            p["pnl"] = round((price - cost) * float(p.get("total_volume") or 0), 2)
+        else:
+            p["pnl_pct"], p["pnl"] = None, None
+    return {"success": True, "data": acct}
+
+
+@app.get("/api/live/orders")
+def live_orders():
+    """当日委托（桥 orders/query）。"""
+    try:
+        orders = _live_broker().get_orders()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"桥查询失败: {e}") from e
+    return {"success": True, "data": orders}
+
+
+@app.get("/api/live/ledger")
+def live_ledger():
+    """实盘分账账本：每 agent ¥10 万虚拟子账户（scripts/live_ledger.py）。
+    返回每 agent 的额度使用与名下持仓（数量/成本/名称），供持仓 tab 按模型展示。"""
+    ledger_file = Path(__file__).resolve().parents[1] / "logs" / "live_ledger.json"
+    try:
+        ledger = json.loads(ledger_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        ledger = {"version": 1, "agents": {}}
+    try:
+        from tools.stock_names import CN_STOCK_NAMES
+
+        names = dict(CN_STOCK_NAMES)
+    except Exception:  # noqa: BLE001
+        names = {}
+    names = {**names, **_quantdb_stock_names()}
+    quota = 100_000.0
+    out: dict = {}
+    for agent, rec in (ledger.get("agents") or {}).items():
+        positions = []
+        used = 0.0
+        for code, p in sorted((rec.get("positions") or {}).items()):
+            volume = int(p.get("volume") or 0)
+            cost = float(p.get("cost_price") or 0)
+            used += volume * cost
+            positions.append({
+                "code": code,
+                "name": names.get(code, code),
+                "volume": volume,
+                "cost_price": round(cost, 4),
+                "position_value": round(volume * cost, 2),
+                "buy_ts": (p.get("buy_ts") or "")[:16],
+            })
+        out[agent] = {
+            "quota": quota,
+            "used": round(used, 2),
+            "remaining": round(max(quota - used, 0.0), 2),
+            "positions": positions,
+        }
+    return {"success": True, "data": {"agents": out}}
+
+
+@app.get("/api/live/equity")
+def live_equity():
+    """实盘净值点（logs/live_equity.jsonl，北京 日期+小时+口径 一条）。
+    总账户（asset=桥实时总资产）与每 agent 分账虚拟净值（虚拟现金+持仓×实时价）。
+    供 ARENA 总账户净值图：曲线随盘中记录逐小时累积。"""
+    f = Path(__file__).resolve().parents[1] / "logs" / "live_equity.jsonl"
+    total, agents = [], {}
+    try:
+        text = f.read_text(encoding="utf-8")
+    except OSError:
+        return {"success": True, "data": {"total": total, "agents": agents}}
+    for line in text.splitlines():
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        v = r.get("value")
+        if v is None:
+            continue
+        pt = {"date": r.get("date"), "ts": r.get("ts"), "value": float(v)}
+        agent = r.get("agent")
+        if agent:
+            agents.setdefault(agent, []).append(pt)
+        else:
+            total.append(pt)
+    # 文件按追加顺序，按 ts 排成时间序（防止回填/追加顺序错乱画乱线）
+    total.sort(key=lambda p: str(p.get("ts", "")))
+    for pts in agents.values():
+        pts.sort(key=lambda p: str(p.get("ts", "")))
+    return {"success": True, "data": {"total": total, "agents": agents}}
+
+
+@app.get("/api/token-usage")
+def token_usage():
+    """每 agent 实盘 LLM 分析累计 token 消耗。
+    统计 data/agent_data_astock/*/log/**/log.jsonl 中带 usage 字段的条目
+    （只由 live_hourly_analysis 写入 → 天然排除模拟盘回放日志）。"""
+    root = Path(__file__).resolve().parents[1] / "data" / "agent_data_astock"
+    agents: dict = {}
+    if root.is_dir():
+        for logf in sorted(root.glob("*/log/**/log.jsonl")):
+            agent = logf.parts[-4]  # .../agent_data_astock/{agent}/log/{date}/log.jsonl
+            acc = agents.setdefault(agent, {"calls": 0, "prompt_tokens": 0,
+                                            "completion_tokens": 0, "total_tokens": 0,
+                                            "estimated": 0, "last_ts": None})
+            try:
+                text = logf.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for line in text.splitlines():
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                u = r.get("usage")
+                if not isinstance(u, dict):
+                    continue
+                acc["calls"] += 1
+                acc["prompt_tokens"] += int(u.get("prompt_tokens") or 0)
+                acc["completion_tokens"] += int(u.get("completion_tokens") or 0)
+                acc["total_tokens"] += int(u.get("total_tokens") or 0)
+                if u.get("usage_est"):
+                    acc["estimated"] += 1
+                ts = r.get("timestamp") or r.get("ts")
+                if ts and (not acc["last_ts"] or ts > acc["last_ts"]):
+                    acc["last_ts"] = ts
+    return {"success": True, "data": {"agents": agents}}
+
+
+@app.get("/api/live/trades")
+def live_trades(limit: int = Query(200, ge=1, le=5000)):
+    """实盘交易记录：logs/live_trade_*.jsonl 的买入/卖出行（最新在前）。"""
+    if not isinstance(limit, int):  # 直接函数调用（绕过 FastAPI 参数解析）时兜底
+        limit = 200
+    logs_dir = Path(__file__).resolve().parents[1] / "logs"
+    records = []
+    for f in sorted(logs_dir.glob("live_trade_*.jsonl")):
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("mode") in ("execute", "sell") and ("result" in rec or "error" in rec):
+                records.append(rec)
+    records.sort(key=lambda r: r.get("ts", ""), reverse=True)
+    # 补成交价：桥当日委托 filled_price（按 order_id，回退按 code）
+    price_map: dict = {}
+    try:
+        broker = _live_broker()
+        for o in broker.get_orders():
+            fp = o.get("filled_price")
+            if fp is None or o.get("status") != "filled":
+                continue
+            price_map[o.get("order_id")] = float(fp)
+            price_map.setdefault(o.get("stock_code"), float(fp))
+    except Exception:  # noqa: BLE001
+        pass
+    for rec in records:
+        # 桥 filled_price 是真实成交价；日志 price 只是下单参考价（现价×1.01），有匹配就覆盖
+        rid = (rec.get("result") or {}).get("order_id")
+        price = price_map.get(rid) or price_map.get(rec.get("code"))
+        if price:
+            rec["price"] = price
+        elif not rec.get("price"):
+            rec["price"] = None
+    return {"success": True, "data": records[:limit]}
+
+
 # ---------- 指标 ----------
 
 @app.get("/api/metrics")
@@ -378,11 +605,49 @@ def get_metrics():
 
 # ---------- 股票中文名 ----------
 
+_QUANTDB_NAMES: dict | None = None
+
+
+def _quantdb_stock_names() -> dict:
+    """quantdb instrument_detail 全市场 Symbol→Name（duckdb,一次性缓存）。
+
+    /data/quantdb 在宿主机上是空目录占位，须走 ~/projects/quantmind/data/quantdb。
+    """
+    global _QUANTDB_NAMES
+    if _QUANTDB_NAMES is not None:
+        return _QUANTDB_NAMES
+    found: dict = {}
+    try:
+        import duckdb
+
+        for _root in (Path("/data/quantdb"),
+                      Path(os.getenv("QM_QUANTDB_DATA_DIR", "")),
+                      Path.home() / "projects/quantmind/data/quantdb"):
+            detail = _root / "2_base_sector/instrument_detail/instrument_detail.parquet"
+            if not detail.is_file():
+                continue
+            _con = duckdb.connect()
+            try:
+                for sym, nm in _con.execute(
+                        "SELECT Symbol, Name FROM read_parquet(?)", [str(detail)]).fetchall():
+                    if sym and nm:
+                        found.setdefault(sym, nm)
+            finally:
+                _con.close()
+            break
+    except Exception:  # noqa: BLE001
+        pass
+    _QUANTDB_NAMES = found
+    return found
+
+
 @app.get("/api/stock-names")
 def get_stock_names(market: str = Query("us")):
     from tools.stock_names import CN_STOCK_NAMES, HK_STOCK_NAMES, US_STOCK_NAMES
 
     table = {"cn": CN_STOCK_NAMES, "hk": HK_STOCK_NAMES, "us": US_STOCK_NAMES}.get(market, {})
+    if market == "cn":
+        table = {**dict(table), **_quantdb_stock_names()}
     return {"success": True, "data": table}
 
 
@@ -434,7 +699,33 @@ def get_overview():
                 "summary": summary,
             })
         markets[market] = rows
-    return {"success": True, "data": {"markets": markets}}
+
+    # 通达信桥实盘状态（ARENA 前端读 data.tdx.real_trading_enabled 显示"实盘 开/关"）
+    import requests
+
+    tdx_status = {"real_trading_enabled": False, "health": None, "enabled": False}
+    try:
+        broker = _live_broker()
+        h = requests.get(f"{broker.bridge_url}/api/v1/health", timeout=8)
+        health = h.json()
+        tdx_status = {
+            "real_trading_enabled": bool(health.get("status") == "ok"
+                                         and health.get("tdx_connected")),
+            "health": health,
+            "enabled": bool(health.get("status") == "ok"),
+        }
+        if tdx_status["real_trading_enabled"]:
+            acct = broker._account_query()
+            asset = acct.get("asset") or {}
+            tdx_status["account"] = {
+                "cash": asset.get("cash"),
+                "market_value": asset.get("market_value"),
+                "total_asset": asset.get("asset"),
+                "positions": len(acct.get("positions") or []),
+            }
+    except Exception:  # noqa: BLE001
+        pass
+    return {"success": True, "data": {"markets": markets, "tdx": tdx_status}}
 
 
 # ---------- quantmind 交易平台代理（通达信桥 / 券商接入 / 实时交易） ----------

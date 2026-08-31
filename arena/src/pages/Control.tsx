@@ -1,9 +1,13 @@
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  AgentLedger,
   MarketId,
   SERVICE_NAMES,
   api,
+  fetchLiveAccount,
+  fetchLiveEquity,
+  fetchLiveLedger,
   fetchMetrics,
   fetchOverview,
   marketMeta,
@@ -61,6 +65,10 @@ export default function Control() {
   const metrics = usePolling(() => fetchMetrics(), [], 30000);
   const overview = usePolling(() => fetchOverview(), [], 30000);
   const exchange = usePolling(fetchExchangeStatus, [], 30000);
+  // 实盘分账(A股, 通达信桥): 总资产 + 每 agent ¥10 万虚拟子账户, 20 秒刷新
+  const liveAcct = usePolling(() => fetchLiveAccount(), [], 20000);
+  const liveLedger = usePolling(() => fetchLiveLedger(), [], 20000);
+  const liveEquity = usePolling(() => fetchLiveEquity(), [], 20000);
 
   const ageText = useMemo(() => {
     const age = metrics.data?.latest_trade_age_sec;
@@ -143,6 +151,55 @@ export default function Control() {
         )}
       </section>
 
+      {/* A股实盘分账(通达信桥) —— 总账户持仓 + 每 agent ¥10 万虚拟子账户 */}
+      {liveAcct.data && (
+        <section className="mk-section">
+          <div className="mk-head">
+            <span>🇨🇳 A股实盘(通达信桥)</span>
+            <span className="mk-count">
+              总资产 {fmtMoney(liveAcct.data.asset, '¥', 0)}
+              {' '}· {liveAcct.data.positions.length} 只持仓 · 实盘分账
+            </span>
+          </div>
+          <div className="table-wrap">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Agent</th>
+                  <th>虚拟净值</th>
+                  <th>收益率</th>
+                  <th>额度已用</th>
+                  <th>名下持仓</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(liveLedger.data?.agents ?? {}).map(([name, ag]: [string, AgentLedger]) => {
+                  const pts = liveEquity.data?.agents?.[name] ?? [];
+                  const nav = pts.length ? pts[pts.length - 1].value : null;
+                  const ret = nav != null ? (nav / (ag.quota || 100000) - 1) * 100 : null;
+                  const posCount = Object.keys(ag.positions ?? {}).length;
+                  return (
+                    <tr key={name}>
+                      <td style={{ fontWeight: 700 }}>{name}</td>
+                      <td className={ret != null ? pnlClass(ret) : 'dim'}>
+                        {nav != null ? fmtMoney(nav, '¥', 0) : '—'}
+                      </td>
+                      <td className={ret != null ? pnlClass(ret) : 'dim'}>
+                        {ret != null ? fmtPct(ret) : '—'}
+                      </td>
+                      <td className="dim">
+                        ¥{Math.round(ag.used).toLocaleString('zh-CN')} / ¥{Math.round(ag.quota).toLocaleString('zh-CN')}
+                      </td>
+                      <td className="dim">{posCount > 0 ? `${posCount} 只` : '空仓'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       {/* 三市场区块 */}
       {(['cn', 'hk', 'us'] as MarketId[]).map((m) => {
         const rows = overview.data?.markets[m] ?? [];
@@ -166,7 +223,7 @@ export default function Control() {
                       <th>收益率</th>
                       <th>最大回撤</th>
                       <th>记录数</th>
-                      <th>最新日期</th>
+                      <th>回放截止</th>
                       <th>状态</th>
                     </tr>
                   </thead>

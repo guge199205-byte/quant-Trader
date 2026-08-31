@@ -14,6 +14,9 @@
   --primary-color: #10a37f;
   --success-color: #10a37f;
   --error-color: #ef4444;
+  /* A股配色: 涨=红 / 跌=绿（全项目涨跌数字统一） */
+  --up-color: #e0483e;
+  --down-color: #12b886;
   --warning-color: #faad14;
   --bg-primary: #ffffff;
   --bg-secondary: #ffffff;
@@ -58,8 +61,8 @@ code, .mono {
 .faint { color: var(--text-tertiary); }
 .accent { color: var(--primary-color); }
 
-.up { color: var(--success-color); }
-.down { color: var(--error-color); }
+.up { color: var(--up-color); }
+.down { color: var(--down-color); }
 
 .btn {
   padding: 12px 32px;

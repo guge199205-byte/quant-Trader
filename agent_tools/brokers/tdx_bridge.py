@@ -1,18 +1,22 @@
-"""通达信（TDX）桥 Broker：对接 quantmind 的 TDX 交易通道。
+"""通达信（TDX）桥 Broker：BayMax 直连 8550 桥（Windows 交易机）实盘下单。
 
-复用资产（~/projects/quantmind）：
-- backend/services/trade/services/tdx_account_sync_task.py — 账户同步
-- backend/services/trade/services/tdx_signal_push_service.py — 信号推送
-- backend/services/trade/routers/tdx_l2.py — L2 行情
-- backend/services/trade/simulation/services/market_rules.py — 市场规则
-- 8550 桥（tdx-39 bridge token）：日K/周K 行情
+桥协议（brokers/tdx-bridge/src/api/routes.py，实测）：
+  POST /api/v1/plans/execute   下单（TradePlan{plan_id,account,account_type,orders[]}）
+  POST /api/v1/account/query   资产+持仓（account 可空，桥 resolve 默认账户）
+  POST /api/v1/orders/query    当日委托查询（无历史接口）
+  POST /api/v1/orders/cancel   撤单
+  POST /api/v1/tdx/call        JSON-RPC 透传（get_market_data/get_market_snapshot 等）
+  GET  /api/v1/health          健康检查（免鉴权）
+  认证：Authorization: Bearer <token>
 
 配置（.env）：
-  TDX_BRIDGE_URL=  桥地址
-  TDX_BRIDGE_TOKEN=桥 token
+  TDX_BRIDGE_URL=http://192.168.31.31:8550
+  TDX_BRIDGE_TOKEN=<64-hex>
+  TDX_ACCOUNT=       # 可留空，桥 resolve_account_id 解析默认账户
+  TDX_ACCOUNT_TYPE=stock
 
 安全：实盘下单必须过风控（见 docs/ARCHITECTURE_UPGRADE.md §4）。
-当前为骨架：quote/kline 已接桥协议，place_order 待移植。
+桥状态码：0=REJECTED 1=SUBMITTED 2=PARTIAL_FILL 3=FILLED 4=PARTIAL_CANCELLED 5=CANCELLED
 """
 
 import os
@@ -52,8 +56,7 @@ class TdxBridgeBroker(Broker):
 
         import requests
 
-        if not self.account:
-            raise BrokerError("TDX 账户未配置：请设置 TDX_ACCOUNT（.env），未配置前禁止实盘下单")
+        # account 可空：桥 resolve_account_id 会解析默认账户（实测）
         # 审批门：approval_required=true 时拒绝（backend.yaml risk 段）
         try:
             from agent_tools.risk import RiskPolicy
@@ -99,11 +102,66 @@ class TdxBridgeBroker(Broker):
             "plan_id": plan_id,
         }
 
+    def _account_query(self) -> Dict[str, Any]:
+        """POST /api/v1/account/query → {account_id, asset, positions, channel_used}"""
+        import requests
+
+        try:
+            resp = requests.post(f"{self.bridge_url}/api/v1/account/query",
+                                 json={"account": self.account,
+                                       "account_type": self.account_type},
+                                 headers=self._headers(), timeout=15)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as exc:
+            raise BrokerError(f"TDX 桥账户查询失败: {exc}") from exc
+
     def get_positions(self, signature: str, today_date: str) -> Dict[str, float]:
-        raise BrokerError("TDX 实盘持仓查询待移植（quantmind: tdx_account_sync_task.py）")
+        """实盘持仓 {symbol: total_volume}（桥 account/query 返回 Code/Cbj/TotalVol/CanUseVol）"""
+        data = self._account_query()
+        positions = {}
+        for p in data.get("positions") or []:
+            code = p.get("stock_code", "")
+            if code:
+                positions[code] = float(p.get("total_volume") or 0)
+        return positions
 
     def get_cash(self, signature: str, today_date: str) -> float:
-        raise BrokerError("TDX 实盘现金查询待移植")
+        """实盘可用资金（桥 asset.cash）"""
+        data = self._account_query()
+        return float((data.get("asset") or {}).get("cash") or 0)
+
+    def get_orders(self, stock_code: str = "", cancelable_only: bool = False) -> List[Dict[str, Any]]:
+        """当日委托查询（桥只支持当日，无历史接口）"""
+        import requests
+
+        try:
+            resp = requests.post(f"{self.bridge_url}/api/v1/orders/query",
+                                 json={"account": self.account,
+                                       "account_type": self.account_type,
+                                       "stock_code": stock_code,
+                                       "cancelable_only": cancelable_only},
+                                 headers=self._headers(), timeout=15)
+            resp.raise_for_status()
+            return (resp.json() or {}).get("orders") or []
+        except requests.RequestException as exc:
+            raise BrokerError(f"TDX 桥委托查询失败: {exc}") from exc
+
+    def cancel_order(self, stock_code: str, order_id: str) -> Dict[str, Any]:
+        """撤单（当日可撤委托）"""
+        import requests
+
+        try:
+            resp = requests.post(f"{self.bridge_url}/api/v1/orders/cancel",
+                                 json={"account": self.account,
+                                       "account_type": self.account_type,
+                                       "stock_code": stock_code,
+                                       "order_id": order_id},
+                                 headers=self._headers(), timeout=15)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as exc:
+            raise BrokerError(f"TDX 桥撤单失败: {exc}") from exc
 
     def buy(self, signature: str, today_date: str, symbol: str, amount: int,
             price: Optional[float] = None) -> Dict[str, Any]:
@@ -119,31 +177,60 @@ class TdxBridgeBroker(Broker):
         klines = self.get_klines(symbol, date, date, interval="daily", market=market)
         return klines[-1] if klines else None
 
-    def get_klines(self, symbol: str, start: str, end: str, interval: str = "daily",
-                   market: str = "cn") -> List[Dict[str, Any]]:
-        """经 8550 桥拉 K 线（日K/周K 支持，分钟线不支持——桥限制）。"""
+    def get_klines(self, symbol: str, start: str = "", end: str = "",
+                   interval: str = "daily", market: str = "cn") -> List[Dict[str, Any]]:
+        """经 8550 桥拉 K 线（POST /api/v1/tdx/call get_market_data）。
+        日K(1d)/周K(1w) 支持，分钟线不支持（桥限制）。
+        返回 [{"date","open","high","low","close","volume","amount"}]，按日期升序。
+        """
         import requests
 
+        period = {"daily": "1d", "weekly": "1w"}.get(interval, interval)
+        # 实测（桥调用日志 18328）：参数名是 stock_list（列表），不是 stock_code
+        params: Dict[str, Any] = {
+            "stock_list": [symbol],
+            "period": period,
+            "dividend_type": "front",  # 前复权，与本地价格数据口径一致
+            "count": 250,
+        }
         try:
-            resp = requests.get(
-                f"{self.bridge_url}/kline",
-                params={
-                    "symbol": symbol,
-                    "start": start,
-                    "end": end,
-                    "interval": interval,
-                    "token": self.token,
-                },
-                timeout=10,
-            )
+            resp = requests.post(f"{self.bridge_url}/api/v1/tdx/call",
+                                 json={"method": "get_market_data", "params": params},
+                                 headers=self._headers(), timeout=20)
             resp.raise_for_status()
             data = resp.json()
-            bars = data.get("data") or data.get("klines") or []
-            if not isinstance(bars, list):
-                raise BrokerError(f"TDX 桥返回格式异常: {str(data)[:200]}")
-            return bars
         except requests.RequestException as exc:
             raise BrokerError(f"TDX 桥请求失败: {exc}") from exc
+        if not data.get("success", True):
+            err = data.get("error") or {}
+            raise BrokerError(f"TDX 桥返回错误: {err.get('message', str(data)[:200])}")
+        # tdx/call 返回 {success, result: {ErrorId, Value: {symbol: {...}}}}
+        result = data.get("result") or {}
+        if str(result.get("ErrorId", "0")) != "0":
+            raise BrokerError(f"TDX 行情错误 ErrorId={result.get('ErrorId')}: {str(result)[:200]}")
+        value = result.get("Value") or {}
+        kline = value.get(symbol) if isinstance(value, dict) and symbol in value else result
+        closes = kline.get("Close") or []
+        dates = kline.get("Date") or [""] * len(closes)
+        bars = []
+        for i in range(len(closes)):
+            bars.append({
+                "date": str(dates[i]) if i < len(dates) else "",
+                "open": self._at(kline.get("Open"), i),
+                "high": self._at(kline.get("High"), i),
+                "low": self._at(kline.get("Low"), i),
+                "close": closes[i],
+                "volume": self._at(kline.get("Volume"), i),
+                "amount": self._at(kline.get("Amount"), i),
+            })
+        return bars
+
+    @staticmethod
+    def _at(lst, i):
+        try:
+            return lst[i] if lst and i < len(lst) else None
+        except Exception:
+            return None
 
 
 def register() -> None:

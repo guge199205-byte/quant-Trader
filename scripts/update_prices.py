@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """更新 BayMax 全部价格数据与 benchmark（免费接口，无 key 依赖）。
 
-- 美股（NASDAQ100 + QQQ）: Yahoo Finance chart API（需 UA 头）
-- A股（上证50 + 上证50指数 sh000016）: 腾讯 fqkline（后复权）
-- 港股（30 只 + 恒指 hkHSI）: 腾讯 fqkline（后复权）
+- 美股（NASDAQ100 + QQQ）: Yahoo Finance chart API（需 UA 头，无通达信美股源）
+- A股（上证50 + 上证50指数 sh000016）: 通达信 TdxAiData 实时源（前复权，批量；
+  失败回退 8550 桥，均为通达信，不再用腾讯等第三方）
+- 港股（30 只 + 恒指 hkHSI）: 腾讯 fqkline（后复权；通达信暂无港股数据支持）
 
 输出：
   data/daily_prices_{SYM}.json     美股日线（AlphaVantage 格式）
@@ -23,8 +24,9 @@ import shutil
 import sys
 import time
 import urllib.request
-from datetime import date, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126 Safari/537.36"}
@@ -126,6 +128,64 @@ def tencent_index(code: str) -> dict:
     return series
 
 
+def _to_alpha(bars: list) -> dict:
+    """bars（本仓库统一格式 [{"date","open","high","low","close","volume"}]）
+    -> {date: {"1. open".."5. volume"}}，值转原生 float（np.float64 不能 JSON 序列化）。"""
+    series = {}
+    for b in bars:
+        day, close = b.get("date"), b.get("close")
+        if not day or close is None:
+            continue
+        series[day] = {
+            "1. open": float(b.get("open") or 0),
+            "2. high": float(b.get("high") or 0),
+            "3. low": float(b.get("low") or 0),
+            "4. close": float(close),
+            "5. volume": float(b.get("volume") or 0),
+        }
+    return series
+
+
+def tdx_daily_batch(symbols: list, start: str, end: str) -> dict:
+    """通达信 TdxAiData 批量日线（前复权）-> {symbol: AlphaVantage 格式 series}。
+    分块调用（10 只/块）降低单次请求大小，块失败自动跳过（限流退避在 tdx_aidata 内部）。"""
+    from agent_tools.datasources import tdx_aidata
+
+    out = {}
+    if not tdx_aidata.available():
+        return out
+    for i in range(0, len(symbols), 10):
+        part = symbols[i:i + 10]
+        try:
+            bars_map = tdx_aidata.get_klines_batch(part, interval="daily", start=start, end=end)
+        except Exception as e:
+            print(f"  ⚠️ TdxAiData 块失败({part[0]}~{part[-1]}): {e}")
+            continue
+        for sym, bars in bars_map.items():
+            series = _to_alpha(bars)
+            if series:
+                out[sym] = series
+    return out
+
+
+def bridge_daily(symbols: list, start: str, end: str) -> dict:
+    """8550 桥（通达信）日线回退 -> {symbol: AlphaVantage 格式 series}。"""
+    from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
+
+    broker = TdxBridgeBroker()
+    out = {}
+    for sym in symbols:
+        try:
+            bars = [b for b in broker.get_klines(sym, interval="daily")
+                    if start <= (b.get("date") or "") <= end]
+            series = _to_alpha(bars)
+            if series:
+                out[sym] = series
+        except Exception as e:
+            print(f"  ❌ {sym}: {e}")
+    return out
+
+
 def alpha_vantage_file(symbol: str, series: dict, info: str) -> dict:
     return {
         "Meta Data": {
@@ -180,66 +240,86 @@ def main():
             print(f"  ❌ {sym}: {e}"); us_fail += 1
         time.sleep(1.2)  # 降频防 Yahoo 限流
 
-    # ---------- A股（腾讯）----------
+    # ---------- A股（通达信 TdxAiData 实时源，失败回退 8550 桥）----------
     print("\n== A股 上证50 + 指数 ==")
     cn_csv = ROOT / "data/A_stock/daily_prices_sse_50.csv"
     with open(cn_csv) as f:
         rows = list(csv.DictReader(f))
     cn_symbols = sorted({r["ts_code"] for r in rows})
-    cn_series = {}
-    cn_ok, cn_fail = 0, 0
-    for sym in cn_symbols:
+    # A股/港股用北京时间（本机时区可能是 JST）
+    end_day = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+
+    from agent_tools.datasources import tdx_aidata
+
+    tdx_up = tdx_aidata.available()
+    if not tdx_up:
+        print("  ⚠️ TdxAiData 不可用 → 全部走桥回退")
+    cn_series = tdx_daily_batch(cn_symbols, START, end_day)
+    print(f"  TdxAiData: {len(cn_series)}/{len(cn_symbols)} 只")
+    missing = [s for s in cn_symbols if s not in cn_series]
+    if missing:
+        print(f"  桥回退 {len(missing)} 只: {', '.join(missing[:8])}{'...' if len(missing) > 8 else ''}")
+        cn_series.update(bridge_daily(missing, START, end_day))
+    cn_ok = len(cn_series)
+    cn_fail = len(cn_symbols) - cn_ok
+    for sym in sorted(cn_series):
+        series = cn_series[sym]
+        print(f"  ✅ {sym}: {len(series)} 点 ({sorted(series)[0]}~{sorted(series)[-1]})")
+
+    if cn_series:
+        # 写 csv（保持原列顺序）
+        with open(cn_csv, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["ts_code", "trade_date", "open", "high", "low", "close", "pre_close", "change", "pct_chg", "vol", "amount"])
+            for sym, series in cn_series.items():
+                dates = sorted(series)
+                prev_close = None
+                for day in dates:
+                    s = series[day]
+                    close = float(s["4. close"])
+                    pre = prev_close if prev_close is not None else close
+                    change = round(close - pre, 4)
+                    pct = round(change / pre * 100, 4) if pre else 0.0
+                    w.writerow([sym, day.replace("-", ""), s["1. open"], s["2. high"], s["3. low"], s["4. close"],
+                                f"{pre:.2f}", change, pct, s["5. volume"], ""])
+                    prev_close = close
+        print(f"  csv 更新完成: {len(cn_series)} 只")
+
+        # 写 A_stock/merged.jsonl（前端 data-loader 读这个文件算资产曲线）
+        with open(ROOT / "data/A_stock/merged.jsonl", "w", encoding="utf-8") as f:
+            for sym, series in cn_series.items():
+                ts = {day: {"1. open": s["1. open"], "2. high": s["2. high"],
+                            "3. low": s["3. low"], "4. close": s["4. close"],
+                            "5. volume": s["5. volume"]} for day, s in series.items()}
+                f.write(json.dumps({
+                    "Meta Data": {"2. Symbol": sym, "3. Last Refreshed": sorted(ts)[-1],
+                                  "4. Interval": "daily", "6. Time Zone": "Asia/Shanghai"},
+                    "Time Series (Daily)": ts,
+                }, ensure_ascii=False) + "\n")
+        print(f"  A_stock/merged.jsonl 更新完成: {len(cn_series)} 只")
+
+        # 上证50 指数 benchmark（000016.SH，TdxAiData → 桥回退）
         try:
-            series = tencent_daily(sym)
-            if series:
-                cn_series[sym] = series
-                print(f"  ✅ {sym}: {len(series)} 点 ({sorted(series)[0]}~{sorted(series)[-1]})")
-                cn_ok += 1
-            else:
-                print(f"  ⚠️ {sym}: 无数据"); cn_fail += 1
+            idx = {}
+            if tdx_up:
+                try:
+                    idx = _to_alpha(tdx_aidata.get_klines("000016.SH", interval="daily",
+                                                          start=START, end=end_day))
+                except Exception:
+                    idx = {}
+            if not idx:
+                from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
+                idx = _to_alpha([b for b in TdxBridgeBroker().get_klines("000016.SH", interval="daily")
+                                 if START <= (b.get("date") or "") <= end_day])
+            if idx:
+                (ROOT / "data/A_stock/index_daily_sse_50.json").write_text(
+                    json.dumps(alpha_vantage_file("SSE50", idx, "通达信 daily"), ensure_ascii=False),
+                    encoding="utf-8")
+                print(f"  ✅ sh000016: {len(idx)} 点")
         except Exception as e:
-            print(f"  ❌ {sym}: {e}"); cn_fail += 1
-        time.sleep(0.3)
-
-    # 写 csv（保持原列顺序）
-    with open(cn_csv, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["ts_code", "trade_date", "open", "high", "low", "close", "pre_close", "change", "pct_chg", "vol", "amount"])
-        for sym, series in cn_series.items():
-            dates = sorted(series)
-            prev_close = None
-            for day in dates:
-                s = series[day]
-                close = float(s["4. close"])
-                pre = prev_close if prev_close is not None else close
-                change = round(close - pre, 4)
-                pct = round(change / pre * 100, 4) if pre else 0.0
-                w.writerow([sym, day.replace("-", ""), s["1. open"], s["2. high"], s["3. low"], s["4. close"],
-                            f"{pre:.2f}", change, pct, s["5. volume"], ""])
-                prev_close = close
-    print(f"  csv 更新完成: {len(cn_series)} 只")
-
-    # 写 A_stock/merged.jsonl（前端 data-loader 读这个文件算资产曲线）
-    with open(ROOT / "data/A_stock/merged.jsonl", "w", encoding="utf-8") as f:
-        for sym, series in cn_series.items():
-            ts = {day: {"1. open": s["1. open"], "2. high": s["2. high"],
-                        "3. low": s["3. low"], "4. close": s["4. close"],
-                        "5. volume": s["5. volume"]} for day, s in series.items()}
-            f.write(json.dumps({
-                "Meta Data": {"2. Symbol": sym, "3. Last Refreshed": sorted(ts)[-1],
-                              "4. Interval": "daily", "6. Time Zone": "Asia/Shanghai"},
-                "Time Series (Daily)": ts,
-            }, ensure_ascii=False) + "\n")
-    print(f"  A_stock/merged.jsonl 更新完成: {len(cn_series)} 只")
-
-    # 上证50 指数 benchmark
-    try:
-        idx = tencent_index("sh000016")
-        (ROOT / "data/A_stock/index_daily_sse_50.json").write_text(
-            json.dumps(alpha_vantage_file("SSE50", idx, "Tencent index"), ensure_ascii=False), encoding="utf-8")
-        print(f"  ✅ sh000016: {len(idx)} 点")
-    except Exception as e:
-        print(f"  ❌ sh000016: {e}")
+            print(f"  ❌ sh000016: {e}")
+    else:
+        print("  ❌ 全部行情失败，保留原文件（备份在 /tmp/baymax_data_backup_*）")
 
     # ---------- 港股（腾讯）----------
     print("\n== 港股 30 只 + 恒指 ==")

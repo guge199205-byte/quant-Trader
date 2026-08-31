@@ -40,6 +40,14 @@
   letter-spacing: 0.03em;
 }
 
+.feed-symbol .feed-code {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 400;
+  color: #888;
+  letter-spacing: 0.02em;
+}
+
 .feed-date {
   font-size: 10px;
   color: #888;

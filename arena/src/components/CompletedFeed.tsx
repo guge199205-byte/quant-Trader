@@ -8,6 +8,7 @@ interface Props {
   agents: string[]; // 当前市场全部 agent
   market: MarketId;
   currency: string;
+  stockNames?: Record<string, string>; // symbol → 中文名（缺失时回退显示代码）
 }
 
 interface AgentTrades {
@@ -29,7 +30,7 @@ const holdText = (days: number | null): string => {
 const fmtQty = (v: number): string => v.toLocaleString('en-US', { maximumFractionDigits: 2 });
 
 /** COMPLETED —— nof1 风格"completed a trade"平仓消息流（当前市场全部模型，最新在前）。 */
-export default function CompletedFeed({ agents, market, currency }: Props) {
+export default function CompletedFeed({ agents, market, currency, stockNames = {} }: Props) {
   const key = agents.join('|');
   const feeds = usePolling(
     () =>
@@ -74,7 +75,11 @@ export default function CompletedFeed({ agents, market, currency }: Props) {
               <span className="feed-logo">{logoOf(t.agent)}</span>
               <span className="feed-msg">
                 <b className="feed-agent">{shortName(t.agent)}</b> 在{' '}
-                <b className="feed-symbol">{t.symbol}</b> 完成了一笔交易！
+                <b className="feed-symbol">
+                  {stockNames[t.symbol] ?? t.symbol}
+                  <span className="feed-code">{t.symbol}</span>
+                </b>{' '}
+                完成了一笔交易！
               </span>
               <span className="feed-date">{t.exit_date.slice(5)}</span>
             </div>

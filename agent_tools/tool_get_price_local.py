@@ -39,6 +39,52 @@ def _close_val(day: Dict[str, Any]) -> Any:
     return v
 
 
+def _quantdb_dir() -> Optional[Path]:
+    """quantdb parquet 根目录：容器内 /data/quantdb（只读直挂）；本机回退环境变量/quantmind 仓库。
+    必须含 1_kline_data 子目录才算有效（/data/quantdb 在本机可能是空目录占位）。"""
+    for cand in (Path("/data/quantdb"),
+                 Path(os.getenv("QM_QUANTDB_DATA_DIR", "")),
+                 Path.home() / "projects/quantmind/data/quantdb"):
+        if cand.is_dir() and (cand / "1_kline_data").is_dir():
+            return cand
+    return None
+
+
+def _quantdb_daily(symbol: str, date: str) -> Optional[Dict[str, Any]]:
+    """quantdb（quantmind parquet）duckdb 查询单日 OHLCV（后复权 daily_backward）。
+    symbol 形如 600183.SH；date 形如 2026-08-28。查不到返回 None。"""
+    root = _quantdb_dir()
+    if root is None or not (symbol.endswith(".SH") or symbol.endswith(".SZ")):
+        return None
+    dt = date.replace("-", "")
+    try:
+        import duckdb
+
+        con = duckdb.connect()
+        rows = con.execute(
+            """
+            SELECT dt, open, high, low, close, volume FROM read_parquet(
+              ?, union_by_name=true)
+            WHERE symbol = ? AND dt = ?
+            """,
+            [str(root / "1_kline_data/daily_backward/dt=*/data.parquet"),
+             symbol, int(dt)],
+        ).fetchall()
+        con.close()
+    except Exception:  # noqa: BLE001
+        return None
+    if not rows:
+        return None
+    _, open_, high, low, close, volume = rows[0]
+    return {
+        "open": float(open_),
+        "high": float(high),
+        "low": float(low),
+        "close": float(close),
+        "volume": float(volume),
+    }
+
+
 def _workspace_data_path(filename: str, symbol: Optional[str] = None) -> Path:
     """Get data file path based on symbol (auto-detect market type).
 
@@ -126,6 +172,23 @@ def get_price_local_daily(symbol: str, date: str) -> Dict[str, Any]:
         _validate_date_daily(date)
     except ValueError as e:
         return {"error": str(e), "symbol": symbol, "date": date}
+
+    # A股优先 quantdb（duckdb 查询分析，后复权），查不到再回退本地 merged.jsonl
+    if symbol.endswith(".SH") or symbol.endswith(".SZ"):
+        qd = _quantdb_daily(symbol, date)
+        if qd is not None:
+            return {
+                "symbol": symbol,
+                "date": date,
+                "ohlcv": {
+                    "open": qd["open"],
+                    "high": qd["high"],
+                    "low": qd["low"],
+                    "close": qd["close"],
+                    "volume": qd["volume"],
+                },
+                "source": "quantdb",
+            }
 
     data_path = _workspace_data_path(filename, symbol)
     if not data_path.exists():

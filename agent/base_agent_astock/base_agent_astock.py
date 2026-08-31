@@ -92,6 +92,16 @@ from tools.price_tools import add_no_trade_record
 load_dotenv()
 
 
+def _resolve_env(value):
+    """解析 ${ENV_VAR} 模板：config 里的 base_url/key 可引用 .env 变量。
+    非模板字符串原样返回；模板未设置时返回 None（调用方回退全局 .env）。"""
+    if value is None:
+        return None
+    if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+        return os.getenv(value[2:-1].strip())
+    return value
+
+
 class BaseAgentAStock:
     """
     A股专用交易Agent基类
@@ -215,15 +225,13 @@ class BaseAgentAStock:
         # Set log path - A股专用路径
         self.base_log_path = log_path or "./data/agent_data_astock"
 
-        # Set OpenAI configuration
-        if openai_base_url == None:
+        # Set OpenAI configuration (支持 ${ENV_VAR} 模板，见 _resolve_env)
+        self.openai_base_url = _resolve_env(openai_base_url)
+        if self.openai_base_url is None:
             self.openai_base_url = os.getenv("OPENAI_API_BASE")
-        else:
-            self.openai_base_url = openai_base_url
-        if openai_api_key == None:
+        self.openai_api_key = _resolve_env(openai_api_key)
+        if self.openai_api_key is None:
             self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        else:
-            self.openai_api_key = openai_api_key
 
         # Initialize components
         self.client: Optional[MultiServerMCPClient] = None
@@ -295,7 +303,7 @@ class BaseAgentAStock:
                     base_url=self.openai_base_url,
                     api_key=self.openai_api_key,
                     max_retries=3,
-                    timeout=120,
+                    timeout=600,
                 )
             else:
                 self.model = ChatOpenAI(
@@ -303,7 +311,7 @@ class BaseAgentAStock:
                     base_url=self.openai_base_url,
                     api_key=self.openai_api_key,
                     max_retries=3,
-                    timeout=120,
+                    timeout=600,
                 )
         except Exception as e:
             raise RuntimeError(f"❌ Failed to initialize AI model: {e}")
@@ -490,8 +498,13 @@ class BaseAgentAStock:
             return []
 
         # Generate trading date list, filtered by actual trading days (A-shares market)
+        # init_date > position 最新日期时（改配置窗口到更晚），直接从 init_date 开始
+        init_date_obj = datetime.strptime(init_date, "%Y-%m-%d")
+        if init_date_obj > max_date_obj:
+            current_date = init_date_obj
+        else:
+            current_date = max_date_obj + timedelta(days=1)
         trading_dates = []
-        current_date = max_date_obj + timedelta(days=1)
 
         while current_date <= end_date_obj:
             date_str = current_date.strftime("%Y-%m-%d")

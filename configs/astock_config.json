@@ -2,8 +2,8 @@
  "agent_type": "BaseAgentAStock",
  "market": "cn",
  "date_range": {
-  "init_date": "2026-08-24",
-  "end_date": "2026-08-28"
+  "init_date": "2026-08-31",
+  "end_date": "2026-08-31"
  },
  "models": [
   {
@@ -53,6 +53,14 @@
    "basemodel": "deepseek-v4-pro",
    "signature": "deepseek-v4-pro",
    "enabled": true
+  },
+  {
+   "name": "glm-5.3-flash",
+   "basemodel": "glm-5.3-flash",
+   "signature": "glm-5.3-flash",
+   "enabled": true,
+   "openai_base_url": "${GLM_API_BASE}",
+   "openai_api_key": "${GLM_API_KEY}"
   }
  ],
  "agent_config": {

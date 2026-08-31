@@ -73,6 +73,9 @@
   line-height: 1.5;
   color: #333;
   padding: 8px 10px;
+  /* 完整摘要可滚动查看，不再截断 */
+  max-height: 60px;
+  overflow-y: auto;
 }
 
 .mc-body {
@@ -186,4 +189,12 @@
   font-family: 'Courier New', monospace;
   font-size: 11px;
   color: #888;
+}
+
+/* ChatModelList —— 全部模型视图的 token 累计（位于 mc-date 之后） */
+.mc-tokens {
+  font-family: 'Courier New', monospace;
+  font-size: 9px;
+  color: #888;
+  white-space: nowrap;
 }

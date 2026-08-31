@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { LogLine, PositionRecord, TradeRecord } from '../api/client';
-import { logoOf } from './ModelCard';
+import { logoOf, modelColor } from './ModelCard';
 import { fmtMoney } from '../utils/format';
 import './ModelChat.css';
 
@@ -107,13 +107,16 @@ export default function ModelChat({
         const sec = sections[i] ?? new Set<string>();
         const status = dayTrades.length ? 'DAILY DECISION' : r.thought ? 'NO TRADE' : 'PROMPT';
         const dateLabel = r.date ? r.date.slice(5) : '—';
-        const summary = (r.thought || r.user).replace(/\s+/g, ' ').slice(0, 120);
+        const summary = (r.thought || r.user).replace(/\s+/g, ' ').trim();
         return (
-          <div className={`mc-card ${isOpen ? 'open' : ''}`} key={i}>
+          <div className={`mc-card ${isOpen ? 'open' : ''}`} key={i}
+            style={{ borderColor: modelColor(model) }}>
             <div className="mc-head" onClick={() => toggle(i)} role="button" tabIndex={0}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(i); } }}>
               <span className="mc-logo">{logoOf(model)}</span>
-              <span className="mc-model">{model.replace('deepseek-v4-', '').toUpperCase()}</span>
+              <span className="mc-model" style={{ color: modelColor(model) }}>
+                {model.replace('deepseek-v4-', '').toUpperCase()}
+              </span>
               <span className="mc-status">{status}</span>
               <span className="mc-date">{dateLabel}</span>
               <span className={`mc-expand ${isOpen ? 'open' : ''}`}>{isOpen ? '▼' : '▶'}</span>

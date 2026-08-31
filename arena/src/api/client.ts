@@ -74,6 +74,8 @@ export interface PositionRecord {
 
 export interface LogLine {
   signature?: string;
+  /** 日志写入时间 ISO（后端返回，如 2026-08-31T14:00:28） */
+  timestamp?: string;
   new_messages?: { role?: string; content?: string }[];
 }
 
@@ -159,6 +161,94 @@ export const fetchPrices = (market: MarketId) =>
 /** 股票中文名表（键 = symbol） */
 export const fetchStockNames = (market: MarketId) =>
   unwrap<Record<string, string>>(api.get('/stock-names', { params: { market } }));
+
+// ---------- 通达信桥实盘（A股） ----------
+
+export interface LivePosition {
+  stock_code: string; // "600183.SH"
+  name: string;
+  cost_price: number;
+  total_volume: number;
+  available_volume: number;
+  last_price: number;
+  position_value: number;
+  pnl_pct: number;
+  pnl: number;
+  buy_time: string; // "2026-08-31T11:13"
+}
+
+export interface LiveAccount {
+  asset: number;
+  positions: LivePosition[];
+  channel_used?: string;
+}
+
+export interface LiveTradeLog {
+  ts: string;
+  mode: string; // "execute" | "quote" | ...
+  code: string;
+  volume: number;
+  price?: number | null; // 桥 filled_price（成交价）
+  limit_price?: number | null;
+  result?: { order_id?: string; status?: string; message?: string } | null;
+  message?: string | null;
+}
+
+export const fetchLiveAccount = () => unwrap<LiveAccount>(api.get('/live/account'));
+export const fetchLiveTrades = () => unwrap<LiveTradeLog[]>(api.get('/live/trades'));
+
+// ---------- 实盘分账（每 agent ¥10 万虚拟子账户） ----------
+
+export interface LedgerPosition {
+  code: string;
+  name: string;
+  volume: number;
+  cost_price: number;
+  position_value: number;
+  buy_ts: string;
+}
+
+export interface AgentLedger {
+  quota: number;
+  used: number;
+  remaining: number;
+  positions: LedgerPosition[];
+}
+
+export const fetchLiveLedger = () =>
+  unwrap<{ agents: Record<string, AgentLedger> }>(api.get('/live/ledger'));
+
+// ---------- 实盘账户净值（总账户净值图） ----------
+
+export interface LiveEquityPoint {
+  date: string;
+  ts: string;
+  value: number;
+}
+
+export interface LiveEquity {
+  /** 总账户（桥实时总资产） */
+  total: LiveEquityPoint[];
+  /** 每 agent 分账虚拟净值（¥10 万起：虚拟现金 + 名下持仓 × 实时价） */
+  agents: Record<string, LiveEquityPoint[]>;
+}
+
+export const fetchLiveEquity = () => unwrap<LiveEquity>(api.get('/live/equity'));
+
+// ---------- 实盘 LLM 分析 token 累计（/api/token-usage） ----------
+
+export interface AgentTokenUsage {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  /** 估算条数（回填数据无真实 usage） */
+  estimated: number;
+  last_ts?: string | null;
+}
+
+export const fetchTokenUsage = () =>
+  unwrap<{ agents: Record<string, AgentTokenUsage> }>(api.get('/token-usage'));
 
 // ---------- 平仓明细（LAST 25 TRADES） ----------
 

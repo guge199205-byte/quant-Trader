@@ -1187,6 +1187,217 @@ body::before {
     padding: var(--space-8);
 }
 
+/* ---- 实盘 tab（通达信桥）---- */
+.live-badge {
+    display: inline-block;
+    margin-left: var(--space-2);
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--accent, #2563eb);
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 600;
+    vertical-align: middle;
+}
+/* 实盘 tab 整体在面板内滚动（同 positions-list 的滚动结构） */
+#live-panel {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+}
+.live-assets {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+    flex-shrink: 0;
+}
+.live-asset-card {
+    background: var(--surface-2, #1e293b);
+    border-radius: var(--radius-md, 8px);
+    padding: var(--space-3);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.live-asset-label {
+    color: var(--gray-400, #94a3b8);
+    font-size: 0.75rem;
+}
+.live-asset-value {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text-primary, #f8fafc);
+}
+.live-section-title {
+    margin: var(--space-3) 0 var(--space-2);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--gray-400, #94a3b8);
+    letter-spacing: 0.05em;
+}
+.live-position-item,
+.live-order-item,
+.live-trade-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--border, rgba(148, 163, 184, 0.15));
+    font-size: 0.85rem;
+}
+.live-position-item {
+    flex-wrap: wrap;
+    align-items: baseline;
+}
+.live-position-item:last-child,
+.live-order-item:last-child,
+.live-trade-item:last-child {
+    border-bottom: none;
+}
+.live-pos-code,
+.live-order-code {
+    font-weight: 600;
+    min-width: 88px;
+}
+.live-pos-main {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+}
+.live-pos-main em.live-pos-name {
+    font-style: normal;
+    color: var(--foreground, #f8fafc);
+    font-size: 0.9rem;
+}
+.live-pos-sub {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    color: var(--gray-400, #94a3b8);
+}
+.live-pos-time {
+    font-size: 0.75rem;
+    color: var(--gray-500, #64748b);
+}
+.live-pos-value {
+    font-weight: 600;
+    color: var(--foreground, #f8fafc);
+}
+.live-pos-vol em.live-pos-avail {
+    font-style: normal;
+    color: #22c55e;
+    margin-left: var(--space-2);
+}
+.live-pos-cost {
+    color: var(--gray-400, #94a3b8);
+}
+.live-pos-cost em.live-pos-last {
+    font-style: normal;
+    color: var(--text-primary, #f8fafc);
+    margin-left: var(--space-2);
+}
+.live-pos-pnl {
+    margin-left: auto;
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+.live-pos-pnl.pnl-up {
+    color: #ef4444;
+}
+.live-pos-pnl.pnl-down {
+    color: #22c55e;
+}
+.live-order-side {
+    padding: 1px 8px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+.live-order-side.buy {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+.live-order-side.sell {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+}
+.live-order-status {
+    margin-left: auto;
+    padding: 1px 8px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    background: rgba(148, 163, 184, 0.15);
+    color: #94a3b8;
+}
+.live-order-status.filled {
+    background: rgba(34, 197, 94, 0.18);
+    color: #22c55e;
+}
+.live-order-status.submitted {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+}
+.live-order-id {
+    color: var(--gray-500, #64748b);
+    font-size: 0.72rem;
+}
+.live-trade-ts {
+    color: var(--gray-500, #64748b);
+    font-size: 0.75rem;
+    min-width: 96px;
+}
+
+/* ---- 对话 tab（各模型对话记录）---- */
+#chat-panel {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+}
+.chat-message {
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+    border-radius: 8px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    font-size: 0.85rem;
+}
+.chat-user {
+    border-left: 3px solid #3b82f6;
+}
+.chat-agent {
+    border-left: 3px solid #22c55e;
+}
+.chat-meta {
+    display: flex;
+    gap: var(--space-3);
+    align-items: baseline;
+    margin-bottom: var(--space-1);
+}
+.chat-agent-name {
+    font-weight: 600;
+    color: var(--foreground, #f8fafc);
+}
+.chat-time {
+    font-size: 0.72rem;
+    color: var(--gray-500, #64748b);
+}
+.chat-role {
+    font-size: 0.72rem;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(148, 163, 184, 0.15);
+    color: var(--gray-400, #94a3b8);
+}
+.chat-content {
+    color: var(--foreground, #f8fafc);
+    line-height: 1.5;
+    white-space: normal;
+    word-break: break-word;
+}
+
 /* Responsive Design */
 @media (max-width: 1024px) {
     .main-grid {

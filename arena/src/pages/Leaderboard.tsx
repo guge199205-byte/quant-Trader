@@ -12,6 +12,7 @@ interface RankRow {
   market: MarketId;
   agent: string;
   cash: number | null;
+  records: number;
   summary: NonNullable<OverviewRow['summary']>;
 }
 
@@ -30,7 +31,7 @@ export default function Leaderboard() {
     if (!ov) return out;
     for (const m of ['cn', 'hk', 'us'] as MarketId[]) {
       for (const r of ov.markets[m] ?? []) {
-        if (r.summary) out.push({ market: m, agent: r.name, cash: r.cash, summary: r.summary });
+        if (r.summary) out.push({ market: m, agent: r.name, cash: r.cash, records: r.records ?? 0, summary: r.summary });
       }
     }
     return out;
@@ -58,10 +59,15 @@ export default function Leaderboard() {
 
   const sortArrow = (k: SortKey) => (sortKey === k ? (sortDesc ? ' ▲' : ' ▼') : '');
 
-  // 顶部统计（6 卡，coke leaderboard-stats）
+  // 顶部统计（7 卡，coke leaderboard-stats）—— 币种分开：us 是 $，cn/hk 是 ¥，混加无意义
   const stats = useMemo(() => {
-    if (!rows.length) return { pool: null, best: null, trades: 0, avgRet: null, bestSharpe: null, bestWin: null, totalFee: null };
-    const pool = rows.reduce((s, r) => s + (r.summary.end_equity ?? 0), 0);
+    if (!rows.length) return { poolUsd: null, poolCny: null, best: null, trades: 0, avgRet: null, bestSharpe: null, bestWin: null, feeUsd: 0, feeCny: 0, marketCount: 0, agentCount: 0 };
+    const usd = (r: RankRow) => (r.market === 'us' ? r.summary.end_equity ?? 0 : 0);
+    const cny = (r: RankRow) => (r.market !== 'us' ? r.summary.end_equity ?? 0 : 0);
+    const feeUsd = (r: RankRow) => (r.market === 'us' ? r.summary.total_fee ?? 0 : 0);
+    const feeCny = (r: RankRow) => (r.market !== 'us' ? r.summary.total_fee ?? 0 : 0);
+    const poolUsd = rows.reduce((s, r) => s + usd(r), 0);
+    const poolCny = rows.reduce((s, r) => s + cny(r), 0);
     const best = [...rows].sort(
       (a, b) => (b.summary.total_return ?? -Infinity) - (a.summary.total_return ?? -Infinity),
     )[0];
@@ -74,8 +80,14 @@ export default function Leaderboard() {
     const bestWin = [...rows].sort(
       (a, b) => (b.summary.win_rate ?? -Infinity) - (a.summary.win_rate ?? -Infinity),
     )[0];
-    const totalFee = rows.reduce((s, r) => s + (r.summary.total_fee ?? 0), 0);
-    return { pool, best, trades, avgRet, bestSharpe, bestWin, totalFee };
+    return {
+      poolUsd, poolCny,
+      feeUsd: rows.reduce((s, r) => s + feeUsd(r), 0),
+      feeCny: rows.reduce((s, r) => s + feeCny(r), 0),
+      best, trades, avgRet, bestSharpe, bestWin,
+      marketCount: new Set(rows.map((r) => r.market)).size,
+      agentCount: new Set(rows.map((r) => r.agent)).size,
+    };
   }, [rows]);
 
   if (overview.error) {
@@ -107,9 +119,13 @@ export default function Leaderboard() {
 
       <div className="leaderboard-stats">
         <div className="stat-item">
-          <div className="stat-label">总资金池</div>
-          <div className="stat-value">{stats.pool != null ? `$${Math.round(stats.pool).toLocaleString('en-US')}` : '—'}</div>
-          <div className="stat-sub">3 市场 × 2 模型</div>
+          <div className="stat-label">模拟盘资金池</div>
+          <div className="stat-value" style={{ fontSize: 15 }}>
+            {stats.poolUsd != null
+              ? `$${Math.round(stats.poolUsd).toLocaleString('en-US')} / ¥${Math.round(stats.poolCny).toLocaleString('zh-CN')}`
+              : '—'}
+          </div>
+          <div className="stat-sub">{stats.marketCount} 市场 × {stats.agentCount} 模型 · 第 1 赛季回放</div>
         </div>
         <div className="stat-item">
           <div className="stat-label">最佳模型</div>
@@ -158,8 +174,10 @@ export default function Leaderboard() {
         </div>
         <div className="stat-item">
           <div className="stat-label">累计费用</div>
-          <div className="stat-value" style={{ fontSize: 16 }}>{fmtMoney(stats.totalFee ?? 0, '$', 0)}</div>
-          <div className="stat-sub">双边 0.03% + 滑点</div>
+          <div className="stat-value" style={{ fontSize: 15 }}>
+            {stats.poolUsd != null ? `$${Math.round(stats.feeUsd).toLocaleString('en-US')} / ¥${Math.round(stats.feeCny).toLocaleString('zh-CN')}` : '—'}
+          </div>
+          <div className="stat-sub">双边 0.03% + 滑点 · 分币种</div>
         </div>
       </div>
 
@@ -221,8 +239,10 @@ export default function Leaderboard() {
                     <td className="down">{s.biggest_loss != null ? fmtMoney(s.biggest_loss, meta.currency, 1) : '—'}</td>
                     <td className={pnlClass(s.avg_trade_pnl)}>{s.avg_trade_pnl != null ? fmtMoney(s.avg_trade_pnl, meta.currency, 1) : '—'}</td>
                     <td>
-                      <span className={`status-badge ${s.records > 0 ? 'active' : 'stopped'}`}>
-                        {s.records > 0 ? '运行中' : '待启动'}
+                      {/* 状态用行级 records(有交易记录=跑过); summary 里没有 records 键,
+                          之前误用 s.records 恒为 undefined → 全部显示"待启动" */}
+                      <span className={`status-badge ${r.records > 0 ? 'active' : 'stopped'}`}>
+                        {r.records > 0 ? '运行中' : '待启动'}
                       </span>
                     </td>
                   </tr>
@@ -237,7 +257,8 @@ export default function Leaderboard() {
       )}
 
       <div className="leaderboard-footer">
-        每 30 秒刷新 · 第 1 赛季 · DeepSeek V4 Flash vs V4 Pro
+        每 30 秒刷新 · 第 1 赛季(08-24~08-28 回放) ·{' '}
+        {[...new Set(rows.map((r) => r.agent.replace('deepseek-v4-', 'V4 ')))].sort().join(' · ')}
       </div>
     </div>
   );

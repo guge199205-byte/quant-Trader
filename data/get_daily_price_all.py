@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""三市场日线数据统一拉取（腾讯行情接口，免费，后复权）。
+"""三市场日线数据统一拉取。
 
 生成各市场 merged.jsonl（与交易系统格式一致）：
-  US: data/merged.jsonl          （us 前缀，如 usAAPL）
-  CN: data/A_stock/merged.jsonl  （sh/sz 前缀，如 sh600519）
-  HK: data/HK_stock/merged.jsonl （hk 前缀，如 hk00700）
+  US: data/merged.jsonl          （us 前缀，如 usAAPL，腾讯接口）
+  CN: data/A_stock/merged.jsonl  （sh/sz 前缀，如 sh600519，通达信 TdxAiData 实时源，
+                                  失败回退 8550 桥——2026-08-31 起不再用腾讯等第三方）
+  HK: data/HK_stock/merged.jsonl （hk 前缀，如 hk00700，腾讯接口，通达信暂无港股）
 
 用法: python data/get_daily_price_all.py [--start 2026-07-01]
 """
@@ -15,6 +16,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -43,7 +45,7 @@ MARKETS = {
            "suffixes": [".OQ", ".N"]},  # 纳斯达克/纽交所后缀
     "cn": {"symbols": all_sse_50_symbols, "out": "A_stock/merged.jsonl",
            "prefix": lambda s: s.replace(".SH", "").replace(".SZ", "").lower(),
-           "tz": "Asia/Shanghai"},
+           "tz": "Asia/Shanghai", "source": "tdx"},
     "hk": {"symbols": HK_SYMBOLS, "out": "HK_stock/merged.jsonl",
            "prefix": lambda s: f"hk{s.replace('.HK', '')}", "tz": "Asia/Hong_Kong"},
 }
@@ -92,6 +94,39 @@ def _parse_rows(rows: list) -> list:
     return bars
 
 
+def _to_native_bars(bars: list) -> list:
+    """统一 bars 数值为原生 float（桥返回字符串、TdxAiData 返回 np.float64）。"""
+    out = []
+    for b in bars:
+        try:
+            out.append({"date": b["date"], "open": float(b["open"]), "close": float(b["close"]),
+                        "high": float(b["high"]), "low": float(b["low"]),
+                        "volume": float(b["volume"])})
+        except (TypeError, ValueError, KeyError):
+            continue
+    return out
+
+
+def tdx_fetch(symbol: str, start: str, end: str) -> list:
+    """通达信 A股日线（sh600519 → 600519.SH）：TdxAiData 实时源 → 8550 桥回退。"""
+    from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
+    from agent_tools.datasources import tdx_aidata
+
+    code = symbol.strip().lower()
+    if code.startswith(("sh", "sz", "bj")) and len(code) >= 8:
+        code = f"{code[2:]}.{code[:2].upper()}"
+    try:
+        if tdx_aidata.available():
+            bars = tdx_aidata.get_klines(code, interval="daily", start=start, end=end)
+            if bars:
+                return _to_native_bars(bars)
+        return _to_native_bars(
+            [b for b in TdxBridgeBroker().get_klines(code, interval="daily")
+             if start <= (b.get("date") or "") <= end])
+    except Exception:
+        return []
+
+
 def to_merged_line(symbol: str, bars: list, tz: str) -> str:
     time_series = {}
     for b in bars:
@@ -119,32 +154,41 @@ def main() -> int:
     parser.add_argument("--markets", default="us,cn,hk", help="逗号分隔: us,cn,hk")
     args = parser.parse_args()
 
-    end = datetime.now().strftime("%Y-%m-%d")
     root = Path(__file__).resolve().parent
     total_ok = total_fail = 0
 
     for market in args.markets.split(","):
         cfg = MARKETS[market]
+        # "今天"用各市场本地时区（本机可能是 JST，不能依赖）
+        end = datetime.now(ZoneInfo(cfg["tz"])).strftime("%Y-%m-%d")
         out_file = root / cfg["out"]
         out_file.parent.mkdir(parents=True, exist_ok=True)
         ok = fail = 0
-        with out_file.open("w", encoding="utf-8") as f:
-            for symbol in cfg["symbols"]:
-                code = cfg["prefix"](symbol)
-                suffixes = cfg.get("suffixes")
-                try:
+        # 先全部拉取到内存，成功条数>0 才落盘——避免拉取失败时把已有 merged.jsonl 清空
+        lines: list[str] = []
+        for symbol in cfg["symbols"]:
+            code = cfg["prefix"](symbol)
+            suffixes = cfg.get("suffixes")
+            try:
+                if cfg.get("source") == "tdx":
+                    bars = tdx_fetch(symbol, args.start, end)
+                else:
                     bars = fetch_kline(code, args.start, end, suffixes)
-                    if not bars:
-                        print(f"⚠️  [{market}] {symbol}: 无数据")
-                        fail += 1
-                        continue
-                    f.write(to_merged_line(symbol, bars, cfg["tz"]) + "\n")
-                    ok += 1
-                except Exception as e:
-                    print(f"❌ [{market}] {symbol}: {e}")
+                if not bars:
+                    print(f"⚠️  [{market}] {symbol}: 无数据")
                     fail += 1
-                time.sleep(0.25)
-        print(f"\n[{market}] {ok} 成功 / {fail} 失败 -> {out_file}")
+                    continue
+                lines.append(to_merged_line(symbol, bars, cfg["tz"]) + "\n")
+                ok += 1
+            except Exception as e:
+                print(f"❌ [{market}] {symbol}: {e}")
+                fail += 1
+            time.sleep(0.25)
+        if ok > 0:
+            out_file.write_text("".join(lines), encoding="utf-8")
+            print(f"\n[{market}] {ok} 成功 / {fail} 失败 -> {out_file}")
+        else:
+            print(f"\n[{market}] {ok} 成功 / {fail} 失败 -> 全部失败，保留原文件不覆盖: {out_file}")
         total_ok += ok
         total_fail += fail
 

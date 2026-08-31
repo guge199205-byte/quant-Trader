@@ -589,6 +589,8 @@ export default function Live() {
       {/* 导航栏横线正下方的独立条：交易时段（北京时间）+ 交易规则 + 盘中状态 +
           最高/最低表演者。切换市场时随市场更新 */}
       <div className="mh-bar">
+        {/* 左：交易时段 + 规则 + 状态 + 最高/最低（单行，窄屏横向滚动） */}
+        <div className="mh-content">
         {(() => {
           const st = marketStatusOf(market, new Date());
           return (
@@ -620,6 +622,9 @@ export default function Live() {
             </>
           );
         })()}
+        </div>
+        {/* 右：市场切换 chips（固定靠右） */}
+        <MarketSwitcher market={market} onChange={switchMarket} />
       </div>
       <div className="live">
         {/* 顶部状态条：当日实时指数(2×3) + 市场切换 */}
@@ -648,7 +653,6 @@ export default function Live() {
                 </span>
               </div>
             )}
-            <MarketSwitcher market={market} onChange={switchMarket} />
           </div>
         </div>
 

@@ -84,8 +84,7 @@
   gap: 32px;
   align-items: center;
   flex-wrap: wrap;
-  /* 占满状态条全宽：否则 flex 下宽度=内容宽，chips 的 margin-left:auto
-     只推到内容右缘，不会贴到页面右侧 */
+  /* 占满状态条全宽，指数 2×3 grid 在其中伸展 */
   flex: 1;
 }
 
@@ -123,60 +122,8 @@
   gap: 0;
 }
 
-/* 中窄屏（<1200px）：状态条两列——指数 2×3 grid(左) + chips(右，贴右)。
-   最高/最低已移入上方交易时段条，状态条只剩指数和切换。
-   选择器加 .top-status-bar/.status-group 前缀提高特异性：vite 打包把
-   @media 重排到主定义之前，同特异性会被主定义覆盖 */
-@media (max-width: 1200px) {
-  .top-status-bar .status-group {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: 'index chips';
-    gap: 0 16px;
-    width: 100%;
-    align-items: center;
-  }
-  .status-group .index-bar {
-    grid-area: index;
-    min-width: 0;
-  }
-  .status-group .market-switcher {
-    grid-area: chips;
-    justify-self: end;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    max-width: 260px;
-  }
-  /* chips 按钮紧凑化（主定义 .chip padding 4/12 + 11px 在窄屏太宽） */
-  .status-group .market-switcher .chip {
-    padding: 3px 8px;
-    font-size: 10px;
-  }
-}
-
-/* 手机窄屏（<640px）：指数 2×3 与 chips 并排放不下（指数列被压窄）→
-   单列堆叠：指数整行，chips 下一行。
-   注意 .market-switcher 主定义有 margin-left:auto（0,2,0），这里必须用
-   .top-status-bar 前缀(0,3,0) 才能压住它，否则 chips 会被推右。 */
-@media (max-width: 640px) {
-  .top-status-bar .status-group {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      'index'
-      'chips';
-    gap: 4px 0;
-  }
-  /* 2×3 grid 单元格已等宽分配，无需最小宽；320px 时 3 列才放得下 */
-  .top-status-bar .status-group .index-item {
-    min-width: 0;
-  }
-  .top-status-bar .status-group .market-switcher {
-    justify-self: end;
-    margin-left: 0;
-    max-width: none;
-    justify-content: flex-start;
-  }
-}
+/* 状态条只装指数 2×3（chips 已上移到交易时段条），无需任何媒体查询：
+   .index-bar flex:1 自动填满全宽 */
 
 .index-item {
   display: flex;
@@ -239,16 +186,41 @@
   font-weight: 700;
 }
 
-/* 交易时段独立条（导航栏横线正下方，全宽）：单行紧凑、无底色、文字居中 */
+/* 交易时段独立条（导航栏横线正下方，全宽）：交易时段 + 规则 + 状态 +
+   最高/最低(左，单行窄屏横滑) + 市场切换 chips(右)。
+   与指数 2×3 区块合计共 2 行（本条 1 行 + 指数区 2 行） */
 .mh-bar {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: center;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
   padding: 4px 20px;
   font-size: 11px;
   font-family: 'Courier New', monospace;
+}
+
+/* 内容单行：放得下时居中(safe)，放不下时左起横向滚动（终端风，同 ticker） */
+.mh-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+  overflow-x: auto;
+  justify-content: safe center;
+  scrollbar-width: none;
+}
+
+.mh-content::-webkit-scrollbar { display: none; }
+
+.mh-bar .market-switcher {
+  flex-shrink: 0;
+}
+
+/* chips 紧凑化：位于薄时段条内，保持单行高度（原 11px/4-12 太高） */
+.mh-bar .market-switcher .chip {
+  padding: 3px 8px;
+  font-size: 10px;
 }
 
 @media (max-width: 640px) {
@@ -300,10 +272,7 @@
   color: #666;
 }
 
-/* 市场切换（移入 status-group 后保持右对齐） */
-.status-group .market-switcher {
-  margin-left: auto;
-}
+/* 市场切换已移入交易时段条(mh-bar)右侧，固定靠右 */
 
 /* ---------- 主区左右分栏 ---------- */
 

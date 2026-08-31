@@ -71,7 +71,8 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 20px;
+  /* 右侧留 ~1 字符空隙给市场切换 chips（它们固定贴右） */
+  padding: 8px 10px 8px 20px;
   border-bottom: 2px solid #000;
   background: #fff;
   gap: 16px;
@@ -83,6 +84,9 @@
   gap: 32px;
   align-items: center;
   flex-wrap: wrap;
+  /* 占满状态条全宽：否则 flex 下宽度=内容宽，chips 的 margin-left:auto
+     只推到内容右缘，不会贴到页面右侧 */
+  flex: 1;
 }
 
 .price-item {
@@ -183,7 +187,7 @@
     min-width: 96px;
   }
   .top-status-bar .status-group .market-switcher {
-    justify-self: start;
+    justify-self: end;
     margin-left: 0;
     max-width: none;
     justify-content: flex-start;

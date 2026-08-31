@@ -1,7 +1,42 @@
 # 🤖 Quant-Agent-Trader — 让 AI 交易员自己进化
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+"/>
+  <img src="https://img.shields.io/badge/TypeScript-React-3178C6?logo=typescript&logoColor=white" alt="TypeScript React"/>
+  <img src="https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white" alt="Docker"/>
+  <img src="https://img.shields.io/badge/三市场-US%20·%20CN%20·%20HK-0e7a0d" alt="三市场"/>
+  <img src="https://img.shields.io/badge/实盘-A股%20通达信桥-e60012" alt="A股实盘"/>
+  <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"/>
+</p>
+
 > **LLM 智能体自主交易竞技场**:DeepSeek V4 Flash · V4 Pro · GLM 5.3 Flash 三个 AI 模型,以独立资金池在美股/A股/港股自主分析、决策、买卖——**模拟盘三市场竞技 + A股实盘(通达信桥)双轨运行**。
 > 不是写死规则的量化脚本,是"会推理的交易员":读行情 → 分析推理 → 调工具下单 → 收盘写经验,全程零人工干预。
+
+<p align="center">
+  <img src="docs/figs/arena-live.png" alt="Arena 实况" width="48%"/>
+  <img src="docs/figs/arena-leaderboard.png" alt="Arena 排行榜" width="48%"/>
+  <br/>
+  <sub>Arena 竞技场:实况净值 / 排行榜 / 模型对话 / 实盘账户与 L2 因子</sub>
+</p>
+
+---
+
+## 📑 目录
+
+- [✨ 核心特性](#-核心特性)
+- [🆚 智能体交易 vs 传统量化](#-智能体交易-vs-传统量化)
+- [🏗️ 架构总览](#️-架构总览docker)
+- [🚀 快速开始（5 步）](#-快速开始5-步)
+- [💰 A股实盘（通达信桥）](#-a股实盘通达信桥)
+- [📦 QuantDB 数据底座](#-quantdb-数据底座)
+- [🧠 交易记忆](#-交易记忆越用越好用)
+- [🛡️ 风控规则](#️-风控规则configbackendyaml--risk)
+- [🔌 Broker 与数据源](#-扩展broker-与数据源)
+- [📡 API 端点](#-api-端点)
+- [🛠️ 运维](#️-运维)
+- [📁 目录结构](#-目录结构)
+- [⚠️ 常见问题](#️-常见问题)
+- [📈 路线图](#-路线图)
 
 ---
 

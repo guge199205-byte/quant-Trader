@@ -4,12 +4,12 @@
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+"/>
   <img src="https://img.shields.io/badge/TypeScript-React-3178C6?logo=typescript&logoColor=white" alt="TypeScript React"/>
   <img src="https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white" alt="Docker"/>
-  <img src="https://img.shields.io/badge/三市场-US%20·%20CN%20·%20HK-0e7a0d" alt="三市场"/>
+  <img src="https://img.shields.io/badge/多市场-US%20·%20CN%20·%20HK-0e7a0d" alt="多市场"/>
   <img src="https://img.shields.io/badge/实盘-A股%20通达信桥-e60012" alt="A股实盘"/>
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"/>
 </p>
 
-> **LLM 智能体自主交易竞技场**:任意大模型(当前在跑 DeepSeek V4 Flash · V4 Pro · GLM 5.3 Flash,OpenAI 兼容 API 即可接入 **Claude / GPT / Qwen / Gemini** 等)以独立资金池在美股/A股/港股自主分析、决策、买卖——**模拟盘三市场竞技 + A股实盘(通达信桥)双轨运行**。
+> **LLM 智能体自主交易竞技场**:任意大模型(当前在跑 DeepSeek V4 Flash · V4 Pro · GLM 5.3 Flash,OpenAI 兼容 API 即可接入 **Claude / GPT / Qwen / Gemini** 等)以独立资金池在任意市场(当前 **美股 / A股 / 港股**,`backend.yaml` 加一条即可扩展)自主分析、决策、买卖——**模拟盘多市场竞技 + A股实盘(通达信桥)双轨运行**。
 > 不是写死规则的量化脚本,是"会推理的交易员":读行情 → 分析推理 → 调工具下单 → 收盘写经验,全程零人工干预。
 
 <p align="center">
@@ -44,7 +44,7 @@
 
 | 能力 | 说明 |
 |------|------|
-| 🇺🇸🇨🇳🇭🇰 **三市场模拟盘** | US（102 只）/ CN（上证50）/ HK 同时回放竞技,各自独立 MCP 服务组与数据目录 |
+| 🌐 **多市场模拟盘** | US（102 只）/ CN（上证50）/ HK 同时回放竞技,各自独立 MCP 服务组与数据目录;`config/backend.yaml` → `markets` 加一条 + 一个数据目录即可扩展任意市场(每市场独立 agent 配置/基准/币种) |
 | 💰 **A股实盘(通达信桥)** | 桥 8550 实盘下单,首单 08-31 成交 5 只(中际旭创/宁德时代/生益科技/万华化学/生益电子),实时持仓/成交/净值全链路打通 |
 | 🧠 **多模型公平对决** | 任意 OpenAI 兼容模型:当前 DeepSeek V4 Flash · V4 Pro · **GLM 5.3 Flash** 同数据、同工具集、同起点资金竞技,排行榜见分晓;`configs/*.json` 加一条 + `.env` 填 key 即可接入 **Claude / GPT / Qwen / Gemini** |
 | 📊 **分账制实盘子账户** | 每 agent ¥10 万虚拟额度独立建仓,买入按额度分配、卖出释放,盈亏归属清晰 |
@@ -56,7 +56,7 @@
 | 🛡️ **风控网关** | 单笔/持仓限额、日亏熔断、现金保留、黑名单,三条交易路径单点拦截 |
 | 🔌 **Broker 可插拔** | sandbox(模拟盘) / tdx(通达信桥,实盘在用) / futu / tiger / ibkr,`backend.yaml` 一键切换 |
 | ⚡ **双前端实时化** | 实时看板(8080)+ Arena 竞技场(8092,终端风),交易结果秒级可见 |
-| 🎨 **A股配色** | 全局红涨绿跌,三市场统一 |
+| 🎨 **A股配色** | 全局红涨绿跌,多市场统一 |
 
 ---
 
@@ -172,7 +172,7 @@ docker compose --profile agents run --rm -e INIT_DATE=2026-08-28 -e END_DATE=202
 | dsh Web | http://localhost:3081 | agent 会话/工具调用可视化 |
 
 > 💡 **A股实盘是可选功能**:需要一台 Windows 交易机(装通达信客户端)+ 通达信交易桥,
-> 安装 3 步见 [`brokers/tdx-bridge/README.md`](brokers/tdx-bridge/README.md)。没桥也能完整跑模拟盘三市场竞技。
+> 安装 3 步见 [`brokers/tdx-bridge/README.md`](brokers/tdx-bridge/README.md)。没桥也能完整跑模拟盘多市场竞技。
 
 ---
 
@@ -298,7 +298,7 @@ class MySource(DataSource):
 
 | 端点 | 说明 |
 |------|------|
-| `GET /api/overview` | 三市场 agent 聚合（含 summary 扩展指标、最新日期） |
+| `GET /api/overview` | 多市场 agent 聚合（含 summary 扩展指标、最新日期） |
 | `GET /api/metrics` | 服务健康 + 各市场统计 + 最近交易时间 |
 | `GET /api/status` | 服务健康 + 当前运行状态 |
 | `GET /api/config` | 后端配置（脱敏） |
@@ -344,8 +344,8 @@ class MySource(DataSource):
 | `scripts/live_hourly_analysis.py` | 盘中分析（9:30/整点/波动触发）+ 净值采样;`--record-only` 只采样,`--force` 忽略时段 |
 | `scripts/live_trade_picks.py` | 实盘选股 + 桥下单（分账买入/卖出） |
 | `scripts/live_ledger.py` | 分账账本（额度分配/释放,持仓归属） |
-| `scripts/bootstrap_data.py` | **新用户一键初始化**:免费接口(腾讯/Yahoo)拉三市场日线,无需数据 Key |
-| `scripts/sync_from_quantmind.py` | 生产:从本机量化仓库同步三市场价格(覆盖前备份) |
+| `scripts/bootstrap_data.py` | **新用户一键初始化**:免费接口(腾讯/Yahoo)拉多市场日线,无需数据 Key |
+| `scripts/sync_from_quantmind.py` | 生产:从本机量化仓库同步多市场价格(覆盖前备份) |
 | `scripts/backfill_us_agent.sh` | 补跑 US agent 缺失交易日 |
 
 ### 回退 systemd
@@ -395,14 +395,14 @@ docs/                 # 规划与架构文档
 
 ## 📈 路线图
 
-- [x] 三市场并行交易（US + CN + HK 独立 MCP 组）
+- [x] 多市场并行交易（US + CN + HK 独立 MCP 组）
 - [x] Docker 化部署 + 宿主 cron 探活自愈
 - [x] QuantDB 数据底座（十年 A股数据 + 315 维因子,duckdb 直查）
 - [x] 免费一键初始化脚本（bootstrap_data.py,新用户零 Key 起步）
 - [x] 交易记忆系统（每市场独立,自动归档）
 - [x] 风控网关（单笔/持仓/熔断/黑名单）
 - [x] Broker + 数据源抽象层
-- [x] 三模型对决（DeepSeek V4 Flash / V4 Pro / GLM 5.3 Flash）
+- [x] 多模型对决（DeepSeek V4 Flash / V4 Pro / GLM 5.3 Flash）
 - [x] 唯一前端 Arena 竞技场（8092,nginx 反代 + token 注入）
 - [x] 交易所设置页（TDX 桥配置 + 券商凭据 + 实时交易状态）
 - [x] **A股实盘首单**（通达信桥 8550,08-31 成交 5 只）

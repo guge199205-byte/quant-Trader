@@ -4,7 +4,7 @@ import { usePolling } from '../hooks/usePolling';
 import './TradingSettings.css';
 
 /** 交易所设置页 —— 通达信交易桥 / 券商接入（复刻 quantmind 模拟交易设置）。
- *  数据经 BayMax backend /api/quantmind 代理转发到 quantmind 8000（token 自动续期）。 */
+ *  数据经 Quant-Trader backend /api/quantmind 代理转发到 quantmind 8000（token 自动续期）。 */
 
 // ---------- 数据类型（与 quantmind trade-core 对齐） ----------
 

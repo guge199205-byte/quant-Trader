@@ -1,4 +1,4 @@
-"""BayMax-Trader API 服务（FastAPI，默认端口 8090）。
+"""Quant-Trader API 服务（FastAPI，默认端口 8090）。
 
 核心能力：
 - /api/data/* 实时代理：优先读项目根 data/（实时交易数据）
@@ -30,7 +30,7 @@ from backend.config import (
 from backend.services import agent_data
 from prompts.analysis_modes import MODES, load_selection, save_selection
 
-app = FastAPI(title="BayMax-Trader API", version="0.1.0")
+app = FastAPI(title="Quant-Trader API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -407,7 +407,7 @@ def live_ledger():
 # ---------- 实盘同步数据（quantmind PG，同机通达信实盘账户） ----------
 # quantmind 的 trade 服务实时采集通达信桥账户/持仓（real_account_snapshots，每 30s）、
 # 日终账本（real_account_ledger_daily_snapshots）与 L2 因子（tdx_l2_snapshot，每 60s）。
-# BayMax 只读同步展示与分析用；连接失败降级返回错误，不影响主链路。
+# Quant-Trader 只读同步展示与分析用；连接失败降级返回错误，不影响主链路。
 # PG 连接配置在 .env：QM_PG_HOST/PORT/DB/USER/PASSWORD（默认 172.17.0.1:5432）。
 
 _QM_PG = None

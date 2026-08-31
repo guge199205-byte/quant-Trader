@@ -1,4 +1,4 @@
-# BayMax-Trader 后端配置
+# Quant-Trader 后端配置
 # 由 backend/config.py 加载；密钥引用 .env，不在此处存放
 
 server:

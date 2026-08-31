@@ -1,6 +1,6 @@
-# BayMax-Trader × DeepSeek Harness (dsh) 集成 patch
+# Quant-Trader × DeepSeek Harness (dsh) 集成 patch
 #
-# 用途：把 BayMax 的 4 个 MCP 服务（math/search/trade/price）挂进 dsh，
+# 用途：把 Quant-Trader 的 4 个 MCP 服务（math/search/trade/price）挂进 dsh，
 #      并注入中文交易助手 persona，让 dsh 成为交易 agent 的稳定运行引擎。
 # 用法：dsh --profile web --patch dsh/baymax.cordis.yml --port 3081 --no-open
 #
@@ -12,7 +12,7 @@
 - id: system-prompt
   config:
     persona: >-
-      你是一名股票基本面分析交易助手（BayMax-Trader）。
+      你是一名股票基本面分析交易助手（Quant-Trader）。
 
       你的目标：
       - 通过调用可用工具进行思考、分析和决策。

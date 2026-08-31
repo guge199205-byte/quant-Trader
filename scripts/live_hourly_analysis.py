@@ -133,7 +133,7 @@ def build_rows(broker, positions: list, names: dict) -> list:
 
 
 def load_l2_factors(codes: list[str]) -> dict:
-    """从 BayMax api（nginx 8092 反代，自动注入 token）读 L2 因子，
+    """从 Quant-Trader api（nginx 8092 反代，自动注入 token）读 L2 因子，
     按持仓 code（后缀式，如 300308.SZ）匹配最近一条；失败返回空 dict（不阻塞分析）。"""
     import requests
 

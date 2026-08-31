@@ -31,7 +31,7 @@ Layout = Literal["partition", "symbol", "single"]
 MAX_PREVIEW_ROWS = 200
 MAX_SYMBOL_CHOICES = 500
 
-# 状态文件（/app/data 挂载，宿主 BayMax-Trader/data/ 可见）：
+# 状态文件（/app/data 挂载，宿主 Quant-Trader/data/ 可见）：
 # 记录各市场用户自定义的数据根目录
 _STATE_FILE = Path(os.getenv("DATA_PLATFORM_STATE", "/app/data/data_platform.json"))
 

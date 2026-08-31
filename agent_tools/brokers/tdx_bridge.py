@@ -1,4 +1,4 @@
-"""通达信（TDX）桥 Broker：BayMax 直连 8550 桥（Windows 交易机）实盘下单。
+"""通达信（TDX）桥 Broker：Quant-Trader 直连 8550 桥（Windows 交易机）实盘下单。
 
 桥协议（brokers/tdx-bridge/src/api/routes.py，实测）：
   POST /api/v1/plans/execute   下单（TradePlan{plan_id,account,account_type,orders[]}）

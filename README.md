@@ -126,7 +126,7 @@ python3 scripts/sync_from_quantmind.py                          # 生产:从量�
 
 | 项目 | 定位 | 仓库 |
 |------|------|------|
-| **QuantMind 量化平台** | 量化数据与因子平台:**QuantDB 数据底座**(A股十年数据 + 315 维 AI 因子)、通达信桥实盘账本同步、RD-Agent 因子挖掘。与 BayMax 分工协作:**BayMax 盯盘→决策→执行,QuantMind 数据→因子→账本**,两仓配合即全栈自主交易闭环 | [gitee.com/qusong0627/QuantMind](https://gitee.com/qusong0627/QuantMind) |
+| **QuantMind 量化平台** | 量化数据与因子平台:**QuantDB 数据底座**(A股十年数据 + 315 维 AI 因子)、通达信桥实盘账本同步、RD-Agent 因子挖掘。与 Quant-Trader 分工协作:**Quant-Trader 盯盘→决策→执行,QuantMind 数据→因子→账本**,两仓配合即全栈自主交易闭环 | [gitee.com/qusong0627/QuantMind](https://gitee.com/qusong0627/QuantMind) |
 | **QuantDB 数据底座** | QuantMind 内置的付费 CDN 量化数据源,按数据集同步到本地 parquet;本仓库已预留只读挂载点 `/data/quantdb`,未订阅时自动降级(免费接口兜底) | 见 QuantMind 仓库 |
 
 ## 🛠️ 运维

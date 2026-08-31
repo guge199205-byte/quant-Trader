@@ -1,6 +1,6 @@
-# BayMax 竞技场升级总体规划（NOF1 思路 + coke-nof1 前端）
+# Quant-Trader 竞技场升级总体规划（NOF1 思路 + coke-nof1 前端）
 
-> 2026-08-30 编制。目标：把 BayMax-Trader 从"单模型三市场手动回放"升级为
+> 2026-08-30 编制。目标：把 Quant-Trader 从"单模型三市场手动回放"升级为
 > "多模型同池竞技 + 现代竞技场前端"，对标 NOF1.AI Alpha Arena。
 
 ---

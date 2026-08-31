@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""更新 BayMax 全部价格数据与 benchmark（免费接口，无 key 依赖）。
+"""更新 Quant-Trader 全部价格数据与 benchmark（免费接口，无 key 依赖）。
 
 - 美股（NASDAQ100 + QQQ）: Yahoo Finance chart API（需 UA 头，无通达信美股源）
 - A股（上证50 + 上证50指数 sh000016）: 通达信 TdxAiData 实时源（前复权，批量；

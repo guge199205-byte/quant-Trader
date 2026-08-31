@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从本机 quantmind 数据仓库同步 BayMax 价格数据（数据源切换：本地为准）。
+"""从本机 quantmind 数据仓库同步 Quant-Trader 价格数据（数据源切换：本地为准）。
 
 - CN（quantdb daily_backward 后复权）:
     data/A_stock/daily_prices_sse_50.csv      (agent 读)

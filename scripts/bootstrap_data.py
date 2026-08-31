@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""一键初始化 BayMax 价格数据（新用户部署 / 重建数据用）。
+"""一键初始化 Quant-Trader 价格数据（新用户部署 / 重建数据用）。
 
 三个市场 + 两个基准，全部走免费接口、不需要任何数据源 Key，
 输出与生产环境（scripts/sync_from_quantmind.py）完全一致的格式：

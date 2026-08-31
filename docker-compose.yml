@@ -1,4 +1,4 @@
-# BayMax-Trader 容器化编排
+# Quant-Trader 容器化编排
 # 端口布局（与 scripts/alert.sh 探活一致）：
 #   mcp-us: 8100-8104   mcp-cn: 8200-8204   mcp-hk: 8300-8304
 #   api: 8091   dsh: 3081   ui: 8888

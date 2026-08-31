@@ -1,4 +1,4 @@
-"""BayMax-Trader 后端配置加载。
+"""Quant-Trader 后端配置加载。
 
 从 config/backend.yaml 读取后端配置，并合并 .env 中的密钥引用。
 使用 yaml.safe_load 保证安全加载。

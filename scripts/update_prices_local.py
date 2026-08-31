@@ -2,7 +2,7 @@
 """US 价格更新：本机 quantus 数据仓库为主 + Yahoo 补缺口。
 
 - quantus（/home/zbox/projects/quantmind/data/quantus/1_kline_data/daily_forward）
-  覆盖 BayMax 102 只中的 88 只（Hive 分区 dt=YYYYMMDD，裸 ticker）
+  覆盖 Quant-Trader 102 只中的 88 只（Hive 分区 dt=YYYYMMDD，裸 ticker）
 - 其余 13 只（含 QQQ benchmark）用 Yahoo chart API 补（降频防限流）
 
 输出：data/daily_prices_{SYM}.json、data/Adaily_prices_QQQ.json（AlphaVantage 格式）

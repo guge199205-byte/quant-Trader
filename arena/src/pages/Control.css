@@ -102,3 +102,42 @@
   color: #10a37f;
   font-weight: 700;
 }
+
+/* ---------- 并列布局（用户要求：整行竖排改为多列 grid） ---------- */
+
+.control-grid {
+  display: grid;
+  gap: 16px;
+  align-items: start;
+  margin-bottom: 16px;
+}
+
+/* 交易所状态 + A股实盘分账：两列 */
+.control-grid-2 {
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+}
+
+/* 三市场（cn/hk/us）：三列并排 */
+.control-grid-3 {
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+}
+
+.control-grid .mk-section {
+  margin-bottom: 0;
+}
+
+/* grid 卡片内表格：紧凑排版（3 列并排后列宽有限） */
+.mk-table .data {
+  font-size: 11px;
+}
+
+.mk-table .data th,
+.mk-table .data td {
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+
+.mk-table .data th:first-child,
+.mk-table .data td:first-child {
+  padding-left: 12px;
+}

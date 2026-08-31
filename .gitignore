@@ -110,3 +110,4 @@ trade_cache.sqlite
 releases/
 arena/shot_live.mjs
 arena/shot_*.mjs
+dsh/root-dsh/

@@ -104,8 +104,9 @@ export default function Control() {
         ))}
       </div>
 
-      {/* 交易所状态 */}
-      <section className="mk-section" style={{ border: '2px solid #000', padding: '10px 14px', marginBottom: 18 }}>
+      {/* 交易所状态 + A股实盘分账：两列并排 */}
+      <div className="control-grid control-grid-2">
+      <section className="mk-section" style={{ border: '2px solid #000', padding: '10px 14px' }}>
         <div className="mk-head" style={{ marginBottom: 8 }}>
           <span>🏦 交易所状态</span>
           <span className="mk-count">
@@ -161,7 +162,7 @@ export default function Control() {
               {' '}· {liveAcct.data.positions.length} 只持仓 · 实盘分账
             </span>
           </div>
-          <div className="table-wrap">
+          <div className="table-wrap mk-table">
             <table className="data">
               <thead>
                 <tr>
@@ -199,8 +200,10 @@ export default function Control() {
           </div>
         </section>
       )}
+      </div>
 
-      {/* 三市场区块 */}
+      {/* 三市场区块：cn/hk/us 三列并排 */}
+      <div className="control-grid control-grid-3">
       {(['cn', 'hk', 'us'] as MarketId[]).map((m) => {
         const rows = overview.data?.markets[m] ?? [];
         const running = rows.filter((r) => r.summary).length;
@@ -214,7 +217,7 @@ export default function Control() {
             {rows.length === 0 ? (
               <div className="mk-empty">暂无 agent 数据</div>
             ) : (
-              <div className="table-wrap">
+              <div className="table-wrap mk-table">
                 <table className="data">
                   <thead>
                     <tr>
@@ -259,6 +262,7 @@ export default function Control() {
           </section>
         );
       })}
+      </div>
     </div>
   );
 }

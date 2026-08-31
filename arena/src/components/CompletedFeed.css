@@ -99,10 +99,5 @@
   font-weight: 700;
 }
 
-.feed-pnl.up {
-  color: #0a7d3d;
-}
-
-.feed-pnl.down {
-  color: #c0281f;
-}
+/* 盈亏色跟随全局 .up/.down（A股习惯：盈利红 #e0483e、亏损绿 #12b886）——
+   此前本地 override 用的是国际惯例（盈绿亏红），与全局相反，已删除 */

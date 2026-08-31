@@ -162,6 +162,10 @@ services:
       # 交易技能（quantdb 分析/复盘/推荐/新闻情绪/券商 OpenAPI 等 12 个，
       # 来自 quantmind/skills 的规范副本；dsh 用户级技能根目录 = ~/.dsh/skills）
       - ./dsh/skills:/root/.dsh/skills
+      # /root/.dsh 持久化（storages=workspace/会话数据, profiles=配置）——
+      # 2026-08-31 曾因容器重建未持久化而丢失全部会话；嵌套挂载下
+      # /root/.dsh/skills 子挂载优先，仍指向 ./dsh/skills
+      - ./dsh/root-dsh:/root/.dsh
       # 总管技能执行环境（可选增强，客户无 quantmind 时 dsh 本体仍可用）：
       #   ① /quantmind 只读挂载 → 技能契约脚本源 `/quantmind/skills/<name>/scripts/`
       #   ② /data 读写 → 报告落盘（quantmind 股票报告页可见）

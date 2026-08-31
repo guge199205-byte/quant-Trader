@@ -17,7 +17,7 @@ export function MarketSwitcher({
   onChange: (m: MarketId) => void;
 }) {
   return (
-    <div style={{ display: 'flex', gap: 0 }}>
+    <div className="market-switcher" style={{ display: 'flex', gap: 0 }}>
       {(['cn', 'hk', 'us'] as MarketId[]).map((m) => (
         <button
           key={m}

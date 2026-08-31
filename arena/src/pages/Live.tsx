@@ -62,6 +62,56 @@ interface TradeEvt {
   notional: number | null;
 }
 
+// ---------- 市场交易时段（北京时间）与交易规则 ----------
+
+/** 美股交易时段随夏令时切换（美国 3 月第二个周日 ~ 11 月第一个周日）。 */
+const usDstActive = (d: Date): boolean => {
+  const y = d.getFullYear();
+  const secondSun = (m: number) => {
+    const x = new Date(y, m, 1);
+    while (x.getDay() !== 0) x.setDate(x.getDate() + 1);
+    x.setDate(x.getDate() + 7);
+    return x;
+  };
+  return d >= secondSun(2) && d < secondSun(10);
+};
+
+const MARKET_HOURS: Record<MarketId, { rule: string }> = {
+  cn: { rule: 'T+1 · 主板 ±10% 涨跌停' },
+  hk: { rule: 'T+0 · 无涨跌停' },
+  us: { rule: 'T+0 · 无涨跌停' },
+};
+
+/** 交易时段标签（北京时间）：US 按当天是否夏令时切换。 */
+const hoursLabelOf = (market: MarketId, now: Date): string => {
+  if (market === 'cn') return '09:30–11:30 / 13:00–15:00';
+  if (market === 'hk') return '09:30–12:00 / 13:00–16:00';
+  return usDstActive(now) ? '夏令时 21:30–04:00(次日)' : '冬令时 22:30–05:00(次日)';
+};
+
+/** 当前盘中状态（北京时间）：交易中/午休/未开盘/已收盘/休市。 */
+const marketStatusOf = (market: MarketId, now: Date): { text: string; open: boolean } => {
+  const bj = new Date(now.getTime() + (480 - now.getTimezoneOffset()) * 60000); // 东八区
+  const mins = bj.getHours() * 60 + bj.getMinutes();
+  const wd = bj.getDay();
+  if (wd === 0 || wd === 6) return { text: '休市', open: false };
+  const inRange = (a: number, b: number) => mins >= a && mins < b;
+  if (market === 'cn') {
+    if (inRange(9 * 60 + 30, 11 * 60 + 30) || inRange(13 * 60, 15 * 60)) return { text: '交易中', open: true };
+    if (inRange(11 * 60 + 30, 13 * 60)) return { text: '午休', open: false };
+    return { text: mins < 9 * 60 + 30 ? '未开盘' : '已收盘', open: false };
+  }
+  if (market === 'hk') {
+    if (inRange(9 * 60 + 30, 12 * 60) || inRange(13 * 60, 16 * 60)) return { text: '交易中', open: true };
+    if (inRange(12 * 60, 13 * 60)) return { text: '午休', open: false };
+    return { text: mins < 9 * 60 + 30 ? '未开盘' : '已收盘', open: false };
+  }
+  const openAt = usDstActive(bj) ? 21 * 60 + 30 : 22 * 60 + 30;
+  const closeAt = usDstActive(bj) ? 4 * 60 : 5 * 60; // 次日凌晨（北京时间）
+  if (mins >= openAt || mins < closeAt) return { text: '交易中', open: true };
+  return { text: '已收盘', open: false };
+};
+
 const benchLabelOf = (market: MarketId): string =>
   market === 'us' ? 'NDX100' : market === 'cn' ? 'SSE50' : 'HSI';
 
@@ -575,8 +625,21 @@ export default function Live() {
               </span>
             </div>
           </div>
+          {/* 交易时段（北京时间）+ 交易规则 + 盘中状态 */}
+          {(() => {
+            const st = marketStatusOf(market, new Date());
+            return (
+              <div className="market-hours">
+                <span className="mh-label">交易时间(北京)</span>
+                <span className="mh-hours">{hoursLabelOf(market, new Date())}</span>
+                <span className={`mh-status ${st.open ? 'open' : 'closed'}`}>{st.text}</span>
+                <span className="mh-divider">·</span>
+                <span className="mh-rule">{MARKET_HOURS[market].rule}</span>
+              </div>
+            );
+          })()}
+          <MarketSwitcher market={market} onChange={switchMarket} />
         </div>
-        <MarketSwitcher market={market} onChange={switchMarket} />
       </div>
 
       {/* 持仓股票滚动价格条（hover 暂停；速度随持仓数自适应） */}

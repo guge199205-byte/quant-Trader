@@ -686,6 +686,49 @@ INDEX_DEFS: tuple = (
     ("000688.SH", "科创50"),
 )
 
+# 全球指数（腾讯 qt.gtimg.cn 实时快照）：US/HK 顶部行情条。
+# 通达信桥/TdxAiData 均不提供全球指数，腾讯公开接口免费可用。
+TENCENT_INDICES: dict = {
+    "us": [("usDJI", "道琼斯"), ("usIXIC", "纳斯达克"), ("usINX", "标普500")],
+    "hk": [("hkHSI", "恒生指数"), ("hkHSCEI", "国企指数"), ("hkHSTECH", "恒生科技")],
+}
+
+
+def _tencent_indices(market: str) -> list:
+    """腾讯实时快照 → indices 行：v_usDJI="200~道琼斯~.DJI~最新~昨收~开~…~时间~涨跌~涨跌幅%…"。
+
+    字段：f[1] 名称、f[2] 代码、f[3] 最新价、f[4] 昨收、f[30] 时间、f[32] 涨跌幅(%)。
+    """
+    import requests
+
+    codes = ",".join(c for c, _ in TENCENT_INDICES[market])
+    try:
+        resp = requests.get(f"https://qt.gtimg.cn/q={codes}", timeout=8)
+        resp.raise_for_status()
+        text = resp.content.decode("gbk", errors="ignore")
+    except Exception:  # noqa: BLE001
+        return []
+    rows = []
+    for line in text.splitlines():
+        line = line.strip()
+        if "=" not in line:
+            continue
+        payload = line.split("=", 1)[1].strip('";')
+        f = payload.split("~")
+        if len(f) < 35:
+            continue
+        try:
+            last = float(f[3])
+            chg = float(f[32])
+        except (TypeError, ValueError):
+            continue
+        if last <= 0:
+            continue
+        name = next((n for c, n in TENCENT_INDICES[market] if c in line), f[1])
+        rows.append({"code": f[2], "name": name, "last": round(last, 2),
+                     "change_pct": round(chg, 2)})
+    return rows
+
 
 def _bench_last_two(path: Path):
     """基准文件（AlphaVantage 格式）最后两根日线 → 单元素 indices 列表或 None。
@@ -745,9 +788,17 @@ def live_indices(market: str = "cn"):
             return {"success": True, "data": {"indices": fallback}}
         return {"success": True, "data": {"indices": []}}
     if market == "us":
+        rows = _tencent_indices("us")
+        if rows:
+            return {"success": True, "data": {"indices": rows}}
         fb = _bench_last_two(root / "benchmark_nasdaq100.json")
         if fb:
             return {"success": True, "data": {"indices": fb}}
+        return {"success": True, "data": {"indices": []}}
+    if market == "hk":
+        rows = _tencent_indices("hk")
+        if rows:
+            return {"success": True, "data": {"indices": rows}}
         return {"success": True, "data": {"indices": []}}
     return {"success": True, "data": {"indices": []}}
 

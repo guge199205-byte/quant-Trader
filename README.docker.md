@@ -33,7 +33,9 @@ agent-us / agent-cn / agent-hk：按市场独立容器，profile: agents
 ```bash
 cd /path/to/quant-agent-trader
 
-# 启动全部常驻服务（mcp×3 + api + dsh + ui）
+# 首次先构建（ui-arena 多阶段编译前端,无需宿主 Node）
+docker compose up -d --build
+# 之后日常启动
 docker compose up -d
 
 # 查看状态 / 日志
@@ -64,7 +66,7 @@ docker compose down
 | api | 8091 | FastAPI 后端 API（数据/鉴权，前端共用） |
 | ui-arena | 8092 | Arena 竞技场（唯一前端，nginx 反代 8091 + envsubst token 注入） |
 | dsh | 3081 | DeepSeek Harness（绑定宿主 127.0.0.1，本机直连） |
-| dsh-proxy | 3081 (LAN IP) | dsh 局域网代理（nginx basic auth，密码在 `dsh/proxy/dsh.htpasswd`，改完重启容器） |
+| dsh-proxy | 3081 (DSH_BIND_IP) | dsh 访问代理（默认启动,绑 docker 网关 172.17.0.1:3081 供 8093 转发;局域网共享设 `DSH_BIND_IP=<LAN IP>`;basic auth 密码 admin/admin123 容器内自动生成） |
 | ui | 8887 | docs 静态快照（8888/8889 被占） |
 
 与 `scripts/alert.sh` 的探活端口一致（api:8091 mcp_us:8100 mcp_cn:8200 mcp_hk:8300 dsh:3081），宿主 cron 告警无需改动。
@@ -73,12 +75,16 @@ docker compose down
 
 运行时数据 bind-mount 到宿主（宿主 cron 的 backup.sh / alert.sh 照常工作）：
 
-- `data/` `logs/` `configs/` `trade_cache.sqlite` — 全挂载
+- `data/` `logs/` `configs/` — 全挂载
 - `config/backend.yaml` — api 配置
-- `runtime_env.json / _cn / _hk` — 各市场运行时环境（改 TODAY_DATE 等直接生效）
 - `docs/` — 静态快照
-- `dsh/proxy/` — dsh 局域网代理配置（nginx.conf + dsh.htpasswd，htpasswd 已 gitignore）
-- `.env` / `.service.env` — 密钥不打包进镜像，仅以 env_file 注入
+- `dsh/proxy/` — dsh 局域网代理配置（nginx.conf；htpasswd 由 ui-arena entrypoint 自动生成，容器内）
+- `.env` / `.service.env` — 密钥不打包进镜像，仅以 env_file 注入（`.service.env` 缺失也能启动）
+
+**不在宿主挂载、由 entrypoint 容器内初始化**（Docker 对缺失的文件源会挂成"目录"导致服务崩溃）：
+
+- `trade_cache.sqlite` — 交易索引，缺失自动创建空文件（position.jsonl 懒重建）
+- `runtime_env.json / _cn / _hk` — 各市场运行时环境，缺失自动从 `.example` 占位模板复制（改 TODAY_DATE 等需进容器改,`docker compose exec api sh`）
 
 ## 相对原 systemd 的改动
 
@@ -109,7 +115,7 @@ docker compose down
 ## 前端交易面板数据链路
 
 Arena(8092) 经 nginx 反代 `/api` 到 FastAPI(8091)，token 由 envsubst 注入，浏览器无需持 key。
-改前端代码后 `cd arena && npm run build`（nginx 挂 dist 秒级生效，无需重启容器）。
+改前端代码后 `docker compose build ui-arena && docker compose up -d ui-arena`（多阶段构建；8093 交易智能体凭据 admin/admin123，entrypoint 首次自动生成）。
 
 ## 已知注意事项
 

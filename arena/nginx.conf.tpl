@@ -34,7 +34,8 @@ server {
 
 # 交易智能体（AI-HARNESS 嵌入）：独立端口 8093，与 8092 同站点（同 host 不同端口），
 # iframe 内 localStorage 不受第三方存储隔离 → dsh settings 可用。
-# 本身要求 basic auth（与 3081 同一 htpasswd），并把浏览器凭据透传给上游 dsh-proxy。
+# 本身要求 basic auth（默认 admin/admin123，entrypoint 自动生成），并把浏览器凭据透传给上游 dsh-proxy。
+# ${DSH_UPSTREAM} 由 entrypoint envsubst 注入（.env DSH_UPSTREAM 可改，默认 http://host.docker.internal:3081）
 server {
     listen 8093;
     server_name _;
@@ -43,7 +44,7 @@ server {
     auth_basic_user_file /etc/nginx/dsh.htpasswd;
 
     location / {
-        proxy_pass http://192.168.31.68:3081;
+        proxy_pass ${DSH_UPSTREAM};
         proxy_set_header Host $http_host;
         proxy_set_header Authorization $http_authorization;
         proxy_http_version 1.1;

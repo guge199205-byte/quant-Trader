@@ -109,6 +109,8 @@
 ## 🚀 快速开始（5 步）
 
 > 无需数据源 Key、无需量化仓库——内置一键初始化脚本走免费接口拉全市场日线。
+> 🤖 **AI 可执行部署 runbook**（每步含命令/预期输出/失败处理,可直接给 AI agent 照做）:
+> [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 
 ### 第 1 步:环境准备
 
@@ -145,8 +147,10 @@ JINA_API_KEY="你的Key"            # 市场信息搜索(Jina Reader,免费额�
 
 ### 第 3 步:一键初始化数据（免费接口,约 3~6 分钟）
 
+> 免宿主 Python 依赖——用 api 镜像（已装好全部依赖）跑:
+
 ```bash
-python3 scripts/bootstrap_data.py
+docker compose run --rm api python3 scripts/bootstrap_data.py
 # 拉取:A股 SSE50(腾讯,前复权)+ 美股 NASDAQ100(Yahoo)+ 港股恒指权重(腾讯,后复权)
 # 输出与生产数据格式完全一致,后续可随时换 QuantDB 底座增强
 ```
@@ -154,8 +158,8 @@ python3 scripts/bootstrap_data.py
 ### 第 4 步:启动
 
 ```bash
-# 启动全部常驻服务（MCP×3 + API + 前端×2 + dsh）
-docker compose up -d
+# 构建 + 启动常驻服务（MCP×3 + API + 前端 8092,前端多阶段构建无需宿主 Node）
+docker compose up -d --build
 
 # 跑交易 agent（按市场,LLM 逐日执行;先跑 1 天验证链路）
 docker compose --profile agents run --rm -e INIT_DATE=2026-08-28 -e END_DATE=2026-08-28 agent-us
@@ -163,14 +167,24 @@ docker compose --profile agents run --rm -e INIT_DATE=2026-08-28 -e END_DATE=202
 # 指定市场全区间回放:去掉 -e 日期,走 configs 的 date_range
 ```
 
+首次启动会自动完成（无需手工操作）:
+
+| 自动初始化 | 说明 |
+|------|------|
+| `runtime_env*.json` | 容器内从 `.example` 占位模板生成（agent 运行环境配置） |
+| `trade_cache.sqlite` | 容器内创建空文件,首次查询自动建交易索引 |
+| `dsh.htpasswd` | 自动生成默认凭据 **admin / admin123**（8093 交易智能体登录用,**登录后请尽快修改**） |
+| quantmind 数据底座 | 未安装时自动降级（实盘/因子面板显示空态,模拟盘不受影响） |
+
 ### 第 5 步:打开页面
 
 | 服务 | 地址 | 说明 |
 |------|------|------|
 | Arena 竞技场(唯一前端) | http://<服务器IP>:8092 | 终端风九页:实况/排行榜/模型/总控/交易所/数据平台/Harness/详情/关于 |
 | 交易所设置 | http://<服务器IP>:8092/trading | 券商接入(富途/老虎/IB)配置 |
+| 交易智能体(dsh) | http://<服务器IP>:8093 | agent 会话/工具调用可视化（默认 admin/admin123） |
 | API | http://<服务器IP>:8091 | 见下方 API 端点表 |
-| dsh Web | http://localhost:3081 | agent 会话/工具调用可视化 |
+| dsh Web(本机) | http://localhost:3081 | 同上,无需 8093 反代直连 |
 
 > 💡 **A股实盘是可选功能**:需要一台 Windows 交易机(装通达信客户端)+ 通达信交易桥,
 > 安装 3 步见 [`brokers/tdx-bridge/README.md`](brokers/tdx-bridge/README.md)。没桥也能完整跑模拟盘多市场竞技。

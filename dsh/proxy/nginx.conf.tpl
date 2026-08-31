@@ -1,8 +1,11 @@
-# dsh 局域网访问代理：dsh 官方硬拒绑 0.0.0.0（防 RCE 外露），
-# 保持 dsh 绑 127.0.0.1:3081，此 nginx 绑局域网 IP 192.168.31.68:3081 + basic auth，
+# dsh 访问代理：dsh 官方硬拒绑 0.0.0.0（防 RCE 外露），
+# 保持 dsh 绑 127.0.0.1:3081，此 nginx 绑 ${DSH_BIND_IP}:3081 + basic auth，
 # 转发回本机 127.0.0.1:3081。本机 localhost:3081 直连 dsh 不受影响。
+# ${DSH_BIND_IP} 由 entrypoint envsubst 注入（.env DSH_BIND_IP 可改：
+# 默认 172.17.0.1 docker 网关——让 bridge 容器经 host.docker.internal 可达；
+# 局域网共享场景设为本机局域网 IP，如 192.168.31.68）
 server {
-    listen 192.168.31.68:3081;
+    listen ${DSH_BIND_IP}:3081;
     server_name _;
 
     auth_basic "dsh - Quant Agent Trader";

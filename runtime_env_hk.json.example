@@ -1,0 +1,7 @@
+{
+  "SIGNATURE": "",
+  "IF_TRADE": true,
+  "MARKET": "hk",
+  "LOG_PATH": "./data/agent_data_hk",
+  "TODAY_DATE": ""
+}

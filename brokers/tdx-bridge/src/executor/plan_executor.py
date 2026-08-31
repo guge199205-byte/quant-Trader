@@ -90,10 +90,15 @@ class PlanExecutor:
         stock = order.stock_code
 
         # 幂等: 查今日委托是否已存在同代码同方向
+        # BSFlag=0(买)/1(卖), 缺失时用 WtVol 符号兜底
         try:
             existing = self.tdx.query_stock_orders(account_id, stock_code=stock)
+            want_flag = 1 if side == Side.SELL else 0
             for eo in existing:
-                if eo.get("BSFlag") == (1 if side == Side.SELL else 0) and eo.get("Status") in ("3", 3):
+                flag = eo.get("BSFlag")
+                if flag in (None, ""):
+                    flag = 1 if float(eo.get("WtVol") or 0) < 0 else 0
+                if int(float(flag)) == want_flag and eo.get("Status") in ("3", 3):
                     log.info(f"{stock} 已有成交委托, 跳过重复下单")
                     return self._order_out(order, "duplicate", None,
                                            "当日已有同方向成交, 跳过")

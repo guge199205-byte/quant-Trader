@@ -17,10 +17,20 @@ def parse_position(pos: dict) -> dict:
 
 
 def parse_order(order: dict) -> dict:
-    """当日委托记录 -> 内部结构."""
-    bs = int(_f(order.get("BSFlag")) or -1)
-    side = Side.SELL if bs == 1 else (Side.BUY if bs == 0 else None)
-    status = TDX_STATUS_MAP.get(int(_f(order.get("Status")) or 0), OrderStatus.SUBMITTED)
+    """当日委托记录 -> 内部结构.
+
+    BSFlag 是合法值 0(买入)/1(卖出), 缺失时才是 None —— 不能用 `or -1`,
+    否则 BSFlag=0 被 falsy 吞掉, 全部买入单方向错判为 cancel。
+    """
+    if order.get("BSFlag") in (None, ""):
+        side = None
+    else:
+        bs = int(_f(order.get("BSFlag")))
+        side = Side.SELL if bs == 1 else (Side.BUY if bs == 0 else None)
+    if order.get("Status") in (None, ""):
+        status = OrderStatus.SUBMITTED
+    else:
+        status = TDX_STATUS_MAP.get(int(_f(order.get("Status"))), OrderStatus.SUBMITTED)
     return {
         "order_id": str(order.get("Wtbh", "")),
         "stock_code": order.get("Code", ""),

@@ -14,8 +14,14 @@
 #    8. 引导启动通达信 + 保持 keepalive 运行
 # ============================================================
 param(
-    [string]$Mode = "auto"
+    [string]$Mode = "auto",
+    [string]$SmbPassword = $env:SMB_PASSWORD
 )
+
+# SMB 账号密码:优先环境变量 SMB_PASSWORD,否则交互输入(不硬编码)
+if (-not $SmbPassword) {
+    $SmbPassword = Read-Host "请输入 SMB 共享账号 esxi 的密码 (Linux 侧 mount 挂载用)"
+}
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -62,13 +68,16 @@ if (-not $shareExists) {
     }
 }
 
-# 确保 esxi 账号存在 (Ubuntu 挂载用的账号)
-$esxiUser = net user esxi 2>$null
+# 确保 SMB 账号存在 (Ubuntu 挂载用的账号, 密码从参数/环境变量传入)
+$SmbUser = "esxi"
+$esxiUser = net user $SmbUser 2>$null
 if (-not $esxiUser) {
-    Write-Host "      创建账号 esxi ..." -ForegroundColor Yellow
-    net user esxi 951951 /add 2>$null | Out-Null
-    net localgroup Administrators esxi /add 2>$null | Out-Null
-    Write-Host "      账号 esxi 已创建 (密码 951951)" -ForegroundColor Green
+    Write-Host "      创建账号 $SmbUser ..." -ForegroundColor Yellow
+    net user $SmbUser $SmbPassword /add 2>$null | Out-Null
+    net localgroup Administrators $SmbUser /add 2>$null | Out-Null
+    Write-Host "      账号 $SmbUser 已创建 (密码已设置, 不显示)" -ForegroundColor Green
+} elseif (-not (Test-Path env:SMB_PASSWORD)) {
+    Write-Host "      账号 $SmbUser 已存在, 用系统自带密码 (若需重置: net user $SmbUser <新密码>)" -ForegroundColor Yellow
 }
 # 确保 SMB 1.0 兼容 + 防火墙放行 SMB
 try {

@@ -66,9 +66,6 @@ curl.exe http://127.0.0.1:8550/api/v1/health
 | `config.yaml` | 桥配置（token 用环境变量注入） |
 | `data/` | 运行状态：止损监控、订单跟踪、交易日志 |
 
-> 💾 完整打包：`releases/tdx-bridge-windows.zip`（仓库根目录，本机生成，不含运行数据）。
-> 拷到 Windows 解压即可用，首次运行 `auto_setup.ps1` 全自动部署。
-
 ---
 
 ## 五、安全提示

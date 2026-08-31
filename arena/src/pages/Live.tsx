@@ -585,68 +585,71 @@ export default function Live() {
   }
 
   return (
-    <div className="live">
-      {/* 顶部状态条：当日实时指数 + 表演者 + 市场切换 */}
-      <div className="top-status-bar">
-        <div className="status-group">
-          {indices.data?.indices?.length ? (
-            <div className="index-bar">
-              {indices.data.indices.map((q) => (
-                <div className="index-item" key={q.code}>
-                  <span className="index-name">{q.name}</span>
-                  <span className="index-last">
-                    {q.last.toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                  </span>
-                  <span className={`index-chg ${pnlClass(q.change_pct / 100)}`}>
-                    {fmtPct(q.change_pct / 100)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="price-item">
-              <span className="price-label">{benchLabelOf(market)} 指数</span>
-              <span className="price-value">{benchStats.last != null ? fmtMoney(benchStats.last) : '—'}</span>
-              <span className={`price-change ${benchStats.dayChange != null ? pnlClass(benchStats.dayChange) : 'dim'}`}>
-                {benchStats.dayChange != null ? fmtPct(benchStats.dayChange) : '无行情'}
-              </span>
-            </div>
-          )}
-          <div className="performers">
-            <div className="performer">
-              <span className="performer-label">最高</span>
-              <span className="performer-value">
-                {performers.highest ? (
-                  <>{performers.highest.name} <b className="up">{fmtPct(performers.highest.ret)}</b></>
-                ) : '—'}
-              </span>
-            </div>
-            <div className="performer">
-              <span className="performer-label">最低</span>
-              <span className="performer-value">
-                {performers.lowest ? (
-                  <>{performers.lowest.name} <b className="down">{fmtPct(performers.lowest.ret)}</b></>
-                ) : '—'}
-              </span>
-            </div>
-          </div>
-          {/* 交易时段（北京时间）：行1 时间+盘中状态，行2 交易规则 */}
-          {(() => {
-            const st = marketStatusOf(market, new Date());
-            return (
-              <div className="market-hours">
-                <div className="mh-row">
-                  <span className="mh-label">交易时间(北京)</span>
-                  <span className="mh-hours">{hoursLabelOf(market, new Date())}</span>
-                  <span className={`mh-status ${st.open ? 'open' : 'closed'}`}>{st.text}</span>
-                </div>
-                <div className="mh-row mh-rule">{MARKET_HOURS[market].rule}</div>
-              </div>
-            );
-          })()}
-          <MarketSwitcher market={market} onChange={switchMarket} />
-        </div>
+    <>
+      {/* 导航栏横线正下方的独立条：交易时段（北京时间）+ 交易规则 + 盘中状态。
+          放这里手机上看不挤状态条；切换市场时随市场更新 */}
+      <div className="mh-bar">
+        {(() => {
+          const st = marketStatusOf(market, new Date());
+          return (
+            <>
+              <span className="mh-label">交易时间(北京)</span>
+              <span className="mh-hours">{hoursLabelOf(market, new Date())}</span>
+              <span className={`mh-status ${st.open ? 'open' : 'closed'}`}>{st.text}</span>
+              <span className="mh-divider">·</span>
+              <span className="mh-rule">{MARKET_HOURS[market].rule}</span>
+            </>
+          );
+        })()}
       </div>
+      <div className="live">
+        {/* 顶部状态条：当日实时指数 + 表演者 + 市场切换 */}
+        <div className="top-status-bar">
+          <div className="status-group">
+            {indices.data?.indices?.length ? (
+              <div className="index-bar">
+                {indices.data.indices.map((q) => (
+                  <div className="index-item" key={q.code}>
+                    <span className="index-name">{q.name}</span>
+                    <span className="index-last">
+                      {q.last.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                    </span>
+                    <span className={`index-chg ${pnlClass(q.change_pct / 100)}`}>
+                      {fmtPct(q.change_pct / 100)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="price-item">
+                <span className="price-label">{benchLabelOf(market)} 指数</span>
+                <span className="price-value">{benchStats.last != null ? fmtMoney(benchStats.last) : '—'}</span>
+                <span className={`price-change ${benchStats.dayChange != null ? pnlClass(benchStats.dayChange) : 'dim'}`}>
+                  {benchStats.dayChange != null ? fmtPct(benchStats.dayChange) : '无行情'}
+                </span>
+              </div>
+            )}
+            <div className="performers">
+              <div className="performer">
+                <span className="performer-label">最高</span>
+                <span className="performer-value">
+                  {performers.highest ? (
+                    <>{performers.highest.name} <b className="up">{fmtPct(performers.highest.ret)}</b></>
+                  ) : '—'}
+                </span>
+              </div>
+              <div className="performer">
+                <span className="performer-label">最低</span>
+                <span className="performer-value">
+                  {performers.lowest ? (
+                    <>{performers.lowest.name} <b className="down">{fmtPct(performers.lowest.ret)}</b></>
+                  ) : '—'}
+                </span>
+              </div>
+            </div>
+            <MarketSwitcher market={market} onChange={switchMarket} />
+          </div>
+        </div>
 
       {/* 持仓股票滚动价格条（hover 暂停；速度随持仓数自适应） */}
       {tickerItems.length > 0 && (
@@ -780,5 +783,6 @@ export default function Live() {
         </div>
       </div>
     </div>
+    </>
   );
 }

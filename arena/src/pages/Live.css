@@ -7,7 +7,7 @@
 
 .live {
   max-width: 1760px; /* 比原 1440 拉宽,且 1920 屏左右各留 ~80px */
-  margin: 24px auto 16px;
+  margin: 2px auto 16px; /* 顶部 margin 极紧凑：交易时段条(导航栏下方)与内容框之间不留空隙 */
   padding: 0;
   border: 3px solid #000; /* 终端外框（加粗强化可见性） */
   box-shadow: 0 0 0 1px #fff, 6px 6px 0 rgba(0, 0, 0, 0.15); /* 白描边 + 硬投影，让框感明显 */
@@ -121,38 +121,32 @@
   flex-wrap: wrap;
 }
 
-/* 中窄屏（<1100px）：flex-wrap 的贪心伸展会让指数条独占一行、其余项被
-   挤成 155px 三行大空白——改用确定性 grid 三行式：
-   行1 = 指数条独占全宽（6 项均分伸展），行2 = 表演者 + 市场切换(右)，
-   行3 = 交易时段全宽。交易时段内容 ~449px 很宽，放第二列会把指数列
-   挤到 85px/项导致文字重叠，所以必须整行独占。
+/* 中窄屏（<1200px）：flex-wrap 的贪心伸展会让指数条撑满一行、其余项被
+   挤成三行大空白——改用确定性 grid 双列：
+   左列 = 指数条（占两行，6 项按自然宽度 min-width:104px 换行，最多 2 行），
+   右列 = 最高/最低(上) + 市场切换 chips(下，贴右)。
+   >1200px 的 flex 单行需要 ~1124px（6 指数 + 最高最低 + chips），
+   断点取 1200 可避免 1101-1180 之间 flex 乱换行。
    选择器加 .top-status-bar/.status-group 前缀提高特异性：vite 打包把
    @media 重排到主定义之前，同特异性会被主定义覆盖 */
-@media (max-width: 1100px) {
+@media (max-width: 1200px) {
   .top-status-bar .status-group {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
-      'index chips'
-      'perf chips'
-      'mh mh';
+      'index perf'
+      'index chips';
     gap: 4px 16px;
     width: 100%;
-    align-items: center;
+    align-items: start;
   }
   .status-group .index-bar {
     grid-area: index;
     min-width: 0;
   }
-  .status-group .index-item {
-    flex: 1 1 0;
-    min-width: 0;
-  }
+  /* 指数项不设 flex:1：保持自然宽度换行（最多 2 行），挤成一行会文字重叠 */
   .status-group .performers {
     grid-area: perf;
-  }
-  .status-group .market-hours {
-    grid-area: mh;
   }
   .status-group .market-switcher {
     grid-area: chips;
@@ -168,7 +162,8 @@
   }
 }
 
-/* 手机窄屏（<640px）：交易时段一整行放不下 → 改单列堆叠，避免横向溢出。
+/* 手机窄屏（<640px）：双列放不下（指数列被压到 2 项/行、会超 2 行）→
+   改单列堆叠：指数整行、最高/最低、chips。
    注意 .market-switcher 主定义有 margin-left:auto（0,2,0），这里必须用
    .top-status-bar 前缀(0,3,0) 才能压住它，否则 chips 会被推右。 */
 @media (max-width: 640px) {
@@ -177,7 +172,6 @@
     grid-template-areas:
       'index'
       'perf'
-      'mh'
       'chips';
     gap: 4px 0;
   }
@@ -253,12 +247,22 @@
   font-weight: 700;
 }
 
-/* 交易时段（北京时间）：行1 时间+盘中状态胶囊，行2 交易规则小字 */
-.market-hours {
+/* 交易时段独立条（导航栏横线正下方，全宽）：单行紧凑、无底色、文字居中 */
+.mh-bar {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  padding: 4px 20px;
   font-size: 11px;
+  font-family: 'Courier New', monospace;
+}
+
+@media (max-width: 640px) {
+  .mh-bar {
+    padding: 4px 12px;
+  }
 }
 
 .mh-row {
@@ -296,9 +300,12 @@
   color: #888;
 }
 
+.mh-divider {
+  color: #ccc;
+}
+
 .mh-rule {
   color: #666;
-  font-size: 10px;
 }
 
 /* 市场切换（移入 status-group 后保持右对齐） */

@@ -409,7 +409,7 @@ export default function TradingSettings() {
               <div className="ts-cfg-fields">
                 <label className="ts-field" style={{ flex: 1, minWidth: 240 }}>
                   <span className="ts-field-label">桥地址</span>
-                  <input className="ts-input wide" type="text" placeholder="http://192.168.31.31:8550"
+                  <input className="ts-input wide" type="text" placeholder="http://<tdx-bridge-ip>:8550"
                     value={newUrl} onChange={(e) => setNewUrl(e.target.value)} />
                 </label>
                 <label className="ts-field" style={{ flex: 1, minWidth: 240 }}>

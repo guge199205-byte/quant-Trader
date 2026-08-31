@@ -10,7 +10,7 @@
   认证：Authorization: Bearer <token>
 
 配置（.env）：
-  TDX_BRIDGE_URL=http://192.168.31.31:8550
+  TDX_BRIDGE_URL=http://<tdx-bridge-ip>:8550
   TDX_BRIDGE_TOKEN=<64-hex>
   TDX_ACCOUNT=       # 可留空，桥 resolve_account_id 解析默认账户
   TDX_ACCOUNT_TYPE=stock

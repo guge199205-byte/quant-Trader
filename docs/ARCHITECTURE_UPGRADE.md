@@ -29,7 +29,7 @@ config/
 | `GET /api/agents/{a}/performance` | 净值序列 + 收益/最大回撤摘要 |
 | `GET /api/agents/{a}/logs?date=` | 决策日志 |
 
-**前端实时化**：`nof0/config.yaml` 加 `api_base: "http://192.168.31.68:8091"`，
+**前端实时化**：`nof0/config.yaml` 加 `api_base: "http://<lan-ip>:8091"`，
 `config-loader.js` 的 `getDataPath()` 检测到 `api_base` 即返回 `{api_base}/api/data`——
 所有 fetch 自动走实时数据，交易结果即时可见，无需手动复制快照。
 

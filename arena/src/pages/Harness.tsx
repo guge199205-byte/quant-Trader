@@ -10,7 +10,7 @@ import './Harness.css';
    ============================================================ */
 
 // 新窗口入口同样自适应：localhost/127.0.0.1 → dsh 直连（免 auth），
-// 局域网 IP → dsh-proxy（192.168.31.68:3081 + basic auth）
+// 局域网 IP → dsh-proxy（<lan-ip>:3081 + basic auth）
 const DSH_URL = `http://${window.location.hostname}:3081`;
 const DSH_PROXIED_URL = `http://${window.location.hostname}:8093`;
 

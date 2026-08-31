@@ -1,6 +1,6 @@
 # 实盘下单流程（通达信桥）
 
-> 从历史市场分析报告选股 → 通达信桥（192.168.31.31:8550，Windows 交易机）→ 真实下单。
+> 从历史市场分析报告选股 → 通达信桥（<tdx-bridge-ip>:8550，Windows 交易机）→ 真实下单。
 
 ## 链路
 
@@ -61,7 +61,7 @@ python scripts/select_from_reports.py --json --min-side BUY
 
 ## 关键约束（实测）
 
-- 桥机（Windows）必须在线：`192.168.31.31:8550`，ping 不通先开机
+- 桥机（Windows）必须在线：`<tdx-bridge-ip>:8550`，ping 不通先开机
 - 通达信客户端下单默认**弹确认框**（Value=="1" → needs_confirm），"2"=submitted
 - 股票代码必须后缀格式（`600519.SH`，`SH600519` 会被拒）
 - 桥限流 60 req/min

@@ -586,8 +586,8 @@ export default function Live() {
 
   return (
     <>
-      {/* 导航栏横线正下方的独立条：交易时段（北京时间）+ 交易规则 + 盘中状态。
-          放这里手机上看不挤状态条；切换市场时随市场更新 */}
+      {/* 导航栏横线正下方的独立条：交易时段（北京时间）+ 交易规则 + 盘中状态 +
+          最高/最低表演者。切换市场时随市场更新 */}
       <div className="mh-bar">
         {(() => {
           const st = marketStatusOf(market, new Date());
@@ -598,12 +598,31 @@ export default function Live() {
               <span className={`mh-status ${st.open ? 'open' : 'closed'}`}>{st.text}</span>
               <span className="mh-divider">·</span>
               <span className="mh-rule">{MARKET_HOURS[market].rule}</span>
+              <span className="mh-divider">·</span>
+              <div className="performers">
+                <div className="performer">
+                  <span className="performer-label">最高</span>
+                  <span className="performer-value">
+                    {performers.highest ? (
+                      <>{performers.highest.name} <b className="up">{fmtPct(performers.highest.ret)}</b></>
+                    ) : '—'}
+                  </span>
+                </div>
+                <div className="performer">
+                  <span className="performer-label">最低</span>
+                  <span className="performer-value">
+                    {performers.lowest ? (
+                      <>{performers.lowest.name} <b className="down">{fmtPct(performers.lowest.ret)}</b></>
+                    ) : '—'}
+                  </span>
+                </div>
+              </div>
             </>
           );
         })()}
       </div>
       <div className="live">
-        {/* 顶部状态条：当日实时指数 + 表演者 + 市场切换 */}
+        {/* 顶部状态条：当日实时指数(2×3) + 市场切换 */}
         <div className="top-status-bar">
           <div className="status-group">
             {indices.data?.indices?.length ? (
@@ -629,24 +648,6 @@ export default function Live() {
                 </span>
               </div>
             )}
-            <div className="performers">
-              <div className="performer">
-                <span className="performer-label">最高</span>
-                <span className="performer-value">
-                  {performers.highest ? (
-                    <>{performers.highest.name} <b className="up">{fmtPct(performers.highest.ret)}</b></>
-                  ) : '—'}
-                </span>
-              </div>
-              <div className="performer">
-                <span className="performer-label">最低</span>
-                <span className="performer-value">
-                  {performers.lowest ? (
-                    <>{performers.lowest.name} <b className="down">{fmtPct(performers.lowest.ret)}</b></>
-                  ) : '—'}
-                </span>
-              </div>
-            </div>
             <MarketSwitcher market={market} onChange={switchMarket} />
           </div>
         </div>

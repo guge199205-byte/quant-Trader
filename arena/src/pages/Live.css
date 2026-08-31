@@ -114,39 +114,31 @@
   font-weight: 700;
 }
 
-/* 当日实时指数组（6 个指数竖排 chip，等宽横排） */
+/* 当日实时指数组：6 个指数固定 2 行 × 3 列（用户指定设计），
+   等宽单元格填满整行，内容居中；行/列间 1px 分隔线 */
 .index-bar {
-  display: flex;
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0;
-  flex-wrap: wrap;
 }
 
-/* 中窄屏（<1200px）：flex-wrap 的贪心伸展会让指数条撑满一行、其余项被
-   挤成三行大空白——改用确定性 grid 双列：
-   左列 = 指数条（占两行，6 项按自然宽度 min-width:104px 换行，最多 2 行），
-   右列 = 最高/最低(上) + 市场切换 chips(下，贴右)。
-   >1200px 的 flex 单行需要 ~1124px（6 指数 + 最高最低 + chips），
-   断点取 1200 可避免 1101-1180 之间 flex 乱换行。
+/* 中窄屏（<1200px）：状态条两列——指数 2×3 grid(左) + chips(右，贴右)。
+   最高/最低已移入上方交易时段条，状态条只剩指数和切换。
    选择器加 .top-status-bar/.status-group 前缀提高特异性：vite 打包把
    @media 重排到主定义之前，同特异性会被主定义覆盖 */
 @media (max-width: 1200px) {
   .top-status-bar .status-group {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      'index perf'
-      'index chips';
-    gap: 4px 16px;
+    grid-template-areas: 'index chips';
+    gap: 0 16px;
     width: 100%;
-    align-items: start;
+    align-items: center;
   }
   .status-group .index-bar {
     grid-area: index;
     min-width: 0;
-  }
-  /* 指数项不设 flex:1：保持自然宽度换行（最多 2 行），挤成一行会文字重叠 */
-  .status-group .performers {
-    grid-area: perf;
   }
   .status-group .market-switcher {
     grid-area: chips;
@@ -162,8 +154,8 @@
   }
 }
 
-/* 手机窄屏（<640px）：双列放不下（指数列被压到 2 项/行、会超 2 行）→
-   改单列堆叠：指数整行、最高/最低、chips。
+/* 手机窄屏（<640px）：指数 2×3 与 chips 并排放不下（指数列被压窄）→
+   单列堆叠：指数整行，chips 下一行。
    注意 .market-switcher 主定义有 margin-left:auto（0,2,0），这里必须用
    .top-status-bar 前缀(0,3,0) 才能压住它，否则 chips 会被推右。 */
 @media (max-width: 640px) {
@@ -171,14 +163,12 @@
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       'index'
-      'perf'
       'chips';
     gap: 4px 0;
   }
-  /* 指数项恢复最小宽：min-width:0 会允许 6 项挤到 57px、文字互相重叠，
-     让它按 ~3 项/行换行成两行（每项 ~110px 放得下 3,986.3） */
+  /* 2×3 grid 单元格已等宽分配，无需最小宽；320px 时 3 列才放得下 */
   .top-status-bar .status-group .index-item {
-    min-width: 96px;
+    min-width: 0;
   }
   .top-status-bar .status-group .market-switcher {
     justify-self: end;
@@ -191,15 +181,16 @@
 .index-item {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 2px;
-  min-width: 104px;
-  padding: 2px 16px;
+  min-width: 0;
+  padding: 6px 8px;
   border-right: 1px solid #eee;
 }
 
-.index-item:last-child {
-  border-right: none;
-}
+/* 2×3 表格分隔线：每行第 3 列无右边线，第 1 行有下边线 */
+.index-item:nth-child(3n) { border-right: none; }
+.index-item:nth-child(-n+3) { border-bottom: 1px solid #eee; }
 
 .index-name {
   color: #666;
@@ -220,11 +211,12 @@
   font-weight: 700;
 }
 
-/* 最高/最低表演者：竖排两行（最高在上、最低在下），标签+值同行 */
+/* 最高/最低表演者：位于交易时段条(mh-bar)内，水平并排 */
 .performers {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  gap: 14px;
+  align-items: baseline;
 }
 
 .performer {
@@ -976,7 +968,6 @@
   .trade-list { max-height: 420px; }
   .chart-area { padding: 12px 12px; }
   .price-item { font-size: 10px; }
-  .performers { gap: 14px; }
 }
 
 @media (max-width: 480px) {
@@ -984,7 +975,6 @@
   .status-group { gap: 14px; }
   .price-value { font-size: 13px; }
   .performer { font-size: 10px; }
-  .performer-value { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chart-area { padding: 10px 8px; }
   .chart-title { font-size: 11px; }
   .chart-controls { gap: 4px; }

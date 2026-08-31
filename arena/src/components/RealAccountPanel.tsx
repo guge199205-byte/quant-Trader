@@ -99,7 +99,8 @@ export default function RealAccountPanel() {
         <div className="real-section-title">日终账本（{tradingRows.length} 个交易日）</div>
         {tradingRows.length >= 2 ? (
           <div className="real-chart">
-            <EquityChart lines={ledgerLine} benchmark={null} currency="¥" mode="pct" timeRange="all" />
+            {/* 必须显式传 height：默认 380 会溢出 210px 容器压住下方 L2 表格 */}
+            <EquityChart lines={ledgerLine} benchmark={null} currency="¥" mode="pct" timeRange="all" height={180} />
           </div>
         ) : (
           <div className="empty-state" style={{ padding: '18px 0' }}>账本数据不足</div>

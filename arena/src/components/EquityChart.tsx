@@ -106,7 +106,15 @@ export default function EquityChart({
   }
 
   return (
-    <div style={{ height: typeof height === 'number' ? `${height}px` : height, width: '100%', position: 'relative' }}>
+    <div
+      style={{
+        height: typeof height === 'number' ? `${height}px` : height,
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        position: 'relative',
+      }}
+    >
       <div
         style={{
           position: 'absolute', top: -2, right: 2, fontSize: 10, color: '#999',
@@ -115,7 +123,9 @@ export default function EquityChart({
       >
         拖拽平移 · 滚轮缩放 · 双击复位
       </div>
-      <ParentSize>
+      {/* svg 区域 flex 吃满剩余高度；图例在下方自然高度，溢出会压住后续内容 */}
+      <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+        <ParentSize>
         {({ width, height: h }) => {
           const iw = Math.max(width - margin.left - margin.right, 10);
           const ih = Math.max(h - margin.top - margin.bottom, 10);
@@ -418,6 +428,7 @@ export default function EquityChart({
           );
         }}
       </ParentSize>
+      </div>
       {/* 底部图例: 点选模型 → 该线实线, 其他虚线淡化; "全部"恢复 */}
       <div style={{
         display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap',

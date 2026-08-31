@@ -2,12 +2,12 @@
    Live 终端页 — 终端风布局：
    顶部状态条（价格 + HIGHEST/LOWEST）
    左：chart-area（TOTAL ACCOUNT VALUE + ALL/5D + 模型横排卡）
-   右：360px 面板（6 tabs + FILTER + 列表）
+   右：540px 面板（7 tabs + FILTER + 列表）
    ============================================================ */
 
 .live {
-  max-width: 1440px;
-  margin: 8px auto 16px;
+  max-width: 1760px; /* 比原 1440 拉宽,且 1920 屏左右各留 ~80px */
+  margin: 24px auto 16px;
   padding: 0;
   border: 3px solid #000; /* 终端外框（加粗强化可见性） */
   box-shadow: 0 0 0 1px #fff, 6px 6px 0 rgba(0, 0, 0, 0.15); /* 白描边 + 硬投影，让框感明显 */
@@ -288,10 +288,10 @@
   font-weight: 700;
 }
 
-/* ---------- 右侧 420px 面板 ---------- */
+/* ---------- 右侧 540px 面板 ---------- */
 
 .right-section {
-  width: 420px;
+  width: 540px;
   flex-shrink: 0;
   border-left: 3px solid #000;
   display: flex;

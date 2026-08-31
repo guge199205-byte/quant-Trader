@@ -65,7 +65,7 @@ const benchLabelOf = (market: MarketId): string =>
   market === 'us' ? 'NDX100' : market === 'cn' ? 'SSE50' : 'HSI';
 
 /** Live 终端页 —— 终端风布局：
- *  顶部价格条 + HIGHEST/LOWEST → 左净值图 + 模型横排卡 → 右 360px 六 tab 面板 */
+ *  顶部价格条 + HIGHEST/LOWEST → 左净值图 + 模型横排卡 → 右 540px 七 tab 面板 */
 export default function Live() {
   const [params, setParams] = useSearchParams();
   const rawMarket = params.get('market');
@@ -658,7 +658,7 @@ export default function Live() {
           )}
         </div>
 
-        {/* 右：360px 面板 */}
+        {/* 右：540px 面板 */}
         <div className="right-section">
           <div className="trade-tabs">
             {TABS.map((t) => (

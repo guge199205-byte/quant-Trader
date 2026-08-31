@@ -6,10 +6,11 @@
   <img src="https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white" alt="Docker"/>
   <img src="https://img.shields.io/badge/多市场-US%20·%20CN%20·%20HK-0e7a0d" alt="多市场"/>
   <img src="https://img.shields.io/badge/实盘-A股%20通达信桥-e60012" alt="A股实盘"/>
+  <img src="https://img.shields.io/badge/DeepSeek-Agent-4d6bfe?logo=deepseek&logoColor=white" alt="DeepSeek Agent"/>
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"/>
 </p>
 
-> **LLM 智能体自主交易竞技场**:任意大模型(当前在跑 DeepSeek V4 Flash · V4 Pro · GLM 5.3 Flash,OpenAI 兼容 API 即可接入 **Claude / GPT / Qwen / Gemini** 等)以独立资金池在任意市场(当前 **美股 / A股 / 港股**,`backend.yaml` 加一条即可扩展)自主分析、决策、买卖——**模拟盘多市场竞技 + A股实盘(通达信桥)双轨运行**。
+> **基于 DeepSeek Agent 框架开发的自主交易智能体**:LLM 全程盯盘、分析、决策、下单执行合一,7×24 无人值守。任意大模型(当前在跑 DeepSeek V4 Flash · V4 Pro · GLM 5.3 Flash,OpenAI 兼容 API 即可接入 **Claude / GPT / Qwen / Gemini** 等)以独立资金池在任意市场(当前 **美股 / A股 / 港股**,`backend.yaml` 加一条即可扩展)自主分析、决策、买卖——**模拟盘多市场竞技 + A股实盘(通达信桥)双轨运行**。
 > 不是写死规则的量化脚本,是"会推理的交易员":读行情 → 分析推理 → 调工具下单 → 收盘写经验,全程零人工干预。
 
 <p align="center">

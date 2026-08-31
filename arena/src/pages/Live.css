@@ -129,7 +129,7 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
-      'index index'
+      'index chips'
       'perf chips'
       'mh mh';
     gap: 4px 16px;
@@ -222,17 +222,19 @@
   font-weight: 700;
 }
 
+/* 最高/最低表演者：竖排两行（最高在上、最低在下），标签+值同行 */
 .performers {
   display: flex;
-  gap: 24px;
-  align-items: center;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .performer {
   display: flex;
-  gap: 6px;
   align-items: baseline;
+  gap: 6px;
   font-size: 11px;
+  line-height: 1.35;
 }
 
 .performer-label {
@@ -247,12 +249,18 @@
   font-weight: 700;
 }
 
-/* 交易时段（北京时间）+ 交易规则 + 盘中状态 */
+/* 交易时段（北京时间）：行1 时间+盘中状态胶囊，行2 交易规则小字 */
 .market-hours {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+}
+
+.mh-row {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 11px;
 }
 
 .mh-label {
@@ -284,12 +292,9 @@
   color: #888;
 }
 
-.mh-divider {
-  color: #ccc;
-}
-
 .mh-rule {
   color: #666;
+  font-size: 10px;
 }
 
 /* 市场切换（移入 status-group 后保持右对齐） */

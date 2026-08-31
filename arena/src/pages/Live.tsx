@@ -89,27 +89,32 @@ const hoursLabelOf = (market: MarketId, now: Date): string => {
   return usDstActive(now) ? '夏令时 21:30–04:00(次日)' : '冬令时 22:30–05:00(次日)';
 };
 
-/** 当前盘中状态（北京时间）：交易中/午休/未开盘/已收盘/休市。 */
+/** 当前盘中状态（北京时间）：盘前/盘中/中午休息/盘后/休市。 */
 const marketStatusOf = (market: MarketId, now: Date): { text: string; open: boolean } => {
-  const bj = new Date(now.getTime() + (480 - now.getTimezoneOffset()) * 60000); // 东八区
+  const bj = new Date(now.getTime() + (480 + now.getTimezoneOffset()) * 60000); // 东八区（tzOffset 东负西正，如 JST=-540 → -60min）
   const mins = bj.getHours() * 60 + bj.getMinutes();
   const wd = bj.getDay();
   if (wd === 0 || wd === 6) return { text: '休市', open: false };
   const inRange = (a: number, b: number) => mins >= a && mins < b;
   if (market === 'cn') {
-    if (inRange(9 * 60 + 30, 11 * 60 + 30) || inRange(13 * 60, 15 * 60)) return { text: '交易中', open: true };
-    if (inRange(11 * 60 + 30, 13 * 60)) return { text: '午休', open: false };
-    return { text: mins < 9 * 60 + 30 ? '未开盘' : '已收盘', open: false };
+    if (inRange(9 * 60, 9 * 60 + 30)) return { text: '盘前', open: false }; // 集合竞价 9:15 前也算盘前
+    if (inRange(9 * 60 + 30, 11 * 60 + 30) || inRange(13 * 60, 15 * 60)) return { text: '盘中', open: true };
+    if (inRange(11 * 60 + 30, 13 * 60)) return { text: '中午休息', open: false };
+    return { text: '盘后', open: false };
   }
   if (market === 'hk') {
-    if (inRange(9 * 60 + 30, 12 * 60) || inRange(13 * 60, 16 * 60)) return { text: '交易中', open: true };
-    if (inRange(12 * 60, 13 * 60)) return { text: '午休', open: false };
-    return { text: mins < 9 * 60 + 30 ? '未开盘' : '已收盘', open: false };
+    if (inRange(9 * 60, 9 * 60 + 30)) return { text: '盘前', open: false }; // 开市前竞价 9:00-9:30
+    if (inRange(9 * 60 + 30, 12 * 60) || inRange(13 * 60, 16 * 60)) return { text: '盘中', open: true };
+    if (inRange(12 * 60, 13 * 60)) return { text: '中午休息', open: false };
+    return { text: '盘后', open: false };
   }
+  // US（北京时间）：盘前 = 美东 04:00–09:30
+  const preOpen = usDstActive(bj) ? 16 * 60 : 15 * 60; // 夏令时 16:00 / 冬令时 15:00
   const openAt = usDstActive(bj) ? 21 * 60 + 30 : 22 * 60 + 30;
   const closeAt = usDstActive(bj) ? 4 * 60 : 5 * 60; // 次日凌晨（北京时间）
-  if (mins >= openAt || mins < closeAt) return { text: '交易中', open: true };
-  return { text: '已收盘', open: false };
+  if (mins >= openAt || mins < closeAt) return { text: '盘中', open: true };
+  if (mins >= preOpen && mins < openAt) return { text: '盘前', open: false };
+  return { text: '盘后', open: false };
 };
 
 const benchLabelOf = (market: MarketId): string =>
@@ -625,16 +630,17 @@ export default function Live() {
               </span>
             </div>
           </div>
-          {/* 交易时段（北京时间）+ 交易规则 + 盘中状态 */}
+          {/* 交易时段（北京时间）：行1 时间+盘中状态，行2 交易规则 */}
           {(() => {
             const st = marketStatusOf(market, new Date());
             return (
               <div className="market-hours">
-                <span className="mh-label">交易时间(北京)</span>
-                <span className="mh-hours">{hoursLabelOf(market, new Date())}</span>
-                <span className={`mh-status ${st.open ? 'open' : 'closed'}`}>{st.text}</span>
-                <span className="mh-divider">·</span>
-                <span className="mh-rule">{MARKET_HOURS[market].rule}</span>
+                <div className="mh-row">
+                  <span className="mh-label">交易时间(北京)</span>
+                  <span className="mh-hours">{hoursLabelOf(market, new Date())}</span>
+                  <span className={`mh-status ${st.open ? 'open' : 'closed'}`}>{st.text}</span>
+                </div>
+                <div className="mh-row mh-rule">{MARKET_HOURS[market].rule}</div>
               </div>
             );
           })()}

@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"/>
 </p>
 
-> **LLM 智能体自主交易竞技场**:DeepSeek V4 Flash · V4 Pro · GLM 5.3 Flash 三个 AI 模型,以独立资金池在美股/A股/港股自主分析、决策、买卖——**模拟盘三市场竞技 + A股实盘(通达信桥)双轨运行**。
+> **LLM 智能体自主交易竞技场**:任意大模型(当前在跑 DeepSeek V4 Flash · V4 Pro · GLM 5.3 Flash,OpenAI 兼容 API 即可接入 **Claude / GPT / Qwen / Gemini** 等)以独立资金池在美股/A股/港股自主分析、决策、买卖——**模拟盘三市场竞技 + A股实盘(通达信桥)双轨运行**。
 > 不是写死规则的量化脚本,是"会推理的交易员":读行情 → 分析推理 → 调工具下单 → 收盘写经验,全程零人工干预。
 
 <p align="center">
@@ -46,7 +46,7 @@
 |------|------|
 | 🇺🇸🇨🇳🇭🇰 **三市场模拟盘** | US（102 只）/ CN（上证50）/ HK 同时回放竞技,各自独立 MCP 服务组与数据目录 |
 | 💰 **A股实盘(通达信桥)** | 桥 8550 实盘下单,首单 08-31 成交 5 只(中际旭创/宁德时代/生益科技/万华化学/生益电子),实时持仓/成交/净值全链路打通 |
-| 🧠 **三模型公平对决** | DeepSeek V4 Flash · V4 Pro · **GLM 5.3 Flash** 同数据、同工具集、同起点资金,排行榜见分晓 |
+| 🧠 **多模型公平对决** | 任意 OpenAI 兼容模型:当前 DeepSeek V4 Flash · V4 Pro · **GLM 5.3 Flash** 同数据、同工具集、同起点资金竞技,排行榜见分晓;`configs/*.json` 加一条 + `.env` 填 key 即可接入 **Claude / GPT / Qwen / Gemini** |
 | 📊 **分账制实盘子账户** | 每 agent ¥10 万虚拟额度独立建仓,买入按额度分配、卖出释放,盈亏归属清晰 |
 | ⏰ **盘中智能分析调度** | 9:30 开盘 + 每小时定时 + **波动触发**(持仓盈亏较上次 ±3pp 或个股涨跌 ≥5% 立即加跑,20 分钟节流),LLM 逐只简评+操作建议 |
 | ⚡ **token 消耗透明** | 每次 LLM 调用记录真实 usage,`/api/token-usage` 按模型累计,前端模型卡 ⚡ 实时显示 |
@@ -129,6 +129,17 @@ OPENAI_API_KEY="你的Key"          # DeepSeek 开放平台注册即用
 GLM_API_BASE="https://open.bigmodel.cn/api/paas/v4"   # GLM 5.3 走智谱
 GLM_API_KEY="你的Key"             # 智谱开放平台
 JINA_API_KEY="你的Key"            # 市场信息搜索(Jina Reader,免费额度够用)
+```
+
+**接入更多模型（Claude / GPT / Qwen / Gemini…）**:任何 OpenAI 兼容 API 都行——
+`configs/default_config.json` 的 `models[]` 加一条 + `.env` 填对应 key,重启即加入竞技场,无需改代码:
+
+```jsonc
+// configs/default_config.json → models[] 追加(项目已预置 claude-3.7-sonnet /
+// qwen3-max / gemini-2.5-flash / gpt-5,enabled 改 true 即可,无需改代码)
+{ "name": "claude-3.7-sonnet", "basemodel": "claude-3-7-sonnet-20250219",
+  "signature": "claude-3.7-sonnet", "enabled": true }
+// .env 追加该模型供应商的 API Key + Base URL(格式见上方 .env 示例)
 ```
 
 ### 第 3 步:一键初始化数据（免费接口,约 3~6 分钟）

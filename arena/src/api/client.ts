@@ -378,6 +378,19 @@ export const fetchRealLedger = () => unwrap<RealLedgerRow[]>(api.get('/live/real
 export const fetchL2Factors = (limit = 200) =>
   unwrap<L2FactorRow[]>(api.get('/live/l2-factors', { params: { limit } }));
 
+// ---------- 当日实时指数（顶部行情条） ----------
+
+export interface IndexQuote {
+  code: string;
+  name: string;
+  last: number; // 点位/最新价
+  change_pct: number; // 百分数（0.86 = +0.86%），与实盘接口口径一致
+}
+
+/** CN：通达信桥日K聚合 6 个主流指数（盘中实时）；US：NDX100 基准文件；HK 空。 */
+export const fetchIndices = (market: MarketId) =>
+  unwrap<{ indices: IndexQuote[] }>(api.get('/live/indices', { params: { market } }));
+
 export const fetchBenchmark = async (market: MarketId): Promise<BenchPoint[]> => {
   try {
     const file =

@@ -110,6 +110,45 @@
   font-weight: 700;
 }
 
+/* 当日实时指数组（6 个指数竖排 chip，等宽横排） */
+.index-bar {
+  display: flex;
+  gap: 0;
+  flex-wrap: wrap;
+}
+
+.index-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 104px;
+  padding: 2px 16px;
+  border-right: 1px solid #eee;
+}
+
+.index-item:last-child {
+  border-right: none;
+}
+
+.index-name {
+  color: #666;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.index-last {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.index-chg {
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .performers {
   display: flex;
   gap: 24px;

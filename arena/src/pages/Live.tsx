@@ -8,6 +8,7 @@ import {
   PositionRecord,
   TradeRecord,
   fetchBenchmark,
+  fetchIndices,
   fetchLiveAccount,
   fetchLiveEquity,
   fetchLiveLedger,
@@ -94,6 +95,8 @@ export default function Live() {
 
   // 基准指数（US=等权 NDX100 / CN=SSE50 / HK 暂无）
   const bench = usePolling(() => fetchBenchmark(market), [market], 300000);
+  // 当日实时指数（顶部行情条）：CN 桥日K 6 指数 / US NDX100 基准 / HK 空
+  const indices = usePolling(() => fetchIndices(market), [market], 30000);
 
   // 当前市场全部 agent 净值序列
   const perfs = usePolling(
@@ -528,16 +531,32 @@ export default function Live() {
 
   return (
     <div className="live">
-      {/* 顶部状态条：价格 + 表演者 + 市场切换 */}
+      {/* 顶部状态条：当日实时指数 + 表演者 + 市场切换 */}
       <div className="top-status-bar">
         <div className="status-group">
-          <div className="price-item">
-            <span className="price-label">{benchLabelOf(market)} 指数</span>
-            <span className="price-value">{benchStats.last != null ? fmtMoney(benchStats.last) : '—'}</span>
-            <span className={`price-change ${benchStats.dayChange != null ? pnlClass(benchStats.dayChange) : 'dim'}`}>
-              {benchStats.dayChange != null ? fmtPct(benchStats.dayChange) : '无行情'}
-            </span>
-          </div>
+          {indices.data?.indices?.length ? (
+            <div className="index-bar">
+              {indices.data.indices.map((q) => (
+                <div className="index-item" key={q.code}>
+                  <span className="index-name">{q.name}</span>
+                  <span className="index-last">
+                    {q.last.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                  </span>
+                  <span className={`index-chg ${pnlClass(q.change_pct / 100)}`}>
+                    {fmtPct(q.change_pct / 100)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="price-item">
+              <span className="price-label">{benchLabelOf(market)} 指数</span>
+              <span className="price-value">{benchStats.last != null ? fmtMoney(benchStats.last) : '—'}</span>
+              <span className={`price-change ${benchStats.dayChange != null ? pnlClass(benchStats.dayChange) : 'dim'}`}>
+                {benchStats.dayChange != null ? fmtPct(benchStats.dayChange) : '无行情'}
+              </span>
+            </div>
+          )}
           <div className="performers">
             <div className="performer">
               <span className="performer-label">最高</span>

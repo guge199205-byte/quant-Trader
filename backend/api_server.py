@@ -674,6 +674,84 @@ def live_trades(limit: int = Query(200, ge=1, le=5000)):
     return {"success": True, "data": records[:limit]}
 
 
+# ---------- 当日实时指数（顶部行情条） ----------
+
+# A 股主流指数（通达信代码）：上证指数用 000001.SH（999999 该源不支持）
+INDEX_DEFS: tuple = (
+    ("000001.SH", "上证指数"),
+    ("000016.SH", "上证50"),
+    ("000300.SH", "沪深300"),
+    ("399001.SZ", "深证成指"),
+    ("399006.SZ", "创业板指"),
+    ("000688.SH", "科创50"),
+)
+
+
+def _bench_last_two(path: Path):
+    """基准文件（AlphaVantage 格式）最后两根日线 → 单元素 indices 列表或 None。
+
+    桥/TdxAiData 不可用时的兜底：至少让行情条还有当天基准可看。
+    """
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        series = doc.get("Time Series (Daily)") or {}
+        if len(series) < 2:
+            return None
+        days = sorted(series.items())
+        c1, c2 = float(days[-2][1].get("4. close") or 0), float(days[-1][1].get("4. close") or 0)
+        if c1 <= 0 or c2 <= 0:
+            return None
+        name = (doc.get("Meta Data") or {}).get("2. Symbol", "INDEX")
+        return [{"code": name, "name": name, "last": round(c2, 2),
+                 "change_pct": round((c2 - c1) / c1 * 100, 2)}]
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+@app.get("/api/live/indices")
+@ttl_cache(10.0)  # 6 次桥调用聚合；30s 轮询下 10s 限频够用
+def live_indices(market: str = "cn"):
+    """当日实时指数（Live 顶部行情条）。
+
+    CN：通达信桥日K最后两根——盘中最后一根即当日实时最新价（与
+    TdxAiData 快照 Now 一致），涨跌幅 = (今收 - 昨收)/昨收；桥失败
+    回退 SSE50 基准文件。US：等权 NDX100 基准文件（无实时源）。
+    HK：暂无数据源返回空。
+    """
+    root = Path(__file__).resolve().parents[1] / "data"
+    if market == "cn":
+        rows: list = []
+        try:
+            broker = _live_broker()
+            for code, name in INDEX_DEFS:
+                try:
+                    klines = broker.get_klines(code)
+                    if not klines or len(klines) < 2:
+                        continue
+                    c2 = float(klines[-1]["close"])
+                    c1 = float(klines[-2]["close"])
+                    if c1 <= 0 or c2 <= 0:
+                        continue
+                    rows.append({"code": code, "name": name, "last": round(c2, 2),
+                                 "change_pct": round((c2 - c1) / c1 * 100, 2)})
+                except Exception:  # noqa: BLE001 单只失败跳过，不拖垮整条
+                    continue
+        except Exception:  # noqa: BLE001 桥不可用 → 基准兜底
+            rows = []
+        if rows:
+            return {"success": True, "data": {"indices": rows}}
+        fallback = _bench_last_two(root / "A_stock" / "index_daily_sse_50.json")
+        if fallback:
+            return {"success": True, "data": {"indices": fallback}}
+        return {"success": True, "data": {"indices": []}}
+    if market == "us":
+        fb = _bench_last_two(root / "benchmark_nasdaq100.json")
+        if fb:
+            return {"success": True, "data": {"indices": fb}}
+        return {"success": True, "data": {"indices": []}}
+    return {"success": True, "data": {"indices": []}}
+
+
 # ---------- 指标 ----------
 
 @app.get("/api/metrics")

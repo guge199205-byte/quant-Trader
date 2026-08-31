@@ -23,3 +23,6 @@ runtime_env_hk.json
 .git
 *.png
 tests
+
+# dsh 运行时数据（root 权限文件 + 会话，compose bind-mount，不打包进镜像）
+dsh/root-dsh

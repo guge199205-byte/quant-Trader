@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { LogLine, PositionRecord, TradeRecord } from '../api/client';
 import { logoOf, modelColor } from './ModelCard';
 import { fmtMoney } from '../utils/format';
-import { renderInline } from '../utils/markdown';
+import { renderInline, renderMarkdown } from '../utils/markdown';
 import './ModelChat.css';
 
 /** 一个决策回合：user prompt（开盘任务）+ assistant 总结（决策推理）+ 当日成交 */
@@ -137,7 +137,7 @@ export default function ModelChat({
                       <span className="mc-caret">{sec.has('prompt') ? '▶' : '▼'}</span>
                       用户提示词
                     </div>
-                    {!sec.has('prompt') && <pre className="mc-code">{renderInline(r.user)}</pre>}
+                    {!sec.has('prompt') && <div className="mc-code">{renderMarkdown(r.user)}</div>}
                   </div>
                 )}
                 {/* 思考链 */}
@@ -147,7 +147,7 @@ export default function ModelChat({
                       <span className="mc-caret">{sec.has('thought') ? '▶' : '▼'}</span>
                       思考链
                     </div>
-                    {!sec.has('thought') && <pre className="mc-code mc-thought">{renderInline(r.thought)}</pre>}
+                    {!sec.has('thought') && <div className="mc-code mc-thought">{renderMarkdown(r.thought)}</div>}
                   </div>
                 )}
                 {/* 交易决策 */}

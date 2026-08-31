@@ -19,7 +19,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  /* 消息卡首行框高度：8px 太矮 → 12px */
+  padding: 12px 14px;
   border-bottom: 1px solid #000;
   cursor: pointer;
   user-select: none;
@@ -30,7 +31,7 @@
 }
 
 .mc-logo {
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1;
 }
 
@@ -117,7 +118,7 @@
   padding: 8px 10px;
   font-family: 'Courier New', monospace;
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1.7;
   color: #222;
   white-space: pre-wrap;
   word-break: break-word;
@@ -130,6 +131,52 @@
 
 .mc-thought {
   border-top: 1px dashed #ccc;
+}
+
+/* ---------- 块级 markdown 排版（renderMarkdown 输出） ---------- */
+
+.mc-md-p {
+  padding: 2px 0;
+}
+
+/* 小节头：### 标题 → 黑底白字（coke 风格），与正文区分 */
+.mc-md-h3,
+.mc-md-h4 {
+  margin: 10px 0 4px;
+  padding: 4px 10px;
+  background: #000;
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+/* #### 次级标题 → 浅灰底黑字，层次弱于 h3 */
+.mc-md-h4 {
+  background: #ececec;
+  color: #000;
+}
+
+.mc-md-list {
+  margin: 2px 0;
+  padding-left: 20px;
+}
+
+.mc-md-list li {
+  margin: 3px 0;
+}
+
+/* ⚠️ / 【】 开头行 → 警示条：黄底 + 左侧竖条 */
+.mc-md-warn {
+  margin: 8px 0;
+  padding: 6px 10px;
+  background: #fff8e1;
+  border-left: 4px solid #f5a623;
+  color: #5a4a00;
+}
+
+.mc-md-warn strong {
+  color: #8a6d00;
 }
 
 .mc-trades {

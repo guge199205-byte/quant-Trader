@@ -38,3 +38,63 @@ export function renderInline(text: string): ReactNode[] {
     );
   });
 }
+
+/**
+ * 块级 markdown 渲染（用于思考链/提示词长文，排版结构化）：
+ *   `### 标题` → 黑底白字小节头；`- ` 连续项 → <ul> 列表；
+ *   `⚠️`/`【】` 开头行 → 警示条（黄底左竖条）；普通行 → 段落。
+ * 行内 `**粗体**`/`code`/`*斜体*` 沿用 renderParts。
+ */
+export function renderMarkdown(text: string): ReactNode[] {
+  const lines = text.split('\n');
+  const out: ReactNode[] = [];
+  let list: string[] | null = null;
+
+  const flushList = (key: number) => {
+    if (list) {
+      out.push(
+        <ul key={key} className="mc-md-list">
+          {list.map((item, j) => (
+            <li key={j}>{renderParts(item)}</li>
+          ))}
+        </ul>
+      );
+      list = null;
+    }
+  };
+
+  lines.forEach((line, i) => {
+    const trimmed = line.trim();
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    const bullet = trimmed.match(/^[-•]\s+(.*)$/);
+    if (heading) {
+      flushList(i);
+      const level = heading[0].match(/^#+/)?.[0].length ?? 3;
+      out.push(
+        <div key={i} className={`mc-md-h${Math.min(level, 4)}`}>
+          {renderParts(heading[1])}
+        </div>
+      );
+    } else if (bullet) {
+      (list ??= []).push(bullet[1]);
+    } else if (trimmed === '') {
+      flushList(i);
+    } else if (trimmed.startsWith('⚠️') || trimmed.startsWith('【')) {
+      flushList(i);
+      out.push(
+        <div key={i} className="mc-md-warn">
+          {renderParts(trimmed)}
+        </div>
+      );
+    } else {
+      flushList(i);
+      out.push(
+        <div key={i} className="mc-md-p">
+          {renderParts(line)}
+        </div>
+      );
+    }
+  });
+  flushList(lines.length);
+  return out;
+}

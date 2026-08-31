@@ -238,15 +238,17 @@
   box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.12);
 }
 
+/* 选中态：品牌色由 ModelCard inline style 注入（--model-accent + 边框/浅底），
+   这里兜底默认蓝 + 名称着色（原黑底白字已废弃） */
 .model-card-mini.selected {
-  background: #000;
+  border-color: #4d6bfe;
+  background: #4d6bfe12;
+  box-shadow: 3px 3px 0 #4d6bfe40;
 }
 
-.model-card-mini.selected .model-name,
-.model-card-mini.selected .model-balance,
-.model-card-mini.selected .model-pnl,
-.model-card-mini.selected .model-tokens {
-  color: #fff;
+.model-card-mini.selected .model-name {
+  color: var(--model-accent, #4d6bfe);
+  font-weight: 700;
 }
 
 .model-tokens {

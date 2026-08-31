@@ -113,7 +113,15 @@ export default function ModelChat({
         const sec = sections[i] ?? new Set<string>();
         const status = dayTrades.length ? 'DAILY DECISION' : r.thought ? 'NO TRADE' : 'PROMPT';
         const dateLabel = r.date ? r.date.slice(5) : '—';
-        const summary = (r.thought || r.user).replace(/\s+/g, ' ').trim();
+        // 第一行摘要：取思考链/提示词的首个非空行（通常是"盘中持仓分析（…）"或
+        // "### 标题"），去掉 markdown 符号，而不是整段原文截断
+        const firstLine =
+          (r.thought || r.user)
+            .split('\n')
+            .map((l) => l.trim())
+            .find((l) => l.length > 0) ?? '';
+        const cleanFirst = firstLine.replace(/^#{1,6}\s*/, '').replace(/\*\*/g, '');
+        const summary = cleanFirst.length > 60 ? cleanFirst.slice(0, 60) + '…' : cleanFirst;
         return (
           <div className={`mc-card ${isOpen ? 'open' : ''}`} key={i}
             style={{ borderColor: modelColor(model) }}>
@@ -203,7 +211,9 @@ function DecisionCard({
 }) {
   const side = (trade.action ?? '').toLowerCase() === 'buy' ? 'buy' : 'sell';
   const name = names[trade.symbol];
+  // 决策理由：去掉 ### 前缀/剥掉裸 **（renderInline 处理），截断到 160 字
   const reason = thought ? thought.replace(/\s+/g, ' ').slice(0, 160) + '…' : '—';
+  const reasonNodes = reason === '—' ? reason : renderInline(reason);
   return (
     <div className="mc-decision">
       <div className="mc-field">
@@ -236,7 +246,7 @@ function DecisionCard({
       </div>
       <div className="mc-field mc-field-wide">
         <span className="mc-key">决策理由</span>
-        <span className={`mc-val mc-reason ${reason === '—' ? 'na' : ''}`}>{reason}</span>
+        <span className={`mc-val mc-reason ${reason === '—' ? 'na' : ''}`}>{reasonNodes}</span>
       </div>
     </div>
   );

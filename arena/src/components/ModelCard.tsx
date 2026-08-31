@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { AgentTokenUsage, MarketId, marketMeta } from '../api/client';
 import { fmtMoney, fmtPct, pnlClass } from '../utils/format';
 
@@ -51,8 +52,23 @@ export default function ModelCard({
   tokens?: AgentTokenUsage | null;
 }) {
   const meta = marketMeta(market);
+  // 选中态：模型品牌色（边框/浅色底/名称着色），取代黑底白字
+  const accent = modelColor(agent);
   return (
-    <div className={`model-card-mini ${selected ? 'selected' : ''}`} onClick={onClick}>
+    <div
+      className={`model-card-mini ${selected ? 'selected' : ''}`}
+      onClick={onClick}
+      style={
+        selected
+          ? ({
+              borderColor: accent,
+              background: `${accent}12`,
+              boxShadow: `3px 3px 0 ${accent}40`,
+              '--model-accent': accent,
+            } as CSSProperties)
+          : undefined
+      }
+    >
       <div className="model-logo">{logoOf(agent)}</div>
       <div className="model-info">
         <div className="model-name">{shortName(agent)}</div>

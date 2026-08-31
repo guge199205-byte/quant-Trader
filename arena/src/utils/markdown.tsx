@@ -21,7 +21,8 @@ function renderParts(text: string): ReactNode[] {
     if (part.startsWith('*') && part.endsWith('*') && !part.startsWith('**') && part.length > 2) {
       return <em key={j}>{part.slice(1, -1)}</em>;
     }
-    return part;
+    // 未成对闭合的 **（截断/模型输出不规范）不渲染，直接剥掉符号防裸奔
+    return part.replace(/\*\*/g, '');
   });
 }
 

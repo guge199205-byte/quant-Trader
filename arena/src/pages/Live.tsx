@@ -618,19 +618,6 @@ export default function Live() {
                 timeRange={chartRange}
                 height="clamp(360px, 44vw, 560px)"
               />
-              <div className="chart-legend" style={{ marginTop: 6 }}>
-                {lines.map((l) => (
-                  <span className="legend-item" key={l.id}>
-                    <span style={{ color: l.color }}>▬</span> {l.label}
-                  </span>
-                ))}
-                {benchLine && (
-                  <span className="legend-item">
-                    <span style={{ color: benchLine.color }}>- -</span> {benchLine.label}
-                  </span>
-                )}
-              </div>
-
               <div className="model-cards-section">
                 {(perfs.data ?? []).map((p) => {
                   // A股实盘: 模型卡显示实盘分账收益(虚拟净值/¥10万基准), 替代模拟盘回放

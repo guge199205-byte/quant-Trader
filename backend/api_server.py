@@ -265,12 +265,52 @@ def get_performance(agent: str, market: str = Query("us")):
 
 @app.get("/api/agents/{agent}/trade-detail")
 def get_trade_detail(agent: str, market: str = Query("us"), limit: int = Query(25, ge=1, le=200)):
-    """FIFO 重建已平仓逐笔明细（LAST 25 TRADES 表用），最新平仓在前。"""
+    """FIFO 重建已平仓逐笔明细（LAST 25 TRADES 表用），最新平仓在前。
+    cn 实盘：并入当日通达信桥成交回报（logs/live_trade_*.jsonl 带 fill 的行）。"""
     cfg = config()
     records = agent_data.load_position_records(cfg, agent, market, limit=5000)
     closed, _, _ = agent_data.rebuild_closed_trades(cfg, market, records)
     closed.sort(key=lambda t: t["exit_date"], reverse=True)
+    if market == "cn":
+        closed = _merge_live_fills(agent, closed)
     return {"success": True, "data": closed[:limit]}
+
+
+def _merge_live_fills(agent: str, closed: list) -> list:
+    """当日实盘成交（带 fill 回报的行）并入「已完成」明细。
+    卖出后账本已删仓、成本不可考，entry_price 置 0 / pnl 置 None（前端按可见字段渲染）。"""
+    logs_dir = Path(__file__).resolve().parents[1] / "logs"
+    items = list(closed)
+    for f in sorted(logs_dir.glob("live_trade_*.jsonl")):
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            fill = rec.get("fill")
+            if rec.get("agent") != agent or not fill:
+                continue
+            fv = int(fill.get("filled_volume") or 0)
+            if fv <= 0:
+                continue
+            ts = rec.get("ts") or ""
+            items.append({
+                "symbol": rec.get("code"),
+                "exit_date": ts[:10],
+                "qty": fv,
+                "entry_price": 0.0,
+                "exit_price": float(fill.get("filled_price") or rec.get("price") or 0),
+                "notional": 0.0,
+                "fee": 0.0,
+                "pnl": None,
+                "live": True,
+            })
+    items.sort(key=lambda t: str(t.get("exit_date", "")), reverse=True)
+    return items
 
 
 @app.get("/api/agents/{agent}/holdings")
@@ -437,14 +477,16 @@ async def futu_orders(env: str = "SIMULATE"):
 
 @app.get("/api/futu/closed")
 async def futu_closed(env: str = "SIMULATE"):
-    """已平仓行（qty==0 且 realized_pl!=0）→ Live「已完成」tab 港股。"""
+    """已平仓行（qty==0 且 realized_pl!=0）→ Live「已完成」tab 港股。
+    解包 {closed: [...]} 为裸列表（前端按数组消费）。"""
     from backend.services import futu_live
 
     try:
         out = await futu_live.query_closed(_futu_env(env))
     except Exception as e:  # noqa: BLE001
         return {"success": False, "error": f"富途查询失败: {e}"}
-    return {"success": True, "data": out}
+    data = out.get("closed") if isinstance(out, dict) else out
+    return {"success": True, "data": data or []}
 
 
 @app.get("/api/futu/snapshot")
@@ -833,6 +875,7 @@ def live_trades(limit: int = Query(200, ge=1, le=5000)):
     records.sort(key=lambda r: r.get("ts", ""), reverse=True)
     # 补成交价：桥当日委托 filled_price（按 order_id，回退按 code）
     price_map: dict = {}
+    side_map: dict = {}
     try:
         broker = _live_broker()
         for o in broker.get_orders():
@@ -841,6 +884,7 @@ def live_trades(limit: int = Query(200, ge=1, le=5000)):
                 continue
             price_map[o.get("order_id")] = float(fp)
             price_map.setdefault(o.get("stock_code"), float(fp))
+            side_map[o.get("order_id")] = str(o.get("side") or "").lower()
     except Exception:  # noqa: BLE001
         pass
     for rec in records:
@@ -850,6 +894,9 @@ def live_trades(limit: int = Query(200, ge=1, le=5000)):
         price = price_map.get(rid) or price_map.get(rec.get("code"))
         if price:
             rec["price"] = price
+        # 旧日志行没有 side：按桥当日委托回报补全买卖方向
+        if not rec.get("side") and rid and side_map.get(rid):
+            rec["side"] = side_map[rid]
         elif not rec.get("price"):
             rec["price"] = None
     return {"success": True, "data": records[:limit]}

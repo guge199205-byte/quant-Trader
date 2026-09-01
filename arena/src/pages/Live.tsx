@@ -310,14 +310,16 @@ export default function Live() {
     return map;
   }, [liveLedger.data]);
   const liveTradeEvents = (liveTrades.data ?? [])
-    .filter(
-      (t) =>
-        t.mode === 'execute' &&
+    .filter((t) => {
+      // 新格式：wait_fill 成交回报（fill 字段）；旧格式：result.status
+      const hasFill = t.fill && Number(t.fill.filled_volume) > 0;
+      const hasResult =
         t.result &&
         typeof t.result.status === 'string' &&
         t.result.status !== 'rejected' &&
-        !String(t.result.message ?? '').includes('签名'),
-    )
+        !String(t.result.message ?? '').includes('签名');
+      return hasFill || hasResult;
+    })
     .map((t) => ({
       ts: t.ts,
       code: t.code,

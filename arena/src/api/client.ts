@@ -185,14 +185,15 @@ export interface LiveAccount {
 
 export interface LiveTradeLog {
   ts: string;
-  mode: string; // "execute" | "quote" | ...
+  mode: string; // "execute" | "execute_intraday" | ...
   code: string;
   name?: string; // 富途订单自带 stock_name；cn 由前端 stockNames 解析
-  side?: string; // BUY/SELL（富途）；cn live_llm_trade 仅买入
+  side?: string; // BUY/SELL（富途）；cn 由桥当日委托回报补全
   volume: number;
   price?: number | null; // 桥 filled_price（成交价）
   limit_price?: number | null;
   result?: { order_id?: string; status?: string; message?: string } | null;
+  fill?: { order_id?: string; filled_price?: number; filled_volume?: number } | null;
   message?: string | null;
 }
 

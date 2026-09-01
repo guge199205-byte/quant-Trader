@@ -189,9 +189,8 @@ export default function Live() {
     // A股实盘优先：每 agent 分账虚拟净值线（¥10 万起，通达信桥实时价）
     // + 总账户线（桥实时总资产）。序列 ≥2 点才画。
     if (market === 'cn' && eq) {
-      const agentEntries = Object.entries(eq.agents ?? {});
       // 分账线：现金恒定/空仓 agent 用虚线保留（平线也有信息量），有变动才实线
-      const agentLines = agentEntries
+      const agentLines = Object.entries(eq.agents ?? {})
         .filter(([, pts]) => pts.length >= 2)
         .map(([name, pts]) => {
           const vals = pts.map((p) => p.value);
@@ -207,24 +206,6 @@ export default function Live() {
             dash: flat,       // 空仓/无变动 → 虚线
           };
         });
-      // 分账合计：同一时刻各 agent 净值之和（record_equity 同 key 写入，时间戳对齐），
-      // 始终显示——3 agent 合计 ¥30 万起，资金总量最直观
-      const sumLine = (() => {
-        const byTs = new Map<string, number>();
-        for (const [, pts] of agentEntries) {
-          for (const e of pts) {
-            byTs.set(e.ts, (byTs.get(e.ts) ?? 0) + (Number(e.value) || 0));
-          }
-        }
-        const pts = [...byTs.entries()]
-          .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-          .map(([ts, v]) => toEq(v, ts));
-        if (pts.length < 2) return null;
-        return {
-          ...toChartLine('live-sum', '分账合计', '#222', pts),
-          abs: true, // 绝对金额线：右侧独立刻度（¥30 万量级，不与 pct 线同轴）
-        };
-      })();
       // 总账户线（¥92.5 万量级）只兜底：没有任何分账线可画时才显示。
       // 用户口径 = 分账 ¥10 万，总账户已买很多、与 10 万不具可比性。
       const totalLine =
@@ -236,8 +217,8 @@ export default function Live() {
               eq.total.map((e) => toEq(e.value, e.ts)),
             )
           : null;
-      if (agentLines.length || sumLine || totalLine) {
-        return [...agentLines, ...(sumLine ? [sumLine] : []), ...(totalLine ? [totalLine] : [])];
+      if (agentLines.length || totalLine) {
+        return [...agentLines, ...(totalLine ? [totalLine] : [])];
       }
     }
     return (perfs.data ?? []).map((p) =>

@@ -86,17 +86,19 @@ def _query_account_dict(ctx, trd_env) -> dict:
     return out
 
 
-def _open_ctx(op: str, host: str, port: int):
+def _open_ctx(op: str, host: str, port: int, market: str = "HK"):
     """按 op 开对应连接：snapshot 走行情连接（OpenQuoteContext；本 SDK 版本的
-    OpenSecTradeContext 不暴露 get_market_snapshot），交易类 op 走 OpenSecTradeContext。"""
+    OpenSecTradeContext 不暴露 get_market_snapshot），交易类 op 走 OpenSecTradeContext。
+    market=HK/US（富途支持港股/美股交易）。"""
     if op == "snapshot":
         from futu import OpenQuoteContext
 
         return OpenQuoteContext(host=host, port=port, is_encrypt=True)
     from futu import OpenSecTradeContext, TrdMarket
 
+    mkt = TrdMarket.US if str(market).upper() == "US" else TrdMarket.HK
     return OpenSecTradeContext(
-        filter_trdmarket=TrdMarket.HK,
+        filter_trdmarket=mkt,
         host=host,
         port=port,
         security_firm="FUTUSECURITIES",
@@ -120,7 +122,7 @@ def main() -> int:
 
     from futu import ModifyOrderOp, OrderType, TrdEnv, TrdSide
 
-    ctx = _open_ctx(op, host, port)
+    ctx = _open_ctx(op, host, port, payload.get("market", "HK"))
     try:
         env = TrdEnv.REAL if payload.get("env") == "REAL" else TrdEnv.SIMULATE
         out: dict = {}

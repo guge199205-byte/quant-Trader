@@ -317,6 +317,43 @@ def _tiger_creds() -> dict:
         return {}
 
 
+def _ib_creds() -> dict:
+    """IBKR 凭据：config/brokers.json ib 段（宿主脚本强制 127.0.0.1）。"""
+    try:
+        data = json.loads((ROOT / "config" / "brokers.json").read_text(encoding="utf-8"))
+        cfg = dict((data or {}).get("ib") or {})
+    except (OSError, json.JSONDecodeError):
+        cfg = {}
+    cfg["gateway_host"] = "127.0.0.1"
+    return cfg
+
+
+def broker_for(market: str) -> str:
+    """市场→交易所映射（config/broker_market.json，总控可配）。默认 hk=tiger/us=ibkr。"""
+    try:
+        data = json.loads((ROOT / "config" / "broker_market.json").read_text(encoding="utf-8"))
+        brk = (data or {}).get(market)
+        if brk in ("tiger", "ibkr", "futu", "tdx"):
+            return brk
+    except (OSError, json.JSONDecodeError):
+        pass
+    return "tiger" if market == "hk" else "ibkr"
+
+
+def open_broker(market: str = "hk"):
+    """按映射实例化执行券商（tiger/ibkr 通用接口；futu 暂走 /api/futu/place）。"""
+    brk = broker_for(market)
+    if brk == "ibkr":
+        from agent_tools.brokers.ibkr_bridge import IbkrBridgeBroker
+
+        return IbkrBridgeBroker(_ib_creds())
+    if brk == "futu":
+        raise NotImplementedError("富途执行经 /api/futu/place（v2），请选 tiger 或 ibkr")
+    from agent_tools.brokers.tiger_bridge import TigerBridgeBroker
+
+    return TigerBridgeBroker(_tiger_creds())
+
+
 def _hk_log(rec: dict) -> None:
     """港股成交日志 → logs/live_trade_hk_YYYYMMDD.jsonl。"""
     from datetime import datetime
@@ -342,11 +379,10 @@ def execute_hk_decisions(agent: str, decisions: list, dry_run: bool = True) -> l
 
     from hk_ledger import (agent_remaining, agent_virtual_cash, ensure_agent,
                            load_ledger, record_buy, record_sell, save_ledger)
-    from agent_tools.brokers.tiger_bridge import TigerBridgeBroker
 
     ledger = ensure_agent(load_ledger(), agent)
     try:
-        broker = TigerBridgeBroker(_tiger_creds())
+        broker = open_broker("hk")
         positions = broker.get_positions(None, "", market="hk")
         cash = broker.get_cash(None, "")
     except Exception as exc:  # noqa: BLE001

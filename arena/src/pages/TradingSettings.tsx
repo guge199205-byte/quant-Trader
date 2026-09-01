@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { BrokerMarketInfo, fetchBrokerMarket, saveBrokerMarket } from '../api/client';
 import { api } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
 import './TradingSettings.css';
@@ -651,6 +652,7 @@ export default function TradingSettings({ embedded = false }: { embedded?: boole
             </div>
           </div>
         </div>
+        <MappingPicker />
         <div className="ts-broker-grid">
           {Object.keys(BROKER_META).map((key) => {
             const meta = BROKER_META[key];
@@ -788,6 +790,65 @@ function BrokerCard({
           <button className="ts-btn" onClick={() => void test()} disabled={busy}>测试连接</button>
         </div>
         <div className={`ts-broker-msg ${msg?.ok ? 'ok' : 'err'}`}>{msg?.text ?? ''}</div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- 市场→交易所映射（哪个市场用哪个券商执行） ----------
+
+const MARKET_LABELS: Record<string, string> = { cn: '🇨🇳 A股', hk: '🇭🇰 港股', us: '🇺🇸 美股' };
+const BROKER_LABELS: Record<string, string> = {
+  tdx: '通达信桥', futu: '富途证券', tiger: '老虎证券', ibkr: '盈透 IB',
+};
+
+function MappingPicker() {
+  const [info, setInfo] = useState<BrokerMarketInfo | null>(null);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    fetchBrokerMarket()
+      .then((d) => { setInfo(d); setValues(d.mapping ?? {}); })
+      .catch(() => {});
+  }, []);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const d = await saveBrokerMarket(values);
+      setInfo(d);
+      setMsg({ ok: true, text: '映射已保存：执行链将按此选择券商（A股固定通达信桥）' });
+    } catch {
+      setMsg({ ok: false, text: '保存失败' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="ts-card-desc" style={{ margin: '8px 0 12px' }}>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>市场 → 交易所（执行通道选择）</div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        {Object.entries(MARKET_LABELS).map(([mkt, label]) => (
+          <label key={mkt} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span>{label}</span>
+            <select
+              className="ts-input"
+              style={{ width: 130, padding: '4px 6px' }}
+              value={values[mkt] ?? ''}
+              onChange={(e) => setValues((prev) => ({ ...prev, [mkt]: e.target.value }))}
+              disabled={mkt === 'cn'}
+            >
+              {(info?.choices?.[mkt] ?? [mkt === 'cn' ? 'tdx' : 'tiger']).map((b) => (
+                <option key={b} value={b}>{BROKER_LABELS[b] ?? b}</option>
+              ))}
+            </select>
+          </label>
+        ))}
+        <button className="ts-btn dark" onClick={() => void save()} disabled={busy}>保存映射</button>
+        {msg && <span className={`ts-broker-msg ${msg.ok ? 'ok' : 'err'}`}>{msg.text}</span>}
       </div>
     </div>
   );

@@ -64,15 +64,24 @@ def in_window(now_ny: datetime | None = None) -> bool:
 
 
 def _broker():
-    """宿主脚本用 127.0.0.1（容器配置的局域网 IP 不在 Gateway 白名单）。"""
-    from agent_tools.brokers.ibkr_bridge import IbkrBridgeBroker
-
+    """按市场→交易所映射实例化（us=ibkr/tiger）；宿主脚本强制 127.0.0.1。"""
+    try:
+        data = json.loads((ROOT / "config" / "broker_market.json").read_text(encoding="utf-8"))
+        brk = (data or {}).get("us", "ibkr")
+    except (OSError, json.JSONDecodeError):
+        brk = "ibkr"
     cfg = {}
     try:
-        data = json.loads((ROOT / "config" / "brokers.json").read_text(encoding="utf-8"))
-        cfg = dict((data or {}).get("ib") or {})
+        data2 = json.loads((ROOT / "config" / "brokers.json").read_text(encoding="utf-8"))
+        cfg = dict((data2 or {}).get(brk) or {})
     except (OSError, json.JSONDecodeError):
         pass
+    if brk == "tiger":
+        from agent_tools.brokers.tiger_bridge import TigerBridgeBroker
+
+        return TigerBridgeBroker(cfg)
+    from agent_tools.brokers.ibkr_bridge import IbkrBridgeBroker
+
     cfg["gateway_host"] = "127.0.0.1"
     return IbkrBridgeBroker(cfg)
 

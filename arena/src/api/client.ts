@@ -668,3 +668,14 @@ export const fetchBenchmark = async (market: MarketId): Promise<BenchPoint[]> =>
     return [];
   }
 };
+
+// ---------- 市场→交易所映射（总控可配：哪个市场用哪个券商执行） ----------
+
+export interface BrokerMarketInfo {
+  mapping: Record<string, string>;
+  choices: Record<string, string[]>;
+}
+
+export const fetchBrokerMarket = () => unwrap<BrokerMarketInfo>(api.get('/broker-market'));
+export const saveBrokerMarket = (values: Record<string, string>) =>
+  unwrap<BrokerMarketInfo>(api.put('/broker-market', { values }));

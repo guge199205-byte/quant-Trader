@@ -523,6 +523,81 @@ async def futu_snapshot(codes: str = ""):
     return {"success": True, "data": out}
 
 
+# ---------- 富途下单/撤单（HK/US 实盘/模拟；OpenD 交易连接） ----------
+
+@app.post("/api/futu/place")
+async def futu_place(payload: dict = Body(...)):
+    """富途下单（env=SIMULATE/REAL，market=HK/US）。order: {code, price, quantity, order_type, trd_side}"""
+    from backend.services import futu_live
+
+    env = str(payload.get("env") or "SIMULATE")
+    market = str(payload.get("market") or "HK")
+    order = payload.get("order") or {}
+    if not order.get("code") or not order.get("quantity"):
+        return {"success": False, "error": "order.code / order.quantity 必填"}
+    try:
+        out = await futu_live.place_order(order, env, market)
+        return {"success": bool(out.get("success")), "data": out}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"富途下单失败: {e}"}
+
+
+@app.post("/api/futu/cancel")
+async def futu_cancel(payload: dict = Body(...)):
+    """富途撤单（env/market 同上）。"""
+    from backend.services import futu_live
+
+    env = str(payload.get("env") or "SIMULATE")
+    market = str(payload.get("market") or "HK")
+    order_id = str(payload.get("order_id") or "")
+    if not order_id:
+        return {"success": False, "error": "order_id 必填"}
+    try:
+        out = await futu_live.cancel_order(order_id, env, market)
+        return {"success": bool(out.get("success")), "data": out}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"富途撤单失败: {e}"}
+
+
+# ---------- 市场→交易所映射（总控可配：哪个市场用哪个券商） ----------
+
+_BROKER_MARKET_FILE = Path(__file__).resolve().parents[1] / "config" / "broker_market.json"
+_BROKER_MARKET_DEFAULT = {"cn": "tdx", "hk": "tiger", "us": "ibkr"}
+_BROKER_CHOICES = {"cn": ["tdx"], "hk": ["tiger", "ibkr", "futu"], "us": ["ibkr", "tiger"]}
+
+
+def load_broker_market() -> dict:
+    try:
+        data = json.loads(_BROKER_MARKET_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {k: (v if v in _BROKER_CHOICES.get(k, []) else _BROKER_MARKET_DEFAULT[k])
+                    for k in _BROKER_MARKET_DEFAULT}
+    except (OSError, json.JSONDecodeError):
+        pass
+    return dict(_BROKER_MARKET_DEFAULT)
+
+
+@app.get("/api/broker-market")
+def get_broker_market():
+    """市场→交易所映射（前端总控选择器读取）。"""
+    return {"success": True, "data": {"mapping": load_broker_market(),
+                                      "choices": _BROKER_CHOICES}}
+
+
+@app.put("/api/broker-market")
+def put_broker_market(payload: dict = Body(...)):
+    """保存市场→交易所映射。values: {market: broker}"""
+    values = payload.get("values") or {}
+    current = load_broker_market()
+    for mkt, brk in values.items():
+        if mkt in _BROKER_CHOICES and brk in _BROKER_CHOICES[mkt]:
+            current[mkt] = brk
+    _BROKER_MARKET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _BROKER_MARKET_FILE.write_text(json.dumps(current, ensure_ascii=False, indent=1),
+                                   encoding="utf-8")
+    return {"success": True, "data": {"mapping": current}}
+
+
 # ---------- 老虎证券（港股实盘通道，tigeropen SDK；凭据 config/brokers.json tiger） ----------
 
 def _tiger_broker(env: str = "SIMULATE"):
@@ -538,12 +613,12 @@ def _tiger_broker(env: str = "SIMULATE"):
 
 
 @app.get("/api/tiger/account")
-async def tiger_account(env: str = "SIMULATE"):
-    """老虎账户资产+持仓（默认模拟盘；env=REAL 实盘）→ Live 港股实盘面板。"""
+async def tiger_account(env: str = "SIMULATE", market: str = "hk"):
+    """老虎账户资产+持仓（默认模拟盘；env=REAL 实盘；market=hk/us）→ Live 实盘面板。"""
     try:
         broker = _tiger_broker(env)
         cash = broker.get_cash(None, "")
-        positions = broker.get_positions(None, "", market="hk")
+        positions = broker.get_positions(None, "", market=market)
         return {"success": True, "data": {
             "cash": cash,
             "positions": positions,
@@ -551,17 +626,19 @@ async def tiger_account(env: str = "SIMULATE"):
             "broker": "tiger",
             "env": "REAL" if env.upper() == "REAL" else "SIMULATE",
             "account": broker.account,
+            "market": market,
         }}
     except Exception as e:  # noqa: BLE001
         return {"success": False, "error": f"老虎查询失败: {e}"}
 
 
 @app.get("/api/tiger/orders")
-async def tiger_orders(limit: int = Query(50, ge=1, le=500), env: str = "SIMULATE"):
-    """老虎当日委托（含成交/在途）→ Live 港股成交 tab。"""
+async def tiger_orders(limit: int = Query(50, ge=1, le=500), env: str = "SIMULATE",
+                         market: str = "hk"):
+    """老虎当日委托（含成交/在途；market=hk/us）→ Live 成交 tab。"""
     try:
         broker = _tiger_broker(env)
-        return {"success": True, "data": broker.get_orders(market="hk", limit=limit)}
+        return {"success": True, "data": broker.get_orders(market=market, limit=limit)}
     except Exception as e:  # noqa: BLE001
         return {"success": False, "error": f"老虎委托查询失败: {e}"}
 
@@ -570,12 +647,12 @@ async def tiger_orders(limit: int = Query(50, ge=1, le=500), env: str = "SIMULAT
 async def tiger_transactions(start: str = Query("2026-08-01"),
                              end: str = Query("2099-12-31"),
                              limit: int = Query(200, ge=1, le=1000),
-                             env: str = "SIMULATE"):
-    """老虎历史成交（get_filled_orders，日期范围）→ 「已完成」历史数据源。"""
+                             env: str = "SIMULATE", market: str = "hk"):
+    """老虎历史成交（get_filled_orders，日期范围；market=hk/us）→ 「已完成」历史数据源。"""
     try:
         broker = _tiger_broker(env)
         return {"success": True,
-                "data": broker.get_filled_orders(start, end, market="hk", limit=limit)}
+                "data": broker.get_filled_orders(start, end, market=market, limit=limit)}
     except Exception as e:  # noqa: BLE001
         return {"success": False, "error": f"老虎历史成交查询失败: {e}"}
 

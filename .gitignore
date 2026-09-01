@@ -147,3 +147,4 @@ logs/live_trade_hk_*.jsonl
 data/us_ledger.json
 logs/live_trade_us_*.jsonl
 data/agent_data_us/
+config/broker_market.json

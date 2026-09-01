@@ -121,3 +121,15 @@ async def query_closed(env: str = "SIMULATE") -> dict:
 async def query_snapshot(codes: list[str]) -> dict:
     """实时快照：{snapshot: {code: {name, last_price, prev_close, day_chg, ...}}}。"""
     return await run_op("snapshot", {"codes": [str(c) for c in codes]})
+
+
+async def place_order(order: dict, env: str = "SIMULATE", market: str = "HK") -> dict:
+    """富途下单（HK/US 实盘/模拟）：order {code, price, quantity, order_type, trd_side}。"""
+    return await run_op("place", {"order": order, "env": env.upper(),
+                                  "market": str(market).upper()})
+
+
+async def cancel_order(order_id: str, env: str = "SIMULATE", market: str = "HK") -> dict:
+    """撤单（HK/US 实盘/模拟）。"""
+    return await run_op("cancel", {"order_id": order_id, "env": env.upper(),
+                                   "market": str(market).upper()})

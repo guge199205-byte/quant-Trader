@@ -90,9 +90,11 @@ class IbkrBridgeBroker(Broker):
     def _stock(symbol: str):
         from ib_insync import Stock
 
-        # IBKR 代码：AAPL(美股) / 0700.HK(港股) / 600519.SH(A股)
+        # IBKR 代码：AAPL(美股) / 0700.HK(港股，需 SEHK 交易所 + 去前导零) / 600519.SH(A股)
         if symbol.endswith(".HK"):
-            return Stock(symbol.replace(".HK", ""), "SMART", "HKD")
+            # 港股 IBKR 标准：无前导零（0700 → 700），交易所 SEHK（SMART 找不到定义）
+            sym = symbol.replace(".HK", "").lstrip("0") or "0"
+            return Stock(sym, "SEHK", "HKD")
         if symbol.endswith((".SH", ".SZ")):
             return Stock(symbol, "SMART", "CNH")
         return Stock(symbol, "SMART", "USD")

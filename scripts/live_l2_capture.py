@@ -37,10 +37,15 @@ sys.path.insert(0, str(ROOT / "scripts"))
 FACTORS_FILE = ROOT / "data" / "l2_factors_live.json"
 STATE_FILE = ROOT / "data" / "l2_state.json"
 STATUS_FILE = ROOT / "data" / "l2_status.json"
+MARKET_FILE = ROOT / "data" / "market_snapshot.json"
 SAMPLE_WINDOW = 40           # 滚动窗口样本数（每 pass 每只 1 样本）
 CALL_INTERVAL_SEC = 1.5      # 桥调用节奏（≤40/min，限流 60/min 与行情推送共享）
 MAX_WATCHLIST = 30           # 轮询上限（持仓 + 候选池）
 MAX_CALLS_PER_PASS = 80      # 单轮桥调用预算（安全阀）
+
+# 大盘指数（桥实时快照）+ 持仓板块（get_relation → 板块指数快照）
+INDEX_CODES = [("000001.SH", "上证指数"), ("399001.SZ", "深证成指"), ("000300.SH", "沪深300")]
+MAX_SECTOR_CALLS = 5         # 板块指数快照预算（每轮）
 
 ZONE_BOUNDARIES = [("T3", (600, 630)), ("T4", (630, 660)), ("T5", (660, 690)), ("T6", (780, 810))]
 # 时段（分钟数, 开盘后偏移）: T3=10:00-10:30, T4=10:30-11:00, T5=11:00-11:30, T6=13:00-13:30
@@ -359,17 +364,141 @@ def load_factors() -> dict:
         return {}
 
 
+# ---------- 大盘/板块上下文（桥快照，不占因子节奏） ----------
+
+def fetch_market_context(broker, holdings_codes: list) -> dict:
+    """大盘指数 + 持仓股所属板块（行业优先）+ 板块指数当日涨跌。
+    全部经桥透传；单只失败跳过。→ data/market_snapshot.json（盘中分析提示词消费）。"""
+    ctx: dict = {"ts": now_cn().isoformat(timespec="seconds"), "indices": {}, "sectors": {}}
+    for code, name in INDEX_CODES:
+        try:
+            s = parse_snapshot(broker.tdx_call("get_market_snapshot", {"stock_code": code}))
+            if s.get("now") and s.get("pre_close"):
+                ctx["indices"][code] = {
+                    "name": name, "now": s["now"],
+                    "chg_pct": round((s["now"] / s["pre_close"] - 1) * 100, 2),
+                }
+        except Exception:  # noqa: BLE001
+            pass
+    # 个股所属板块：行业板块优先（get_relation 返回 行业/地区/概念 混合，取前两类）
+    sector_by_code: dict = {}
+    for code in holdings_codes[:5]:
+        try:
+            rel = broker.tdx_call("get_relation", {"stock_code": code})
+            rows = rel.get("Value") or (rel if isinstance(rel, list) else [])
+            for r in rows:
+                btype = str(r.get("BlockType") or "")
+                if btype in ("行业", "概念"):
+                    sector_by_code.setdefault(code, []).append(
+                        {"code": r.get("BlockCode"), "name": r.get("BlockName"), "type": btype})
+                    break  # 每只取第一个行业/概念板块
+        except Exception:  # noqa: BLE001
+            continue
+    # 板块指数当日涨跌（预算内）
+    seen: set = set()
+    for code, rels in sector_by_code.items():
+        for rel in rels:
+            bcode = rel.get("code")
+            if not bcode or bcode in seen or len(seen) >= MAX_SECTOR_CALLS:
+                continue
+            seen.add(bcode)
+            try:
+                s = parse_snapshot(broker.tdx_call("get_market_snapshot", {"stock_code": bcode}))
+                if s.get("now") and s.get("pre_close"):
+                    ctx["sectors"][bcode] = {
+                        "name": rel.get("name"), "type": rel.get("type"),
+                        "now": s["now"],
+                        "chg_pct": round((s["now"] / s["pre_close"] - 1) * 100, 2),
+                    }
+            except Exception:  # noqa: BLE001
+                continue
+    _atomic_write(MARKET_FILE, ctx)
+    return ctx
+
+
+_TICK_OK = True  # TdxAiData 分笔权限标记（Token Insufficient 时全局置 False 快速跳过）
+_MINUTE_OK = True  # TdxAiData 分钟K限流标记（超时/失败时本轮起跳过）
+
+
+def _timebox(fn, timeout_s: float = 5.0, *args, **kwargs):
+    """线程 + join 硬超时：TdxAiData 重试循环可能无限挂（限流时），必须时间盒。"""
+    import threading
+
+    res: dict = {}
+
+    def _run():
+        try:
+            res["v"] = fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            res["e"] = exc
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        raise TimeoutError("TdxAiData 调用超时（限流？）")
+    if "e" in res:
+        raise res["e"]
+    return res.get("v")
+
+
+def fetch_minute_tick(code: str) -> tuple[dict, dict]:
+    """TdxAiData 分钟K特征 + 分笔失衡（走 TdxAiData 官方接口，不占桥限流）。
+    分笔需额外 token 权限（实测 Token Insufficient），默认跳过——设
+    BAYMAX_TICK_ENABLED=1 才尝试；分钟K 5s 硬超时，限流时全局跳过不拖慢采集。"""
+    from agent_tools.datasources import tdx_aidata
+
+    global _TICK_OK, _MINUTE_OK
+    mf: dict = {}
+    tk: dict = {}
+    if _MINUTE_OK:
+        try:
+            bars = _timebox(tdx_aidata.get_klines, 5.0, code, interval="5m", count=12) or []
+            closes = [float(b.get("close") or 0) for b in bars if b.get("close")]
+            vols = [float(b.get("volume") or 0) for b in bars if b.get("volume")]
+            if len(closes) >= 6 and closes[0] > 0:
+                mf["mom30m"] = round((closes[-1] / closes[-6] - 1) * 100, 3)
+                rets = [c2 / c1 - 1 for c1, c2 in zip(closes, closes[1:]) if c1 > 0]
+                if rets:
+                    avg = sum(rets) / len(rets)
+                    mf["vol5m"] = round((sum((r - avg) ** 2 for r in rets) / len(rets)) ** 0.5 * 100, 3)
+            if len(vols) >= 6:
+                avg = sum(vols) / len(vols)
+                mf["vol_ratio"] = round(vols[-1] / avg, 2) if avg > 0 else None
+        except Exception as exc:  # noqa: BLE001
+            _MINUTE_OK = False
+            print(f"  ⚠️ TdxAiData 分钟K不可用（限流/超时），本轮起跳过: {exc}")
+    if _TICK_OK and os.getenv("BAYMAX_TICK_ENABLED") == "1":
+        try:
+            for date_fmt in (now_cn().strftime("%Y%m%d"), now_cn().strftime("%Y-%m-%d")):
+                t = tdx_aidata.get_tick_data(code, date_fmt, wantnum=100)
+                rows = t.get("data") if isinstance(t, dict) else t
+                if not isinstance(rows, list) or not rows:
+                    continue
+                buy = sum(1 for r in rows if str(r.get("BSFlag") or "") in ("B", "1"))
+                sell = sum(1 for r in rows if str(r.get("BSFlag") or "") in ("S", "2"))
+                if buy + sell > 0:
+                    tk = {"buy": buy, "sell": sell, "ratio": round((buy - sell) / (buy + sell), 3)}
+                break
+        except Exception as exc:  # noqa: BLE001
+            if "Token" in str(exc) or "Insufficient" in str(exc) or "13" in str(exc):
+                _TICK_OK = False
+                print("  ⚠️ TdxAiData 分笔权限不足（Token Insufficient），本轮起跳过分笔")
+    return mf, tk
+
+
 # ---------- 单轮采集 ----------
 
 def run_pass(broker, dry_debug: bool = False) -> int:
     """单轮采集：持仓 + 候选池 → 13 因子 → 落盘。返回更新只数。"""
     acct = broker._account_query()
     positions = acct.get("positions") or []
-    codes = []
+    pos_codes = []
     for p in positions:
         code = str(p.get("stock_code") or "").strip()
-        if code and code not in codes:
-            codes.append(code)
+        if code and code not in pos_codes:
+            pos_codes.append(code)
+    codes = list(pos_codes)
     try:
         from live_llm_trade import load_pool
 
@@ -417,8 +546,20 @@ def run_pass(broker, dry_debug: bool = False) -> int:
             "factors": fac,
             "signal_score": build_signal_score(fac),
         }
+        # 持仓股附加：分钟K特征 + 分笔失衡（TdxAiData，不占桥限流）
+        if code in set(pos_codes):
+            mf, tk = fetch_minute_tick(code)
+            if mf:
+                factors[code]["minute_feats"] = mf
+            if tk:
+                factors[code]["tick_imb"] = tk
         updated += 1
         time.sleep(CALL_INTERVAL_SEC)  # 桥限流节奏
+    # 大盘指数 + 持仓板块（桥快照）
+    try:
+        fetch_market_context(broker, pos_codes)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠️ 大盘/板块上下文失败: {exc}")
     _atomic_write(STATE_FILE, state)
     _atomic_write(FACTORS_FILE, factors)
     _atomic_write(STATUS_FILE, {

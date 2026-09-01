@@ -242,6 +242,15 @@ def load_orderbook(broker, codes: list) -> dict:
     return out
 
 
+def load_market_context() -> dict:
+    """大盘/板块上下文（live_l2_capture 每 5 分钟写 data/market_snapshot.json）。"""
+    try:
+        d = json.loads((ROOT / "data" / "market_snapshot.json").read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def load_news(codes: list[str], hours: int = 8, limit: int = 30) -> list:
     """盘中新闻（quantmind Huntly/RSS 聚合 + LLM 情感标注）→ 持仓相关条目。
     按 ticker 过滤 + 北京时间转换；失败返回空列表（不阻塞分析，同 load_l2_factors）。"""
@@ -325,6 +334,17 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
         ]
     else:
         lines += ["", "（本轮为首次分析，无上一轮建议）"]
+    # 大盘 + 持仓相关板块（live_l2_capture 每 5 分钟采集）
+    ctx = load_market_context()
+    if ctx.get("indices"):
+        lines += ["", "大盘（桥实时）：", ""]
+        for code, idx in ctx["indices"].items():
+            lines.append(f"- {idx.get('name', code)}: {idx.get('now')}（{idx.get('chg_pct'):+.2f}%）")
+    sectors = ctx.get("sectors") or {}
+    if sectors:
+        lines += ["", "持仓相关板块：", ""]
+        for bcode, s in list(sectors.items())[:5]:
+            lines.append(f"- {s.get('name', bcode)}（{s.get('type', '')}）: {s.get('chg_pct'):+.2f}%")
     # L2 微观结构因子（通达信实时采集，盘中多批次；核心因子可能为 0/缺失）
     l2 = load_l2_factors([r["code"] for r in rows])
     if l2:
@@ -354,6 +374,26 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
             "价量背离=价格与成交量方向背离，冲击半衰=价格冲击衰减速度，资金流失衡=主动买卖失衡。"
             "L2 因子辅助判断盘中买卖压力，操作建议时可参考。",
         ]
+        # 分钟K特征 + 分笔失衡（TdxAiData 实时，持仓股）
+        mf_lines = []
+        for r in rows:
+            rec = l2.get(r["code"]) or {}
+            mf = rec.get("minute_feats") or {}
+            tk = rec.get("tick_imb") or {}
+            if not mf and not tk:
+                continue
+            parts = []
+            if mf.get("mom30m") is not None:
+                parts.append(f"30min动量 {mf['mom30m']:+.2f}%")
+            if mf.get("vol5m") is not None:
+                parts.append(f"5min波动 {mf['vol5m']:.2f}%")
+            if mf.get("vol_ratio") is not None:
+                parts.append(f"量比 {mf['vol_ratio']}")
+            if tk:
+                parts.append(f"分笔 买{tk.get('buy', 0)}/卖{tk.get('sell', 0)}（失衡 {tk.get('ratio', 0):+.2f}）")
+            mf_lines.append(f"- {r['code']}: {' · '.join(parts)}")
+        if mf_lines:
+            lines += ["", "分钟/分笔（TdxAiData 实时，近 12 根 5 分钟K + 近 100 笔）：", ""] + mf_lines
     else:
         lines += [
             "",
@@ -395,7 +435,8 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
     lines += [
         "",
         "请逐只给出：①一句话简评（行情/基本面/消息面角度）②操作建议（持有/加仓/减仓/止损）③理由。"
-        "简评请结合上面的 L2 因子、实时盘口与盘中新闻——新闻明显利好/利空时要明确提示风险与机会；"
+        "简评请结合上面的 L2 因子、实时盘口、大盘板块与盘中新闻——大盘/板块明显走弱时优先防守；"
+        "新闻明显利好/利空时要明确提示风险与机会；"
         "盘口强买/强卖（五档失衡 ±30% 以上）时给出对应倾向但别只靠盘口下结论。"
         "今天买入的股票 T+1 明天才能卖，建议时注意这一点。输出简洁 markdown，不用复述表格。",
         "",
@@ -434,6 +475,11 @@ def build_flat_content(pool: list, direction: dict, cash: float, agent: str) -> 
     lines += pool_rows(pool)
     if direction:
         lines += ["", f"大盘方向：{direction}", ""]
+    ctx = load_market_context()
+    if ctx.get("indices"):
+        lines += ["", "大盘（桥实时）：", ""]
+        for code, idx in ctx["indices"].items():
+            lines.append(f"- {idx.get('name', code)}: {idx.get('now')}（{idx.get('chg_pct'):+.2f}%）")
     lines += [
         "",
         "⚠️ T+1 规则：今天买入的明天才能卖；涨停（≥9.9%）的不要追。",

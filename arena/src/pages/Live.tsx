@@ -222,7 +222,7 @@ export default function Live() {
         if (pts.length < 2) return null;
         return {
           ...toChartLine('live-sum', '分账合计', '#222', pts),
-          notional: 300000, // 3 agent × ¥10 万名义
+          abs: true, // 绝对金额线：右侧独立刻度（¥30 万量级，不与 pct 线同轴）
         };
       })();
       // 总账户线（¥92.5 万量级）只兜底：没有任何分账线可画时才显示。

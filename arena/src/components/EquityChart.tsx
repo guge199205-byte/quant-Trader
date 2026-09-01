@@ -5,7 +5,7 @@ import { Area, LinePath } from '@visx/shape';
 import { scaleLinear } from '@visx/scale';
 import { curveMonotoneX } from '@visx/curve';
 import { LinearGradient } from '@visx/gradient';
-import { AxisBottom, AxisLeft } from '@visx/axis';
+import { AxisBottom, AxisLeft, AxisRight } from '@visx/axis';
 import { ParentSize } from '@visx/responsive';
 import dayjs from 'dayjs';
 import { EquityPoint } from '../api/client';
@@ -20,6 +20,8 @@ export interface ChartLine {
   notional?: number;
   /** 虚线（空仓/现金恒定的平线用，保留信息量但不抢视线） */
   dash?: boolean;
+  /** 绝对金额线：不参与 pct 归一化，走右侧独立刻度（如分账合计 ¥30 万量级） */
+  abs?: boolean;
 }
 
 export interface BenchLine {
@@ -83,7 +85,10 @@ export default function EquityChart({
       return w.map((p) => ({ t: p.t, v: (p.v / base) * 100 }));
     };
     return {
-      lines: lines.map((l) => ({ ...l, points: toDisplay(l.points) })),
+      lines: lines.map((l) => ({
+        ...l,
+        points: l.abs ? windowed(l.points) : toDisplay(l.points),
+      })),
       bench: benchmark && mode === 'pct' ? { ...benchmark, points: toDisplay(benchmark.points) } : null,
     };
   }, [lines, benchmark, mode, timeRange]);
@@ -150,7 +155,8 @@ export default function EquityChart({
           const xScale = scaleLinear({ domain: [winStartIdx, winEndIdx], range: [0, iw] });
 
           // Y 域: 当前窗口内数据自适应(+7% 边距; 窗口内无点回退全范围)
-          const yLines = [...display.lines, ...(display.bench ? [display.bench] : [])];
+          // abs 线（分账合计金额）不参与主刻度域——量级不同，右侧单独刻度
+          const yLines = [...display.lines.filter((l) => !l.abs), ...(display.bench ? [display.bench] : [])];
           let vMin = Infinity, vMax = -Infinity;
           for (const l of yLines) {
             for (const p of l.points) {
@@ -173,6 +179,27 @@ export default function EquityChart({
           if (mode === 'dollar' && vMin < 0) vMin = 0; // 绝对净值不画负区
           const padY = (vMax - vMin) * 0.07 || 1;
           const yScale = scaleLinear({ domain: [vMin - padY, vMax + padY], range: [ih, 0] });
+          // 右侧独立刻度（绝对金额线，如分账合计 ¥30 万量级——与 pct 线不同轴）
+          const absLines = display.lines.filter((l) => l.abs);
+          let rMin = Infinity, rMax = -Infinity;
+          for (const l of absLines) {
+            for (const p of l.points) {
+              const idx = idxOf(p.t);
+              if (idx >= winStartIdx && idx <= winEndIdx) {
+                rMin = Math.min(rMin, p.v);
+                rMax = Math.max(rMax, p.v);
+              }
+            }
+          }
+          if (!Number.isFinite(rMin)) { rMin = 0; rMax = 1; }
+          if (rMin === rMax) { rMin -= 1; rMax += 1; }
+          const rPad = (rMax - rMin) * 0.07 || 1;
+          const rightScale = absLines.length
+            ? scaleLinear({ domain: [rMin - rPad, rMax + rPad], range: [ih, 0] })
+            : null;
+          // 线取 y：abs 线走右刻度，其余走主刻度
+          const yOf = (l: { abs?: boolean }, v: number) =>
+            l.abs && rightScale ? rightScale(v) : yScale(v);
 
           // X 轴刻度格式按窗口内采样点数判读: ≤240点≈1交易日→HH:mm;
           // ≤1920点≈8交易日→MM-DD HH:mm; 更久→MM-DD（断轴后点数=交易分钟，无隔夜水分）
@@ -226,6 +253,23 @@ export default function EquityChart({
                       : fmtMoney(Number(v), currency, 0)
                   }
                 />
+                {rightScale && (
+                  <AxisRight
+                    scale={rightScale}
+                    left={margin.left + iw}
+                    numTicks={5}
+                    stroke="rgba(0,0,0,0.2)"
+                    tickStroke="rgba(0,0,0,0.2)"
+                    tickLabelProps={() => ({
+                      fill: '#888', fontSize: 9, textAnchor: 'start', dx: 6,
+                      fontFamily: "'Courier New', monospace",
+                    })}
+                    tickFormat={(v) => {
+                      const n = Number(v);
+                      return n >= 10000 ? `${(n / 10000).toFixed(1)}万` : `${Math.round(n)}`;
+                    }}
+                  />
+                )}
                 <defs>
                   {/* 每线渐变垫层: 线色向下渐隐(柔化视觉); 悬停/聚焦时线本身加光晕 */}
                   {display.lines.map((l, i) => (
@@ -285,15 +329,15 @@ export default function EquityChart({
                         <Area
                           data={l.points}
                           x={(p: { t: number; v: number }) => xScale(idxOf(p.t)) ?? 0}
-                          y0={() => yScale(baseV) ?? 0}
-                          y1={(p: { t: number; v: number }) => yScale(p.v) ?? 0}
+                          y0={() => yOf(l, baseV) ?? 0}
+                          y1={(p: { t: number; v: number }) => yOf(l, p.v) ?? 0}
                           fill={`url(#grad-${i})`}
                           curve={curveMonotoneX}
                         />
                         <LinePath
                           data={l.points}
                           x={(p) => xScale(idxOf(p.t)) ?? 0}
-                          y={(p) => yScale(p.v) ?? 0}
+                          y={(p) => yOf(l, p.v) ?? 0}
                           stroke={l.color}
                           strokeWidth={hl ? 2.8 : focusActive ? 2 : 1.3}
                           strokeDasharray={l.dash ? '4 4' : focusActive ? undefined : '6 5'}
@@ -308,7 +352,7 @@ export default function EquityChart({
                   const last = l.points[l.points.length - 1];
                   if (!last) return null;
                   const x = xScale(idxOf(last.t)) ?? 0;
-                  const y = yScale(last.v) ?? 0;
+                  const y = yOf(l, last.v) ?? 0;
                   // 末端标签: 圆点右侧显示 模型名+值; 靠右(>60%宽)时放左侧右对齐, 防溢出
                   const onRight = x > iw * 0.6;
                   const anchor = onRight ? 'end' : 'start';
@@ -321,9 +365,12 @@ export default function EquityChart({
                         fontFamily="'Courier New', monospace">
                         {l.label}
                       </text>
-                      <text x={lx} y={y + 7} fill={l.color} fontSize={10} textAnchor={anchor}
-                        fontFamily="'Courier New', monospace">
-                        {mode === 'pct' ? `${Number(last.v).toFixed(1)}%` : fmtMoney(last.v, currency, 0)}
+                      <text x={lx} y={y + 7} fontSize={10} textAnchor={anchor}
+                        fontFamily="'Courier New', monospace"
+                        fill={l.abs ? (last.v >= 0 ? '#c0392b' : '#27ae60') : l.color}>
+                        {mode === 'pct' && !l.abs
+                          ? `${Number(last.v).toFixed(1)}%`
+                          : fmtMoney(last.v, currency, 0)}
                       </text>
                     </Group>
                   );
@@ -333,8 +380,14 @@ export default function EquityChart({
                     const hl = display.lines.find((l) => l.id === hover.id);
                     const base = hl && hl.points.length ? hl.points[0].v : null;
                     const chg = base ? ((hover.v - base) / base) * 100 : null;
-                    // 金额盈亏: 有名义基准时按收益率 × 基准换算（实盘分账 = ¥10 万）
-                    const pnlAmt = hl?.notional && base ? ((hover.v / base) - 1) * hl.notional : null;
+                    // 金额盈亏: abs 线 = 绝对增减额；其余按收益率 × 名义基准换算（分账 ¥10 万）
+                    const pnlAmt = base
+                      ? hl?.abs
+                        ? hover.v - base
+                        : hl?.notional
+                          ? ((hover.v / base) - 1) * hl.notional
+                          : null
+                      : null;
                     const pnlColor = (v: number | null) => (v == null || v >= 0 ? '#c0392b' : '#27ae60');
                     const tx = Math.min(hover.x + 6, iw - 212);
                     const ty = Math.max(hover.y - 58, 2);
@@ -349,7 +402,9 @@ export default function EquityChart({
                         </text>
                         <text x={tx + 6} y={ty + 27} fill="#000" fontSize={10}
                           fontFamily="'Courier New', monospace">
-                          {mode === 'pct' ? `${Number(hover.v).toFixed(1)}%` : fmtMoney(hover.v, currency, 0)}
+                          {hl?.abs || mode === 'dollar'
+                            ? fmtMoney(hover.v, currency, 0)
+                            : `${Number(hover.v).toFixed(1)}%`}
                           {chg != null && (
                             <tspan fill={pnlColor(chg)}>
                               {'  '}{chg >= 0 ? '+' : ''}{chg.toFixed(2)}%
@@ -364,7 +419,7 @@ export default function EquityChart({
                         )}
                         <text x={tx + 6} y={ty + 53} fill="#666" fontSize={9}
                           fontFamily="'Courier New', monospace">
-                          {isBench ? '基准指数' : hover.label === '总账户' ? '通达信桥实时总资产' : '虚拟净值（¥10万起步）'}
+                          {isBench ? '基准指数' : hover.label === '总账户' ? '通达信桥实时总资产' : hover.label === '分账合计' ? '分账合计净值（3 agent）' : '虚拟净值（¥10万起步）'}
                         </text>
                       </Group>
                     );

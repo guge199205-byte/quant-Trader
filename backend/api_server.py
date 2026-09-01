@@ -563,7 +563,7 @@ async def futu_cancel(payload: dict = Body(...)):
 
 _BROKER_MARKET_FILE = Path(__file__).resolve().parents[1] / "config" / "broker_market.json"
 _BROKER_MARKET_DEFAULT = {"cn": "tdx", "hk": "tiger", "us": "ibkr"}
-_BROKER_CHOICES = {"cn": ["tdx"], "hk": ["tiger", "ibkr", "futu"], "us": ["ibkr", "tiger"]}
+_BROKER_CHOICES = {"cn": ["tdx"], "hk": ["tiger", "ibkr", "futu"], "us": ["ibkr", "tiger", "futu"]}
 
 
 def load_broker_market() -> dict:
@@ -571,7 +571,7 @@ def load_broker_market() -> dict:
         data = json.loads(_BROKER_MARKET_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             return {k: (v if v in _BROKER_CHOICES.get(k, []) else _BROKER_MARKET_DEFAULT[k])
-                    for k in _BROKER_MARKET_DEFAULT}
+                    for k, v in data.items() if k in _BROKER_MARKET_DEFAULT}
     except (OSError, json.JSONDecodeError):
         pass
     return dict(_BROKER_MARKET_DEFAULT)

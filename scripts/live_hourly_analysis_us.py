@@ -80,6 +80,10 @@ def _broker():
         from agent_tools.brokers.tiger_bridge import TigerBridgeBroker
 
         return TigerBridgeBroker(cfg)
+    if brk == "futu":
+        from futu_api_broker import FutuApiBroker
+
+        return FutuApiBroker(market="us")
     from agent_tools.brokers.ibkr_bridge import IbkrBridgeBroker
 
     cfg["gateway_host"] = "127.0.0.1"

@@ -348,7 +348,9 @@ def open_broker(market: str = "hk"):
 
         return IbkrBridgeBroker(_ib_creds())
     if brk == "futu":
-        raise NotImplementedError("富途执行经 /api/futu/place（v2），请选 tiger 或 ibkr")
+        from futu_api_broker import FutuApiBroker
+
+        return FutuApiBroker(market="hk")
     from agent_tools.brokers.tiger_bridge import TigerBridgeBroker
 
     return TigerBridgeBroker(_tiger_creds())

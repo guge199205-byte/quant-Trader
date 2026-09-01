@@ -499,6 +499,17 @@ def build_flat_content(pool: list, direction: dict, cash: float, agent: str) -> 
     return "\n".join(lines)
 
 
+def agent_mode() -> str:
+    """agent 运行模式：configs/agent_mode.json {"mode": "llm"|"dsh"}。
+    llm = 单次提示词调用（旧）；dsh = DeepSeek Harness agent（工具+写代码+记忆）。"""
+    try:
+        cfg = json.loads((ROOT / "configs" / "agent_mode.json").read_text(encoding="utf-8"))
+        mode = str(cfg.get("mode") or "llm").strip().lower()
+        return mode if mode in ("llm", "dsh") else "llm"
+    except (OSError, json.JSONDecodeError):
+        return "llm"
+
+
 def call_llm(user_content: str, model: str, system_prompt: str | None = None) -> tuple[str, dict | None]:
     """OpenAI 兼容接口调用指定模型；失败返回空串。
     返回 (content, usage)：usage = {prompt_tokens, completion_tokens, total_tokens} 供累计统计。
@@ -1167,7 +1178,15 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
             labeled_content = f"【分析配置：{mode['name']}】\n\n" + user_content
             usage = None
             try:
-                content, usage = call_llm(labeled_content, agent, system_prompt_for(agent, {**mode, "prompt": mode_prompt}))
+                if agent_mode() == "dsh":
+                    # dsh agent：工具（行情/搜索/数学/记忆）+ 可写代码，思考过程不再是单次提示词
+                    from dsh_agent import run_agent
+
+                    content = run_agent(labeled_content, timeout_s=420)
+                else:
+                    content, usage = call_llm(
+                        labeled_content, agent,
+                        system_prompt_for(agent, {**mode, "prompt": mode_prompt}))
             except Exception as exc:  # noqa: BLE001
                 print(f"[{now:%F %T}] {agent}·{mode['name']} LLM 调用失败: {exc}")
                 content = ""

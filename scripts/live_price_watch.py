@@ -200,6 +200,18 @@ def _notify_skip(rule: dict, msg: str) -> None:
 
 def run_watch(broker, dry_run: bool = False) -> int:
     """轮询全部条件位，返回本轮触发笔数。"""
+    from live_fills import reconcile
+
+    try:
+        reconcile(broker)  # 先补记在途成交，再守条件位
+    except Exception:  # noqa: BLE001
+        pass
+    # 总开关联动：配置关掉自动执行时，哨兵也只打印不真卖（防验证测试误触实盘）
+    from live_hourly_analysis import intraday_exec_enabled
+
+    if not dry_run and not intraday_exec_enabled():
+        print("  🔒 自动执行开关已关（intraday_exec.json），哨兵只打印不真卖")
+        dry_run = True
     rules = load_watch()
     if not rules:
         return 0

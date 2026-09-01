@@ -127,3 +127,8 @@ config/brokers.json
 
 # 盘中 watch 条件位（live_hourly_analysis 写入，哨兵消费）
 data/live_watch.json
+
+# 盘中在途单/上一轮决策记忆（运行时状态）
+data/live_pending_orders.json
+data/agent_last_decisions.json
+logs/live_analysis.lock

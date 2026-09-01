@@ -67,6 +67,21 @@ class TdxBridgeBroker(Broker):
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
 
+    def tdx_call(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """通用透传：POST /api/v1/tdx/call（桥白名单方法，返回 result 解包）。
+
+        用于盘中五档等数据：get_market_snapshot 返回 Buyp/Buyv/Sellp/Sellv 各 5 档。
+        """
+        import requests
+
+        resp = requests.post(f"{self.bridge_url}/api/v1/tdx/call",
+                             json={"method": method, "params": params or {}},
+                             headers=self._headers(), timeout=8)
+        resp.raise_for_status()
+        data = resp.json()
+        result = data.get("result") if isinstance(data, dict) else None
+        return result if isinstance(result, dict) else {}
+
     def _place_order(self, symbol: str, side: str, volume: int,
                      price: Optional[float] = None) -> Dict[str, Any]:
         """经桥下单（/api/v1/plans/execute，通达信客户端执行）。"""

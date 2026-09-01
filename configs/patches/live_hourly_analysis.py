@@ -44,6 +44,10 @@ LEVERAGE_MAX = 1.5       # 杠杆硬约束：持仓市值 ≤ 权益(现金+市�
 LEVERAGE_TRIM_TO = 1.3   # 强制减仓目标：降到 1.3×
 MAX_NEW_BUYS = 3         # 空仓 agent 单轮建仓上限（每只 ≤ 20% 剩余额度）
 FILL_POLL_TIMEOUT_S = 30 # 下单后等成交回报的轮询超时（限价单通常秒成）
+
+# ---- 实时盘口（桥五档，弱 L2 信号）----
+OB_IMB_STRONG = 0.30     # 五档失衡 ≥ ±30% → 强买/强卖信号
+OB_IMB_WEAK = 0.15       # 五档失衡 ≥ ±15% → 偏买/偏卖信号
 # 默认 dry-run（只打印决策不下单）；调用 --execute 才真下单
 
 # 决策 JSON 格式（与 live_llm_trade.py 的 DECISION_SCHEMA 一致）
@@ -182,6 +186,53 @@ def load_l2_factors(codes: list[str]) -> dict:
     return {c: out[c] for c in codes if c in out}
 
 
+def load_orderbook(broker, codes: list) -> dict:
+    """桥实时五档（弱 L2 信号）：{code: {bid1, bid1_v, ask1, ask1_v, imb1, imb5,
+    spread, signal}}。单只失败跳过，不阻塞分析。
+
+    imb1 = (买一量-卖一量)/(买一量+卖一量)，>0 买方堆积、<0 卖方堆积；
+    imb5 = 五档合计同口径；spread = (卖一-买一)/中间价（bp）。
+    """
+    out: dict = {}
+    for code in codes:
+        try:
+            res = broker.tdx_call("get_market_snapshot", {"stock_code": code})
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(res, dict):
+            continue
+        try:
+            bp = [float(x) for x in res.get("Buyp") or []]
+            bv = [float(x) for x in res.get("Buyv") or []]
+            sp = [float(x) for x in res.get("Sellp") or []]
+            sv = [float(x) for x in res.get("Sellv") or []]
+        except (TypeError, ValueError):
+            continue
+        if not bp or not sp or not bv or not sv:
+            continue
+        b1, a1 = bp[0], sp[0]
+        mid = (b1 + a1) / 2
+        if b1 <= 0 or a1 <= 0 or mid <= 0:
+            continue
+        sum_b, sum_s = sum(bv[:5]), sum(sv[:5])
+        imb1 = (bv[0] - sv[0]) / (bv[0] + sv[0]) if (bv[0] + sv[0]) > 0 else 0.0
+        imb5 = (sum_b - sum_s) / (sum_b + sum_s) if (sum_b + sum_s) > 0 else 0.0
+        if imb1 >= OB_IMB_STRONG:
+            signal = "强买"
+        elif imb1 >= OB_IMB_WEAK:
+            signal = "偏买"
+        elif imb1 <= -OB_IMB_STRONG:
+            signal = "强卖"
+        elif imb1 <= -OB_IMB_WEAK:
+            signal = "偏卖"
+        else:
+            signal = "中性"
+        out[code] = {"bid1": b1, "bid1_v": bv[0], "ask1": a1, "ask1_v": sv[0],
+                     "imb1": round(imb1, 3), "imb5": round(imb5, 3),
+                     "spread": round((a1 - b1) / mid * 100, 3), "signal": signal}
+    return out
+
+
 def load_news(codes: list[str], hours: int = 8, limit: int = 30) -> list:
     """盘中新闻（quantmind Huntly/RSS 聚合 + LLM 情感标注）→ 持仓相关条目。
     按 ticker 过滤 + 北京时间转换；失败返回空列表（不阻塞分析，同 load_l2_factors）。"""
@@ -226,7 +277,8 @@ def _fmt_factor(v) -> str:
 
 
 def build_user_content(rows: list, asset: float, cash: float, agent: str,
-                       last_decisions: list | None = None) -> str:
+                       last_decisions: list | None = None,
+                       orderbook: dict | None = None) -> str:
     lines = [
         f"现在是北京时间 {now_cn():%F %T}（A股{('盘中' if in_trading_window(now_cn()) else '盘前/盘后')}）。"
         f"你是 {agent}（实盘分账账户，初始额度 ¥10 万）。你名下虚拟资产 ¥{asset:,.0f}、"
@@ -299,6 +351,30 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
             "L2 微观结构因子：**本次数据缺失**（采集源未返回），不要用幻觉填充，"
             "简评以行情与新闻为准。",
         ]
+    # 实时盘口（桥五档，弱 L2 信号）——买一堆积 vs 卖一堆积
+    if orderbook:
+        lines += [
+            "",
+            "实时盘口（通达信五档，桥实时采集）：",
+            "",
+            "| 代码 | 买一 价/量 | 卖一 价/量 | 五档失衡 | 信号 |",
+            "|---|---|---|---|---|",
+        ]
+        for r in rows:
+            ob = orderbook.get(r["code"])
+            if not ob:
+                continue
+            lines.append(
+                f"| {r['code']} | ¥{ob['bid1']:.2f} × {ob['bid1_v']:,.0f} "
+                f"| ¥{ob['ask1']:.2f} × {ob['ask1_v']:,.0f} "
+                f"| {ob['imb1']:+.2f}（五档 {ob['imb5']:+.2f}） | {ob['signal']} |"
+            )
+        lines += [
+            "",
+            "说明：五档失衡 = (买一量-卖一量)/(买一量+卖一量)，>0 买方堆积、<0 卖方堆积，"
+            f"±{OB_IMB_STRONG:.0%} 以上为强信号；括号里是五档合计同口径。"
+            "盘口只是弱 L2 辅助信号（L2 逐笔因子缺失时尤其有用），与 L2 因子、新闻结合判断。",
+        ]
     # 盘中新闻（Huntly/RSS 聚合 + LLM 情感标注），近 8 小时持仓相关
     news = load_news([r["code"] for r in rows])
     if news:
@@ -310,7 +386,8 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
     lines += [
         "",
         "请逐只给出：①一句话简评（行情/基本面/消息面角度）②操作建议（持有/加仓/减仓/止损）③理由。"
-        "简评请结合上面的 L2 因子与盘中新闻——新闻明显利好/利空时要明确提示风险与机会。"
+        "简评请结合上面的 L2 因子、实时盘口与盘中新闻——新闻明显利好/利空时要明确提示风险与机会；"
+        "盘口强买/强卖（五档失衡 ±30% 以上）时给出对应倾向但别只靠盘口下结论。"
         "今天买入的股票 T+1 明天才能卖，建议时注意这一点。输出简洁 markdown，不用复述表格。",
         "",
         "【最后必须附一个 JSON 决策块】（紧跟在 markdown 之后，用 ```json 围栏包住，"
@@ -974,6 +1051,8 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
 
     names = load_names()
     rows = build_rows(broker, positions, names)
+    # 实时盘口（桥五档，弱 L2 信号）：全部持仓一次拉齐，各 agent 提示词共用
+    orderbook = load_orderbook(broker, sorted({r["code"] for r in rows})) or {}
     # 桥持仓含可卖量（T+1），供 sell 闸门
     avail_map = {p.get("stock_code"): int(p.get("available_volume") or 0)
                  for p in positions}
@@ -1015,7 +1094,8 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
             virtual_asset = virtual_cash + sum(r["price"] * r["volume"] for r in my_rows)
             user_content = build_user_content(my_rows, virtual_asset, virtual_cash,
                                               agent,
-                                              (last_decisions.get(agent) or {}).get("decisions"))
+                                              (last_decisions.get(agent) or {}).get("decisions"),
+                                              orderbook)
         # 比赛配置多选：选中 N 个配置 → 本轮按 N 个配置各做一轮独立分析（各自落盘一轮对话）
         from prompts.analysis_modes import selected_modes
 

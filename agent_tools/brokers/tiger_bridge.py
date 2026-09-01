@@ -21,7 +21,10 @@ class TigerBridgeBroker(Broker):
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
         self.tiger_id = self.config.get("tiger_id") or os.getenv("TIGEROPEN_TIGER_ID", "")
-        self.private_key = self.config.get("private_key") or os.getenv("TIGEROPEN_PRIVATE_KEY", "")
+        # UI 存 rsa_private_key（tdx_live BROKER_FIELDS），旧代码读 private_key——两者都认
+        self.private_key = (self.config.get("rsa_private_key")
+                            or self.config.get("private_key")
+                            or os.getenv("TIGEROPEN_PRIVATE_KEY", ""))
         self.account = self.config.get("account") or os.getenv("TIGEROPEN_ACCOUNT", "")
 
     # ---------- 客户端 ----------
@@ -122,11 +125,83 @@ class TigerBridgeBroker(Broker):
         except Exception as exc:
             raise BrokerError(f"老虎下单失败: {exc}") from exc
 
-    def get_positions(self, signature: str, today_date: str) -> Dict[str, float]:
-        raise BrokerError("老虎持仓查询待接入（需账户权限确认）")
+    def get_positions(self, signature: str, today_date: str,
+                      market: str = "hk") -> Dict[str, Any]:
+        """持仓查询（HK/US 实盘）：{symbol: {volume, cost_price, market_value, currency}}。"""
+        if not self.account:
+            raise BrokerError("老虎账户未配置：TIGEROPEN_ACCOUNT（.env）")
+        try:
+            _, trade_client = self._get_clients()
+            from tigeropen.common.consts import Market
+
+            mkt = Market.HK if market == "hk" else Market.US
+            positions = trade_client.get_positions(account=self.account, market=mkt) or []
+            out: Dict[str, Any] = {}
+            for p in positions:
+                d = p.to_dict() if hasattr(p, "to_dict") else {}
+                sym = str(d.get("symbol") or "")
+                qty = float(d.get("quantity") or d.get("total_quantity") or 0)
+                if not sym or qty <= 0:
+                    continue
+                out[sym] = {
+                    "symbol": sym,
+                    "volume": qty,
+                    "cost_price": float(d.get("average_cost") or 0),
+                    "market_value": float(d.get("market_value") or 0),
+                    "currency": str(d.get("currency") or ""),
+                }
+            return out
+        except BrokerError:
+            raise
+        except Exception as exc:
+            raise BrokerError(f"老虎持仓查询失败: {exc}") from exc
 
     def get_cash(self, signature: str, today_date: str) -> float:
-        raise BrokerError("老虎资金查询待接入（需账户权限确认）")
+        """资金查询（实盘账户可用现金合计）。"""
+        if not self.account:
+            raise BrokerError("老虎账户未配置：TIGEROPEN_ACCOUNT（.env）")
+        try:
+            _, trade_client = self._get_clients()
+            assets = trade_client.get_assets(account=self.account) or []
+            cash = 0.0
+            for a in assets:
+                d = a.to_dict() if hasattr(a, "to_dict") else {}
+                cash += float(d.get("cash") or d.get("available_funds") or 0)
+            return cash
+        except BrokerError:
+            raise
+        except Exception as exc:
+            raise BrokerError(f"老虎资金查询失败: {exc}") from exc
+
+    def get_orders(self, market: str = "hk", limit: int = 50) -> List[Dict[str, Any]]:
+        """当日委托（含已成交/在途），字段对齐桥 orders 形状供前端消费。"""
+        if not self.account:
+            raise BrokerError("老虎账户未配置：TIGEROPEN_ACCOUNT（.env）")
+        try:
+            _, trade_client = self._get_clients()
+            from tigeropen.common.consts import Market
+
+            mkt = Market.HK if market == "hk" else Market.US
+            orders = trade_client.get_orders(account=self.account, market=mkt,
+                                             limit=int(limit)) or []
+            out = []
+            for o in orders:
+                d = o.to_dict() if hasattr(o, "to_dict") else {}
+                out.append({
+                    "order_id": str(d.get("id") or ""),
+                    "stock_code": str(d.get("symbol") or ""),
+                    "side": str(d.get("action") or "").lower(),
+                    "status": str(d.get("status") or "").lower(),
+                    "filled_volume": float(d.get("filled_quantity") or 0),
+                    "filled_price": float(d.get("filled_avg_price") or 0),
+                    "order_price": float(d.get("limit_price") or 0),
+                    "time": str(d.get("create_time") or "")[:19],
+                })
+            return out
+        except BrokerError:
+            raise
+        except Exception as exc:
+            raise BrokerError(f"老虎委托查询失败: {exc}") from exc
 
 
 def register() -> None:

@@ -138,3 +138,7 @@ data/l2_factors_live.json
 data/l2_state.json
 data/l2_status.json
 data/market_snapshot.json
+
+# 港股分账账本 + 成交日志（运行时数据）
+data/hk_ledger.json
+logs/live_trade_hk_*.jsonl

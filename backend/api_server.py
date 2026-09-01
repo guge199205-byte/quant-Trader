@@ -523,6 +523,43 @@ async def futu_snapshot(codes: str = ""):
     return {"success": True, "data": out}
 
 
+# ---------- 老虎证券（港股实盘通道，tigeropen SDK；凭据 config/brokers.json tiger） ----------
+
+def _tiger_broker():
+    """老虎 broker 实例（凭据从 config/brokers.json tiger 段读取）。"""
+    from agent_tools.brokers.tiger_bridge import TigerBridgeBroker
+    from backend.services.tdx_live import _read_brokers
+
+    return TigerBridgeBroker(_read_brokers().get("tiger") or {})
+
+
+@app.get("/api/tiger/account")
+async def tiger_account():
+    """老虎账户资产+持仓（HK 实盘）→ Live 港股实盘面板。"""
+    try:
+        broker = _tiger_broker()
+        cash = broker.get_cash(None, "")
+        positions = broker.get_positions(None, "", market="hk")
+        return {"success": True, "data": {
+            "cash": cash,
+            "positions": positions,
+            "position_count": len(positions),
+            "broker": "tiger",
+        }}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"老虎查询失败: {e}"}
+
+
+@app.get("/api/tiger/orders")
+async def tiger_orders(limit: int = Query(50, ge=1, le=500)):
+    """老虎当日委托（含成交/在途）→ Live 港股成交 tab。"""
+    try:
+        broker = _tiger_broker()
+        return {"success": True, "data": broker.get_orders(market="hk", limit=limit)}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"老虎委托查询失败: {e}"}
+
+
 # ---------- 通达信桥执行服务（BayMax 自有，复刻 quantmind 桥服务层） ----------
 # 响应为裸 JSON（不经 {success,data} 信封）——前端 TradingSettings getJson 直接取
 # res.data，形状与 quantmind 原版对齐。滚动买卖/止损止盈/推送选股仍走 /api/quantmind

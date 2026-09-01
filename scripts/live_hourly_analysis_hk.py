@@ -199,6 +199,27 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str, pool: 
             )
     else:
         lines.append("当前无持仓。")
+    # 历史趋势（quanthk 本地日线：近20日动量/60日趋势/20日波动）
+    try:
+        from local_klines import trend_features
+
+        trend_lines = []
+        for r in rows:
+            tf = trend_features(r["code"], "hk", days=60)
+            if not tf:
+                continue
+            parts = []
+            if "mom20" in tf:
+                parts.append(f"近20日动量 {tf['mom20']:+.2f}%")
+            if "mom60" in tf:
+                parts.append(f"近60日 {tf['mom60']:+.2f}%")
+            if "vol20" in tf:
+                parts.append(f"20日波动 {tf['vol20']:.2f}%")
+            trend_lines.append(f"- {r['name']} ({r['code']}): {' · '.join(parts)}")
+        if trend_lines:
+            lines += ["", "历史趋势（本地日线，截至上一交易日）：", ""] + trend_lines
+    except Exception:  # noqa: BLE001
+        pass
     if pool:
         lines += [
             "",

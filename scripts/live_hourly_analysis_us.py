@@ -100,11 +100,19 @@ def fetch_account(broker) -> tuple[float, dict]:
 
 
 def _price_of(broker, symbol: str) -> float:
-    """取价：get_quote（行情订阅后实时）→ 失败用日K最后一根 → 0。"""
+    """取价：get_quote（行情订阅后实时）→ 本地 quantus 日线 → IBKR 日线 → 0。"""
     try:
         q = broker.get_quote(symbol, "")
         if q and float(q.get("buy price") or 0) > 0:
             return float(q["buy price"])
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from local_klines import get_daily
+
+        bars = get_daily(symbol, "us", days=3)
+        if bars:
+            return float(bars[-1]["close"])
     except Exception:  # noqa: BLE001
         pass
     try:

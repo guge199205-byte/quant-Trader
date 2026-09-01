@@ -826,7 +826,9 @@ def live_trades(limit: int = Query(200, ge=1, le=5000)):
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if rec.get("mode") in ("execute", "sell") and ("result" in rec or "error" in rec):
+            if rec.get("mode") in ("execute", "execute_intraday", "sell") and (
+                "result" in rec or "error" in rec or "fill" in rec or "pending" in rec
+            ):
                 records.append(rec)
     records.sort(key=lambda r: r.get("ts", ""), reverse=True)
     # 补成交价：桥当日委托 filled_price（按 order_id，回退按 code）
@@ -843,7 +845,8 @@ def live_trades(limit: int = Query(200, ge=1, le=5000)):
         pass
     for rec in records:
         # 桥 filled_price 是真实成交价；日志 price 只是下单参考价（现价×1.01），有匹配就覆盖
-        rid = (rec.get("result") or {}).get("order_id")
+        rid = ((rec.get("result") or {}).get("order_id")
+               or (rec.get("fill") or {}).get("order_id"))
         price = price_map.get(rid) or price_map.get(rec.get("code"))
         if price:
             rec["price"] = price

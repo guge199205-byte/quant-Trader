@@ -264,12 +264,12 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
         ]
     else:
         lines += ["", "（本轮为首次分析，无上一轮建议）"]
-    # L2 微观结构因子（通达信实时采集，quantmind PG 同步）
+    # L2 微观结构因子（通达信实时采集，盘中多批次；核心因子可能为 0/缺失）
     l2 = load_l2_factors([r["code"] for r in rows])
     if l2:
         lines += [
             "",
-            "L2 微观结构因子（通达信实时采集，最近一次）：",
+            "L2 微观结构因子（通达信盘中实时采集，最新批次；值为 0 或缺省的因子视为未算出，勿臆测）：",
             "",
             "| 代码 | VPIN(量) | 分时区分布 | 价量背离 | 冲击半衰 | 资金流失衡 |",
             "|---|---|---|---|---|---|",
@@ -333,7 +333,7 @@ def build_flat_content(pool: list, direction: dict, cash: float, agent: str) -> 
     pool = load_pool(20) 返回的候选池行；方向 = picks.json 大盘方向。
     与 build_user_content 共用 INTRA_DAY_SCHEMA 决策块，规则按空仓状态裁剪。
     """
-    from live_trade_picks import pool_rows
+    from live_llm_trade import pool_rows
 
     lines = [
         f"现在是北京时间 {now_cn():%F %T}（A股盘中）。你是 {agent}（实盘分账账户，"
@@ -906,33 +906,42 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
     return executed
 
 
-def compute_forced_trims(holdings: list, virtual_cash: float) -> list:
+def compute_forced_trims(holdings: list, virtual_cash: float,
+                         planned_sells: dict | None = None) -> list:
     """杠杆硬约束：持仓市值 > 权益×LEVERAGE_MAX → 强制减仓到 LEVERAGE_TRIM_TO×。
 
-    从市值最大的持仓开始减（先跳过 T+1 不可卖），返回 sell 决策
-    （与 LLM 决策一起走同一套卖出闸门）。空仓/未超限返回 []。
+    planned_sells = {code: 模型已主动计划卖出的市值}——模型自己已经降了杠杆的部分
+    要扣除，否则「模型自觉卖 30% + 系统强制减仓 32%」会双卖（14:00 教训：688183
+    被 800 股砍掉 57%）。从市值最大的持仓开始减（先跳过 T+1 不可卖），返回 sell
+    决策（与 LLM 决策一起走同一套卖出闸门）。空仓/未超限返回 []。
     """
     pos_value = sum(x["price"] * x["volume"] for x in holdings)
     equity = virtual_cash + pos_value
     if equity <= 0 or pos_value <= LEVERAGE_MAX * equity:
         return []
-    target = LEVERAGE_TRIM_TO * equity
-    need = pos_value - target
+    planned = sum((planned_sells or {}).get(h["code"], 0.0) for h in holdings)
+    need = (pos_value - LEVERAGE_TRIM_TO * equity) - planned
+    if need <= 0:
+        return []  # 模型已主动降到安全区，无需强制
     out: list = []
     for h in sorted(holdings, key=lambda x: -x["price"] * x["volume"]):
         if need <= 0:
             break
         if h["avail"] <= 0:
             continue
-        sell_value = min(h["price"] * h["avail"], need)
-        pct = sell_value / (h["price"] * h["avail"]) if h["avail"] else 0
-        if pct > 0:
-            out.append({
-                "action": "sell", "code": h["code"], "pct": round(pct, 3),
-                "reason": (f"杠杆超限强制减仓（持仓 ¥{pos_value:,.0f} > "
-                           f"权益×{LEVERAGE_MAX} = ¥{LEVERAGE_MAX * equity:,.0f}）"),
-            })
-            need -= sell_value
+        avail_value = h["price"] * h["avail"]
+        # 按 100 股整数倍取整：不足 1 手（<100 股）不产生决策（卖出闸门同口径）
+        raw_vol = int(min(h["price"] * h["avail"], need) / h["price"] / 100) * 100
+        if raw_vol <= 0:
+            continue
+        pct = raw_vol * h["price"] / avail_value
+        out.append({
+            "action": "sell", "code": h["code"], "pct": round(pct, 3),
+            "reason": (f"杠杆超限强制减仓（持仓 ¥{pos_value:,.0f} > "
+                       f"权益×{LEVERAGE_MAX} = ¥{LEVERAGE_MAX * equity:,.0f}，"
+                       f"已扣除模型主动卖出 ¥{planned:,.0f}）"),
+        })
+        need -= raw_vol * h["price"]
     return out
 
 
@@ -992,7 +1001,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
         if not my_rows:
             # 空仓 → 候选池复盘 + 可建仓（等价 09:35 权限）；池子都没有就跳过
             if pool is None:
-                from live_trade_picks import load_pool
+                from live_llm_trade import load_pool
 
                 pool, direction = load_pool(20)
             if not pool:
@@ -1005,7 +1014,8 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
             print(f"[{now:%F %T}] {agent} 名下持仓 {len(my_rows)} 只，盘中分析")
             virtual_asset = virtual_cash + sum(r["price"] * r["volume"] for r in my_rows)
             user_content = build_user_content(my_rows, virtual_asset, virtual_cash,
-                                              agent, last_decisions.get(agent))
+                                              agent,
+                                              (last_decisions.get(agent) or {}).get("decisions"))
         # 比赛配置多选：选中 N 个配置 → 本轮按 N 个配置各做一轮独立分析（各自落盘一轮对话）
         from prompts.analysis_modes import selected_modes
 
@@ -1049,9 +1059,20 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
             exec_list = [d for d in decisions if d["action"] in ("sell", "buy")]
             # 杠杆硬约束：超限强制减仓（走同一套卖出闸门，不依赖模型自觉）
             if my_rows:
-                forced = compute_forced_trims(my_holdings, virtual_cash)
+                # 模型已主动计划卖的市值（按卖出闸门同口径：avail×pct 取整到手）
+                planned: dict = {}
+                for d in decisions:
+                    if d["action"] != "sell":
+                        continue
+                    h = next((x for x in my_holdings if x["code"] == d["code"]), None)
+                    if not h or h["avail"] <= 0:
+                        continue
+                    vol = int(h["avail"] * min(max(d["pct"], 0), 1) / 100) * 100
+                    planned[h["code"]] = planned.get(h["code"], 0) + h["price"] * vol
+                forced = compute_forced_trims(my_holdings, virtual_cash, planned)
                 if forced:
-                    print(f"[{now:%F %T}] ⚠️ [{agent}] 杠杆超限，强制减仓 {len(forced)} 笔")
+                    print(f"[{now:%F %T}] ⚠️ [{agent}] 杠杆超限，强制减仓 {len(forced)} 笔"
+                          f"（扣除模型主动卖出 ¥{sum(planned.values()):,.0f}）")
                     exec_list = forced + exec_list  # 强制优先
             if not dry_run:
                 # watch 条件位（跌破止损/到位止盈）→ 分钟级价格哨兵接管，不等整点；

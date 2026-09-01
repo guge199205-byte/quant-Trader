@@ -32,3 +32,13 @@
 docker cp scripts/live_hourly_analysis.py baymax-api:/app/scripts/
 docker cp scripts/live_price_watch.py baymax-api:/app/scripts/
 （宿主 scripts/ 为唯一真源；本目录仅备份）
+
+## 2026-09-01 晚间追加（commit f0d9d8b，审查报告修复）
+- 成交回报跟踪：新文件 live_fills.py（wait_fill/reconcile/add_pending，在途单
+  data/live_pending_orders.json）——账本按真实成交价/量记账，不再是委托限价
+- 空仓 agent 候选池建仓（live_hourly_analysis 的 build_flat_content + pool_codes 闸门）
+- 杠杆硬约束 LEVERAGE_MAX=1.5（加仓闸门 + compute_forced_trims 强制减仓）
+- 波动节流心跳提前写 + 单实例 flock（live_analysis.lock）
+- LLM 超时 120s + 重试 1 次；上一轮决策记忆（agent_last_decisions.json）
+- --force 不再开执行；--dry-run 覆盖一切；哨兵联动总开关
+- 容器重建需 docker cp：live_hourly_analysis.py + live_fills.py + live_price_watch.py

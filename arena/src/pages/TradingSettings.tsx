@@ -3,8 +3,9 @@ import { api } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
 import './TradingSettings.css';
 
-/** 交易所设置 —— 通达信交易桥 / 券商接入（复刻 quantmind 模拟交易设置）。
- *  数据经 Quant-Trader backend /api/quantmind 代理转发到 quantmind 8000（token 自动续期）。
+/** 交易所设置 —— 通达信交易桥 / 券商接入（BayMax 自有 /api/tdx/* 服务层）。
+ *  桥连接/总览/实盘状态/券商配置走 BayMax backend 直连（不经 quantmind）；
+ *  滚动买卖与止损止盈仍经 /api/quantmind 代理（quantmind 推理引擎的控制器）。
  *  embedded=true 时作为总控页 tab 嵌入，隐藏自身页头（标题由外层提供）。 */
 
 // ---------- 数据类型（与 quantmind trade-core 对齐） ----------
@@ -160,8 +161,8 @@ async function putJson(path: string, body: unknown): Promise<{ ok: boolean; data
 
 export default function TradingSettings({ embedded = false }: { embedded?: boolean }) {
   // ---- 通达信桥 ----
-  const tdx = usePolling(() => getJson<TdxConfig>('/quantmind/tdx/config'), [], 30000);
-  const overview = usePolling(() => getJson<TdxOverview>('/quantmind/tdx/overview'), [], 8000);
+  const tdx = usePolling(() => getJson<TdxConfig>('/tdx/config'), [], 30000);
+  const overview = usePolling(() => getJson<TdxOverview>('/tdx/overview'), [], 8000);
   const [status, setStatus] = useState<RealTradingStatus | null>(null);
   const [brokerCfgs, setBrokerCfgs] = useState<Record<string, BrokerConfig>>({});
 
@@ -206,12 +207,12 @@ export default function TradingSettings({ embedded = false }: { embedded?: boole
       })
       .catch(() => {});
 
-    void getJson<RealTradingStatus>('/quantmind/real-trading/status')
+    void getJson<RealTradingStatus>('/real-trading/status')
       .then(setStatus)
       .catch(() => {});
 
     for (const broker of ['tiger', 'futu', 'ib']) {
-      void getJson<BrokerConfig>(`/quantmind/broker-config/${broker}`)
+      void getJson<BrokerConfig>(`/broker-config/${broker}`)
         .then((b) => setBrokerCfgs((prev) => ({ ...prev, [broker]: b })))
         .catch(() => {});
     }
@@ -221,7 +222,7 @@ export default function TradingSettings({ embedded = false }: { embedded?: boole
   const saveBridge = useCallback(async () => {
     if (!newUrl.trim() && !newToken.trim()) return;
     setTdxMsg(null);
-    const r = await postJson('/quantmind/tdx/config', {
+    const r = await postJson('/tdx/config', {
       bridge_url: newUrl.trim() || undefined,
       bridge_token: newToken.trim() || undefined,
     });
@@ -337,13 +338,13 @@ export default function TradingSettings({ embedded = false }: { embedded?: boole
   // ---- 动作：保存券商配置 ----
   const saveBroker = useCallback(async (broker: string, values: Record<string, string>) => {
     // 后端 BrokerConfigUpdate 期望 { values: {...} } 包裹；裸传 values 会触发 422
-    const r = await putJson(`/quantmind/broker-config/${broker}`, { values });
+    const r = await putJson(`/broker-config/${broker}`, { values });
     return r.ok ? null : (r.error ?? '保存失败');
   }, []);
 
   // ---- 动作：测试券商连接 ----
   const testBroker = useCallback(async (broker: string) => {
-    const r = await postJson(`/quantmind/broker-config/${broker}/test`, {});
+    const r = await postJson(`/broker-config/${broker}/test`, {});
     if (!r.ok || !r.data || typeof r.data !== 'object') return `测试失败: ${r.error ?? ''}`;
     const d = r.data as { success?: boolean; ok?: boolean; error?: string; message?: string; detail?: string };
     if (d.success === false || d.ok === false) return d.error ?? d.detail ?? '连接失败';
@@ -450,7 +451,7 @@ export default function TradingSettings({ embedded = false }: { embedded?: boole
 
                 {/* 滚动买卖配置 */}
                 <div className="ts-cfg">
-                  <div className="ts-cfg-title">滚动买卖配置（阈值与金额可自己改）</div>
+                  <div className="ts-cfg-title">滚动买卖配置（quantmind 推理引擎 · 阈值与金额可自己改）</div>
                   <div className="ts-cfg-fields">
                     <label className="ts-field">
                       <span className="ts-field-label">买入分数阈值（{'>'}此分买入，低于则卖出）</span>
@@ -489,7 +490,7 @@ export default function TradingSettings({ embedded = false }: { embedded?: boole
 
                 {/* 止损止盈实时提醒 */}
                 <div className="ts-cfg">
-                  <div className="ts-cfg-title">止损止盈实时提醒（仅持仓股 · 现价触发即推送，不下自动单）</div>
+                  <div className="ts-cfg-title">止损止盈实时提醒（quantmind 引擎 · 仅持仓股 · 现价触发即推送，不下自动单）</div>
                   <div className="ts-cfg-fields">
                     <label className="ts-field">
                       <span className="ts-field-label">止损幅度 %（现价 ≤ 成本×(1-x%)）</span>
@@ -669,9 +670,9 @@ export default function TradingSettings({ embedded = false }: { embedded?: boole
         <div className="ts-card-head">
           <div>
             <div className="ts-card-title">实时交易状态</div>
-            <div className="ts-card-desc">quantmind 实盘引擎（/real-trading）运行状态</div>
+            <div className="ts-card-desc">BayMax 实盘执行（通达信桥 + 模型自主调仓）状态</div>
           </div>
-          <button className="ts-btn" onClick={() => void getJson<RealTradingStatus>('/quantmind/real-trading/status').then(setStatus).catch(() => {})}>
+          <button className="ts-btn" onClick={() => void getJson<RealTradingStatus>('/real-trading/status').then(setStatus).catch(() => {})}>
             刷新
           </button>
         </div>
@@ -700,7 +701,7 @@ export default function TradingSettings({ embedded = false }: { embedded?: boole
             <div className="ts-grid-cell">
               <div className="ts-cell-label">用户</div>
               <div className="ts-cell-val" style={{ fontSize: 11 }}>{(status as { user_id?: string }).user_id ?? '-'}</div>
-              <div className="ts-cell-sub">tenant default</div>
+              <div className="ts-cell-sub">BayMax-Trader</div>
             </div>
           </div>
         ) : (

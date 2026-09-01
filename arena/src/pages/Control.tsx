@@ -43,11 +43,11 @@ interface TradingStatus {
 
 async function fetchExchangeStatus() {
   const [tdx, tiger, futu, ib, rt] = await Promise.all([
-    api.get('/quantmind/tdx/config').then((r) => r.data as TdxStatus).catch(() => null),
-    api.get('/quantmind/broker-config/tiger').then((r) => r.data as BrokerStatus).catch(() => null),
-    api.get('/quantmind/broker-config/futu').then((r) => r.data as BrokerStatus).catch(() => null),
-    api.get('/quantmind/broker-config/ib').then((r) => r.data as BrokerStatus).catch(() => null),
-    api.get('/quantmind/real-trading/status').then((r) => r.data as TradingStatus).catch(() => null),
+    api.get('/tdx/config').then((r) => r.data as TdxStatus).catch(() => null),
+    api.get('/broker-config/tiger').then((r) => r.data as BrokerStatus).catch(() => null),
+    api.get('/broker-config/futu').then((r) => r.data as BrokerStatus).catch(() => null),
+    api.get('/broker-config/ib').then((r) => r.data as BrokerStatus).catch(() => null),
+    api.get('/real-trading/status').then((r) => r.data as TradingStatus).catch(() => null),
   ]);
   const brokers = [tiger, futu, ib]
     .filter((b): b is BrokerStatus => !!b)

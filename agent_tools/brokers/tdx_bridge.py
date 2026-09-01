@@ -19,10 +19,26 @@
 桥状态码：0=REJECTED 1=SUBMITTED 2=PARTIAL_FILL 3=FILLED 4=PARTIAL_CANCELLED 5=CANCELLED
 """
 
+import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent_tools.brokers.base import Broker, BrokerError
+
+# 设置页（/api/tdx/config POST）保存的运行时覆盖，优先于 .env；
+# config/ 目录容器与宿主机共用挂载，cron 侧与本模块同源解析
+_OVERRIDE_FILE = Path(__file__).resolve().parents[2] / "config" / "tdx_bridge.json"
+
+
+def bridge_overrides() -> Dict[str, str]:
+    """读取 config/tdx_bridge.json 的桥连接覆盖（bridge_url/bridge_token）。"""
+    try:
+        data = json.loads(_OVERRIDE_FILE.read_text(encoding="utf-8"))
+        return {k: str(v).strip() for k, v in (data or {}).items()
+                if k in ("bridge_url", "bridge_token") and str(v or "").strip()}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 class TdxBridgeBroker(Broker):
@@ -33,9 +49,11 @@ class TdxBridgeBroker(Broker):
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
-        self.bridge_url = (self.config.get("bridge_url")
+        ov = bridge_overrides()
+        self.bridge_url = (self.config.get("bridge_url") or ov.get("bridge_url")
                            or os.getenv("TDX_BRIDGE_URL", "")).rstrip("/")
-        self.token = self.config.get("token") or os.getenv("TDX_BRIDGE_TOKEN", "")
+        self.token = (self.config.get("token") or ov.get("bridge_token")
+                      or os.getenv("TDX_BRIDGE_TOKEN", ""))
         self.account = self.config.get("account") or os.getenv("TDX_ACCOUNT", "")
         self.account_type = self.config.get("account_type") or os.getenv("TDX_ACCOUNT_TYPE", "tdx")
         if not self.bridge_url:

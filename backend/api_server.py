@@ -18,7 +18,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
@@ -460,6 +460,84 @@ async def futu_snapshot(codes: str = ""):
     except Exception as e:  # noqa: BLE001
         return {"success": False, "error": f"富途快照失败: {e}"}
     return {"success": True, "data": out}
+
+
+# ---------- 通达信桥执行服务（BayMax 自有，复刻 quantmind 桥服务层） ----------
+# 响应为裸 JSON（不经 {success,data} 信封）——前端 TradingSettings getJson 直接取
+# res.data，形状与 quantmind 原版对齐。滚动买卖/止损止盈/推送选股仍走 /api/quantmind
+# 代理（那些是 quantmind 推理引擎的控制器，引擎在 quantmind 侧运行）。
+
+
+@app.get("/api/tdx/config")
+def tdx_config_get():
+    """桥配置状态（不返回 token 明文）+ 桥健康检查。"""
+    from backend.services import tdx_live
+
+    return tdx_live.get_tdx_config()
+
+
+@app.post("/api/tdx/config")
+def tdx_config_post(body: dict = Body(...)):
+    """保存桥连接覆盖（config/tdx_bridge.json，只写非空字段，token 只写不回显）。"""
+    from backend.services import tdx_live
+
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="请求体需为 JSON 对象")
+    return tdx_live.save_bridge_config(body.get("bridge_url"), body.get("bridge_token"))
+
+
+@app.get("/api/tdx/overview")
+def tdx_overview_get():
+    """桥总览：stats + 账户资产/持仓 + 当日委托（桥不可达时 available=false）。"""
+    from backend.services import tdx_live
+
+    return tdx_live.bridge_overview()
+
+
+@app.get("/api/real-trading/status")
+def real_trading_status_get():
+    """BayMax 实盘执行状态（桥健康 + 最近一次 llm_trade 调仓记录）。"""
+    from backend.services import tdx_live
+
+    return tdx_live.real_trading_status()
+
+
+@app.get("/api/broker-config/{broker}")
+def broker_config_get(broker: str):
+    """读取券商接入配置（敏感字段脱敏为 *_configured）。"""
+    from backend.services import tdx_live
+
+    try:
+        return tdx_live.get_broker_config(broker)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@app.put("/api/broker-config/{broker}")
+def broker_config_put(broker: str, body: dict = Body(...)):
+    """更新券商接入配置（未提供的敏感字段保持原值，空值清除）。"""
+    from backend.services import tdx_live
+
+    values = (body or {}).get("values")
+    if not isinstance(values, dict):
+        raise HTTPException(status_code=422, detail="请求体需为 {values: {...}}")
+    try:
+        return tdx_live.update_broker_config(broker, values)
+    except ValueError as e:
+        # 未知券商(404) / 无效字段(422) 共用 ValueError，按内容区分
+        code = 404 if str(e).startswith("未知券商") else 422
+        raise HTTPException(status_code=code, detail=str(e)) from e
+
+
+@app.post("/api/broker-config/{broker}/test")
+async def broker_config_test(broker: str, body: dict | None = Body(None)):
+    """测试券商连通性（futu 走 BayMax 自有 OpenD 直连）。"""
+    from backend.services import tdx_live
+
+    try:
+        return await tdx_live.test_broker_connection(broker)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @app.get("/api/live/ledger")

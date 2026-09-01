@@ -24,7 +24,8 @@ BRIDGE_TIMEOUT = 3.0
 
 # 券商接入字段表（与前端 TradingSettings BROKER_META 对齐；True=敏感只写不回显）
 BROKER_FIELDS = {
-    "tiger": {"tiger_id": False, "rsa_private_key": True, "account": False},
+    "tiger": {"tiger_id": False, "rsa_private_key": True, "account": False,
+              "real_account": False},
     "futu": {"opend_host": False, "opend_port": False,
              "trade_pwd_md5": True, "trade_env": False},
     "ib": {"gateway_host": False, "gateway_port": False, "client_id": False},

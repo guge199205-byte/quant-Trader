@@ -139,6 +139,10 @@ def reconcile(broker) -> int:
         if delta > 0:
             fprice = float(o.get("filled_price") or p.get("price") or 0)
             ledger = load_ledger()
+            cost_p = 0.0
+            if p.get("side") != "buy":  # 卖出成交带成本基准（已完成 feed 盈亏用）
+                cost_p = float((((ledger.get("agents") or {}).get(p["agent"]) or {})
+                                .get("positions") or {}).get(p["code"], {}).get("cost_price") or 0)
             if p.get("side") == "buy":
                 ledger = record_buy(ledger, p["agent"], p["code"], delta, fprice,
                                     now.isoformat())
@@ -148,7 +152,8 @@ def reconcile(broker) -> int:
             save_ledger(ledger)
             log_line({"ts": now.isoformat(), "mode": "fill_confirm",
                       "agent": p["agent"], "code": p["code"], "side": p.get("side"),
-                      "volume": delta, "price": fprice, "order_id": p.get("order_id")})
+                      "volume": delta, "price": fprice, "cost_price": cost_p,
+                      "order_id": p.get("order_id")})
             p["volume_recorded"] = filled
             p["filled_price"] = fprice
             fills += 1

@@ -278,8 +278,22 @@ def get_trade_detail(agent: str, market: str = Query("us"), limit: int = Query(2
 
 def _merge_live_fills(agent: str, closed: list) -> list:
     """当日实盘成交（带 fill 回报的行）并入「已完成」明细。
-    卖出后账本已删仓、成本不可考，entry_price 置 0 / pnl 置 None（前端按可见字段渲染）。"""
+
+    成本基准（优先级）：fill 行自带 cost_price（执行路径记账时写入）→
+    账本当前持仓成本（同 lot 加仓摊薄后仍准确）→ 0（完全清仓且无记录的，
+    pnl 置 None 不假装有数）。名义金额 = 数量×成交价；盈亏 = (成交价-成本)×数量。
+    """
     logs_dir = Path(__file__).resolve().parents[1] / "logs"
+    ledger_costs: dict = {}
+    try:
+        ledger = json.loads((logs_dir / "live_ledger.json").read_text(encoding="utf-8"))
+        for aname, rec in (ledger.get("agents") or {}).items():
+            for code, pos in (rec.get("positions") or {}).items():
+                cp = float((pos or {}).get("cost_price") or 0)
+                if cp > 0:
+                    ledger_costs.setdefault(aname, {})[code] = cp
+    except (OSError, json.JSONDecodeError):
+        pass
     items = list(closed)
     for f in sorted(logs_dir.glob("live_trade_*.jsonl")):
         try:
@@ -298,15 +312,20 @@ def _merge_live_fills(agent: str, closed: list) -> list:
             if fv <= 0:
                 continue
             ts = rec.get("ts") or ""
+            exit_price = float(fill.get("filled_price") or rec.get("price") or 0)
+            entry = (float(fill.get("cost_price") or 0)
+                     or ledger_costs.get(agent, {}).get(rec.get("code"), 0.0))
+            notional = round(fv * exit_price, 2)
+            pnl = round((exit_price - entry) * fv, 2) if entry > 0 else None
             items.append({
                 "symbol": rec.get("code"),
                 "exit_date": ts[:10],
                 "qty": fv,
-                "entry_price": 0.0,
-                "exit_price": float(fill.get("filled_price") or rec.get("price") or 0),
-                "notional": 0.0,
+                "entry_price": entry,
+                "exit_price": exit_price,
+                "notional": notional,
                 "fee": 0.0,
-                "pnl": None,
+                "pnl": pnl,
                 "live": True,
             })
     items.sort(key=lambda t: str(t.get("exit_date", "")), reverse=True)
@@ -888,17 +907,20 @@ def live_trades(limit: int = Query(200, ge=1, le=5000)):
     except Exception:  # noqa: BLE001
         pass
     for rec in records:
-        # 桥 filled_price 是真实成交价；日志 price 只是下单参考价（现价×1.01），有匹配就覆盖
+        # 桥 filled_price 是真实成交价；有订单匹配按 order_id 覆盖，否则只有
+        # 日志本身没价时才按 code 兜底（08-31 买入行有自己的成交价，不能被
+        # 今日同 code 卖出价污染）
         rid = ((rec.get("result") or {}).get("order_id")
                or (rec.get("fill") or {}).get("order_id"))
-        price = price_map.get(rid) or price_map.get(rec.get("code"))
-        if price:
-            rec["price"] = price
+        if rid and rid in price_map:
+            rec["price"] = price_map[rid]
+        elif not rec.get("price") and price_map.get(rec.get("code")):
+            rec["price"] = price_map[rec.get("code")]
+        elif not rec.get("price"):
+            rec["price"] = None
         # 旧日志行没有 side：按桥当日委托回报补全买卖方向
         if not rec.get("side") and rid and side_map.get(rid):
             rec["side"] = side_map[rid]
-        elif not rec.get("price"):
-            rec["price"] = None
     return {"success": True, "data": records[:limit]}
 
 

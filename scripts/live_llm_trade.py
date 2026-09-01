@@ -363,12 +363,15 @@ def main() -> int:
                 if fill and int(fill.get("filled_volume") or 0) > 0:
                     fv = int(fill["filled_volume"])
                     fp = float(fill.get("filled_price") or round(price * 0.99, 2))
-                    ledger = record_sell(load_ledger(), agent, code, fv, fp,
+                    ledger = load_ledger()
+                    cost_p = float((((ledger.get("agents") or {}).get(agent) or {})
+                                    .get("positions") or {}).get(code, {}).get("cost_price") or 0)
+                    ledger = record_sell(ledger, agent, code, fv, fp,
                                          now_cn().isoformat())
                     save_ledger(ledger)
                     log_line({"ts": now_cn().isoformat(), "mode": "execute",
                               "agent": agent, "code": code, "side": "sell",
-                              "volume": fv, "price": fp,
+                              "volume": fv, "price": fp, "cost_price": cost_p,
                               "fill": {"order_id": fill.get("order_id"),
                                        "filled_price": fp, "filled_volume": fv}})
                 else:

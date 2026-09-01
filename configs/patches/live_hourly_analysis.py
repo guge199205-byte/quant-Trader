@@ -5,6 +5,8 @@
 - 分析: 每个 enabled agent 各自逐只简评 + 操作建议（LLM 失败时降级为数据摘要，不崩溃）
 - 落盘: data/agent_data_astock/deepseek-v4-flash/log/{北京日期}/log.jsonl (append)
         → ARENA(8092) 模型对话 tab 直接可读
+- 执行: LLM 决策 JSON → 闸门校验 → 桥下单 → 分账记账（每 agent 每小时一轮；
+        sell/buy 即时执行，watch 条件位交给 live_price_watch.py 分钟级哨兵）
 - 时段: 北京 9:30-11:30 / 13:00-15:00 工作日（本机 JST，不依赖系统时区）
 
 用法:
@@ -33,7 +35,8 @@ TRIGGER_DAY_CHG = 5.0           # 任一持仓个股当日涨跌 ≥5% → 触�
 # ---- 盘中执行参数（分析建议 → 实际买卖）----
 # 与 live_llm_trade.py 保持同一套闸门口径：
 #   sell: 只卖可卖量（T+1 当日买入跳过）、跌停不接、100 股整数倍
-#   buy:  只买候选池内标的、涨停不追、单票 ≤ 剩余额度 20%、账户现金兜底
+#   buy:  只买候选池内标的、涨停不追、单票 ≤ 剩余额度 20%、
+#         子账户虚拟现金不透支（分账额度红线）、账户现金兜底
 PER_STOCK_PCT = 0.2      # 单票买入 ≤ 剩余额度 20%
 BUY_LIMIT_UP = 9.9       # 涨停不追
 SELL_LIMIT_DOWN = -9.9   # 跌停不接
@@ -41,8 +44,9 @@ SELL_LIMIT_DOWN = -9.9   # 跌停不接
 
 # 决策 JSON 格式（与 live_llm_trade.py 的 DECISION_SCHEMA 一致）
 INTRA_DAY_SCHEMA = (
-    '{"decisions": [{"action": "hold|sell|buy", "code": "600519.SH", '
-    '"pct": 0.2, "reason": "一句话理由"}]}'
+    '{"decisions": [{"action": "hold|sell|buy|watch", "code": "600519.SH", '
+    '"pct": 0.2, "stop_loss": 1500.0, "take_profit": 1650.0, '
+    '"reason": "一句话理由"}]}'
 )
 
 
@@ -286,7 +290,10 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str) -> str
         INTRA_DAY_SCHEMA,
         "```",
         "规则：sell 的 pct=卖出可卖量的比例（0~1，清仓=1.0）；buy 的 pct=使用剩余额度的比例（≤0.2）；"
-        "只对「②操作建议」为加仓/减仓/止损的持仓给出 sell/buy，持有的一律 hold。",
+        "watch=挂条件位：stop_loss=跌破此价自动减仓 pct 比例、take_profit=涨到此价自动止盈 pct"
+        "（至少给一个，由分钟级价格哨兵实时监控执行，不用等下一个整点）；"
+        "只对「②操作建议」为加仓/减仓/止损的持仓给出 sell/buy；"
+        "持有但想设防守位/目标位的用 watch——简评里写了具体价位就必须挂上，否则不会被执行；其余一律 hold。",
     ]
     return "\n".join(lines)
 
@@ -509,11 +516,22 @@ def parse_intraday_decision(text: str) -> list | None:
     """LLM 输出 → 盘中决策列表（与 live_llm_trade.parse_decision 同构）。
     依次尝试：整段 JSON → ```json 围栏 → 括号平衡块；
     只解析 decisions 数组；未知 action 忽略。
-    返回 [{"action","code","pct","reason"}]，解析失败返回 None。"""
+    返回 [{"action","code","pct","stop_loss","take_profit","reason"}]
+    （stop_loss/take_profit 仅 watch 有，其余 None），解析失败返回 None。"""
     import re
 
     if not text:
         return None
+
+    def _num(x) -> float | None:
+        """价位解析：None/空/N/A → None；非数字 → None（不炸）。"""
+        if x is None or x in ("", "N/A"):
+            return None
+        try:
+            v = float(x)
+        except (TypeError, ValueError):
+            return None
+        return v if v > 0 else None
 
     def _extract(payload: str) -> list | None:
         try:
@@ -523,12 +541,14 @@ def parse_intraday_decision(text: str) -> list | None:
         out = []
         for x in (d.get("decisions") if isinstance(d, dict) else None) or []:
             action = (x.get("action") or "").lower()
-            if action not in ("hold", "sell", "buy"):
+            if action not in ("hold", "sell", "buy", "watch"):
                 continue
             out.append({
                 "action": action,
                 "code": str(x.get("code") or "").strip(),
                 "pct": float(x.get("pct") or 0),
+                "stop_loss": _num(x.get("stop_loss")),
+                "take_profit": _num(x.get("take_profit")),
                 "reason": str(x.get("reason") or ""),
             })
         return out or None
@@ -568,12 +588,14 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
     与 live_llm_trade.py 同一套安全闸门：
       - sell: 只卖可卖量（T+1 当日买入跳过）、跌停不接、100 股整数倍
       - buy:  只买候选池内标的（此处不拉池，仅在已有持仓上加仓，避免盘中追新票）、
-              涨停不追、单票 ≤ 剩余额度 20%、账户现金兜底
+              涨停不追、单票 ≤ 剩余额度 20%、子账户虚拟现金不透支（分账额度红线）、
+              账户现金兜底
     返回已执行/将执行的动作列表 [{action, code, volume, price, reason}]。
     """
     import time
 
-    from live_ledger import agent_remaining, load_ledger, record_buy, record_sell, save_ledger
+    from live_ledger import (agent_remaining, agent_virtual_cash, load_ledger,
+                             record_buy, record_sell, save_ledger)
 
     executed: list = []
     sells, buys = [], []
@@ -670,8 +692,16 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
         if not o["ok"]:
             print(f"  ⏭️ [{agent}] 买入 {code}: {o['reason']}")
             continue
+        # 分账额度红线：子 agent 买入不能超自己 ¥10 万虚拟子账户的现金
+        # （remaining 是额度口径、cash 是桥总账户真实现金，两者都拦不住已实现亏损
+        #   造成的透支——虚拟现金才是子账户真正买得起的钱）
+        vcash = agent_virtual_cash(ledger, agent)
+        if o["cost"] > vcash:
+            print(f"  ⏭️ [{agent}] 买入 {code}: 子账户虚拟现金不足 "
+                  f"¥{o['cost']:,.0f} > ¥{vcash:,.0f}（分账额度不透支，跳过）")
+            continue
         if o["cost"] > cash:
-            print(f"  ⏭️ [{agent}] 买入 {code}: 账户现金不足 ¥{o['cost']:,.0f} < ¥{cash:,.0f}")
+            print(f"  ⏭️ [{agent}] 买入 {code}: 账户现金不足 ¥{o['cost']:,.0f} > ¥{cash:,.0f}")
             continue
         cash -= o["cost"]
         try:
@@ -746,6 +776,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
         # 比赛配置多选：选中 N 个配置 → 本轮按 N 个配置各做一轮独立分析（各自落盘一轮对话）
         from prompts.analysis_modes import selected_modes
 
+        agent_exec_done = False  # 每 agent 每小时只执行一轮（多模式多轮会叠加买入突破分账额度）
         for mode in selected_modes(agent):
             mode_prompt = mode["prompt"]
             if mode["id"] == "awareness":  # 情境感知: 注入今日排行榜上下文
@@ -774,18 +805,32 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
             ok += 1
 
             # —— 盘中执行：解析 LLM 决策 → 闸门 → 桥下单（dry_run=False）——
+            # 多模式只做一轮执行（首个含决策的模式）：分析可以多视角，执行权只有一个
             decisions = parse_intraday_decision(content)
             if not decisions:
                 continue  # 该 mode 无结构化决策，不执行
+            if agent_exec_done:
+                continue
+            agent_exec_done = True
             if not dry_run:
-                print(f"[{now:%F %T}] 🔴 [{agent}] {mode['name']} 决策执行：")
-            executed = execute_intraday_decision(broker, agent, decisions,
-                                                 my_holdings, cash, dry_run=dry_run)
-            if executed:
-                tag = "🟡 DRY-RUN 决策" if dry_run else "✅ 已执行"
-                acts = "/".join(f"{e['action']} {e['code']}" for e in executed)
-                print(f"[{now:%F %T}] {tag} [{agent}] {mode['name']}: "
-                      f"{len(executed)} 笔（{acts}）")
+                # watch 条件位（跌破止损/到位止盈）→ 分钟级价格哨兵接管，不等整点；
+                # 该 agent 的旧规则整组替换，最新分析说了算
+                from live_price_watch import save_watch_rules
+
+                n_watch = save_watch_rules(agent, decisions)
+                if n_watch:
+                    print(f"[{now:%F %T}] 👁️ [{agent}] 挂 {n_watch} 个 watch 条件位"
+                          f"（分钟级哨兵监控）")
+                exec_list = [d for d in decisions if d["action"] in ("sell", "buy")]
+                if exec_list:
+                    print(f"[{now:%F %T}] 🔴 [{agent}] {mode['name']} 决策执行：")
+                    executed = execute_intraday_decision(broker, agent, exec_list,
+                                                         my_holdings, cash, dry_run=dry_run)
+                    if executed:
+                        tag = "✅ 已执行"
+                        acts = "/".join(f"{e['action']} {e['code']}" for e in executed)
+                        print(f"[{now:%F %T}] {tag} [{agent}] {mode['name']}: "
+                              f"{len(executed)} 笔（{acts}）")
 
     # 更新波动基线（全部持仓，跨 agent 汇总）
     save_state({

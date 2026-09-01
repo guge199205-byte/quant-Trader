@@ -124,3 +124,6 @@ data/hk_picks.json
 # 桥/券商连接配置（含内网地址与敏感字段，运行时生成不入库）
 config/tdx_bridge.json
 config/brokers.json
+
+# 盘中 watch 条件位（live_hourly_analysis 写入，哨兵消费）
+data/live_watch.json

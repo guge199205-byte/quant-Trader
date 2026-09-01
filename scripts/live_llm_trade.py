@@ -50,6 +50,7 @@ from live_ledger import (  # noqa: E402
     AGENT_QUOTA,
     agent_remaining,
     agent_used,
+    agent_virtual_cash,
     find_holder,
     load_ledger,
     record_buy,
@@ -369,8 +370,16 @@ def main() -> int:
             if not o["ok"]:
                 print(f"  ⏭️ [{agent}] 买入 {code}: {o['reason']}")
                 continue
+            # 分账额度红线：子 agent 买入不能超自己 ¥10 万虚拟子账户的现金
+            # （remaining 是额度口径、cash 是桥总账户真实现金，都拦不住已实现
+            #   亏损造成的透支——虚拟现金才是子账户真正买得起的钱）
+            vcash = agent_virtual_cash(ledger, agent)
+            if o["cost"] > vcash:
+                print(f"  ⏭️ [{agent}] 买入 {code}: 子账户虚拟现金不足 "
+                      f"¥{o['cost']:,.0f} > ¥{vcash:,.0f}（分账额度不透支，跳过）")
+                continue
             if o["cost"] > cash:
-                print(f"  ⏭️ [{agent}] 买入 {code}: 账户现金不足 ¥{o['cost']:,.0f} < ¥{cash:,.0f}")
+                print(f"  ⏭️ [{agent}] 买入 {code}: 账户现金不足 ¥{o['cost']:,.0f} > ¥{cash:,.0f}")
                 continue
             cash -= o["cost"]
             try:

@@ -18,6 +18,8 @@ export interface ChartLine {
   points: { t: number; v: number }[]; // v 为绝对净值
   /** 名义基准金额（如实盘分账 ¥10 万）→ hover 时换算金额盈亏 */
   notional?: number;
+  /** 虚线（空仓/现金恒定的平线用，保留信息量但不抢视线） */
+  dash?: boolean;
 }
 
 export interface BenchLine {
@@ -294,7 +296,7 @@ export default function EquityChart({
                           y={(p) => yScale(p.v) ?? 0}
                           stroke={l.color}
                           strokeWidth={hl ? 2.8 : focusActive ? 2 : 1.3}
-                          strokeDasharray={focusActive ? undefined : '6 5'}
+                          strokeDasharray={l.dash ? '4 4' : focusActive ? undefined : '6 5'}
                           filter={hl ? 'url(#line-glow)' : undefined}
                           curve={curveMonotoneX}
                         />

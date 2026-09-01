@@ -283,18 +283,38 @@ async def test_broker_connection(broker: str) -> dict:
                 "message": (f"FutuOpenD 已连接（模拟 HK${asset:,.0f} / 实盘 "
                             f"${float(real.get('total_asset') or 0):,.2f}）")}
     if broker == "tiger":
-        # 老虎证券：港股实盘通道（tigeropen SDK，凭据 config/brokers.json tiger 段）
+        # 老虎证券：港股实盘/模拟盘通道（tigeropen SDK；账户号格式决定模拟/实盘）
         from agent_tools.brokers.tiger_bridge import TigerBridgeBroker
 
         try:
             b = TigerBridgeBroker(_read_brokers().get("tiger") or {})
             cash = b.get_cash(None, "")
             positions = b.get_positions(None, "", market="hk")
+            try:
+                from tigeropen.common.util.account_util import AccountUtil
+
+                paper = AccountUtil.is_paper_account(b.account)
+            except Exception:  # noqa: BLE001
+                paper = False
             return {"success": True,
-                    "message": (f"老虎证券已连接（可用现金 ${cash:,.2f}，"
-                                f"持仓 {len(positions)} 只）")}
+                    "message": (f"老虎证券已连接（{'模拟盘' if paper else '实盘'}，"
+                                f"可用现金 ${cash:,.2f}，持仓 {len(positions)} 只）")}
         except Exception as exc:  # noqa: BLE001
             return {"success": False,
                     "message": f"老虎连接失败：{exc}；请确认 tiger_id/私钥/账户已填且 Tiger Open API 已开通"}
+    if broker == "ib":
+        # 盈透证券：IBKR Gateway（ib_insync；gateway_host/gateway_port/client_id）
+        from agent_tools.brokers.ibkr_bridge import IbkrBridgeBroker
+
+        try:
+            b = IbkrBridgeBroker(_read_brokers().get("ib") or {})
+            cash = b.get_cash(None, "")
+            positions = b.get_positions(None, "")
+            return {"success": True,
+                    "message": (f"IBKR 已连接（可用现金 ${cash:,.2f}，"
+                                f"持仓 {len(positions)} 只）")}
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False,
+                    "message": f"IBKR 连接失败：{exc}；请确认 IB Gateway 已启动并开放 API（端口 7497/7496）"}
     return {"success": False,
             "message": f"{BROKER_LABELS[broker]} 接入尚未在 BayMax 实现（当前仅保存配置）"}

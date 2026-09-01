@@ -560,6 +560,42 @@ async def tiger_orders(limit: int = Query(50, ge=1, le=500)):
         return {"success": False, "error": f"老虎委托查询失败: {e}"}
 
 
+# ---------- 盈透证券（IBKR Gateway，ib_insync；凭据 config/brokers.json ib） ----------
+
+def _ibkr_broker():
+    from agent_tools.brokers.ibkr_bridge import IbkrBridgeBroker
+    from backend.services.tdx_live import _read_brokers
+
+    return IbkrBridgeBroker(_read_brokers().get("ib") or {})
+
+
+@app.get("/api/ibkr/account")
+async def ibkr_account():
+    """IBKR 账户现金+持仓 → Live 美股实盘面板。"""
+    try:
+        broker = _ibkr_broker()
+        cash = broker.get_cash(None, "")
+        positions = broker.get_positions(None, "")
+        return {"success": True, "data": {
+            "cash": cash,
+            "positions": positions,
+            "position_count": len(positions),
+            "broker": "ibkr",
+        }}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"IBKR 查询失败: {e}"}
+
+
+@app.get("/api/ibkr/orders")
+async def ibkr_orders(limit: int = Query(50, ge=1, le=500)):
+    """IBKR 在途委托 → Live 美股成交 tab。"""
+    try:
+        broker = _ibkr_broker()
+        return {"success": True, "data": broker.get_orders(limit=limit)}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"IBKR 委托查询失败: {e}"}
+
+
 # ---------- 通达信桥执行服务（BayMax 自有，复刻 quantmind 桥服务层） ----------
 # 响应为裸 JSON（不经 {success,data} 信封）——前端 TradingSettings getJson 直接取
 # res.data，形状与 quantmind 原版对齐。滚动买卖/止损止盈/推送选股仍走 /api/quantmind

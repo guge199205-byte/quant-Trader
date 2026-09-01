@@ -241,3 +241,28 @@ services:
     working_dir: /app/data/A_stock
     command: bash -c "python get_daily_price_a_stock.py && python merge_a_stock_jsonl.py"
     restart: "no"
+
+  # ---- IBKR Gateway（美股实盘通道；需 IBKR 账号，凭据在 .env） ----
+  # 启动: docker compose --profile ibgateway up -d ib-gateway
+  # 端口: 4001=实盘 API / 4002=模拟盘 API / 5900=VNC(manual 2FA 用)
+  # 2FA: TWS_2FA=device → 容器日志提示后在 IBKR App 确认；TWOFA_TIMEOUT_ACTION=restart
+  # BayMax 设置页: 交易所设置 → 盈透证券 → gateway_host=127.0.0.1
+  #                 gateway_port=4002(模拟)或4001(实盘), client_id=1
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:latest
+    container_name: baymax-ib-gateway
+    profiles: ["ibgateway"]
+    restart: unless-stopped
+    environment:
+      IBKR_USERNAME: ${IBKR_USERNAME:-}
+      IBKR_PASSWORD: ${IBKR_PASSWORD:-}
+      TRADING_MODE: ${IBKR_TRADING_MODE:-paper}
+      TWS_2FA: ${IBKR_TWS_2FA:-device}
+      TWOFA_TIMEOUT_ACTION: restart
+      IB_GATEWAY_READ_ONLY: "true"
+    ports:
+      - "4001:4001"
+      - "4002:4002"
+      - "5900:5900"
+    volumes:
+      - ./data/ibgateway-jts:/home/ibgateway/Jts

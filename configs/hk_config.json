@@ -1,0 +1,39 @@
+{
+ "agent_type": "BaseAgent",
+ "market": "hk",
+ "date_range": {
+  "init_date": "2026-09-01",
+  "end_date": "2026-09-01"
+ },
+ "models": [
+  {
+   "name": "deepseek-v4-flash",
+   "basemodel": "deepseek-v4-flash",
+   "signature": "deepseek-v4-flash",
+   "enabled": true
+  },
+  {
+   "name": "deepseek-v4-pro",
+   "basemodel": "deepseek-v4-pro",
+   "signature": "deepseek-v4-pro",
+   "enabled": true
+  },
+  {
+   "name": "glm-5.3-flash",
+   "basemodel": "glm-5.3-flash",
+   "signature": "glm-5.3-flash",
+   "enabled": true,
+   "openai_base_url": "${GLM_API_BASE}",
+   "openai_api_key": "${GLM_API_KEY}"
+  }
+ ],
+ "agent_config": {
+  "max_steps": 30,
+  "max_retries": 3,
+  "base_delay": 1.0,
+  "initial_cash": 100000.0
+ },
+ "log_config": {
+  "log_path": "./data/agent_data_hk"
+ }
+}

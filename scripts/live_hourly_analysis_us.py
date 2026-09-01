@@ -313,7 +313,7 @@ def execute_us_decisions(broker, agent: str, decisions: list, rows: list,
 
     from us_ledger import (agent_remaining, agent_virtual_cash, ensure_agent,
                            load_ledger, record_buy, record_sell, save_ledger)
-    from live_hourly_analysis import parse_intraday_decision  # noqa: F401  (格式同源)
+    from live_hourly_analysis import agent_mode_for, agent_model_for, parse_intraday_decision  # noqa: F401  (格式同源)
 
     ledger = ensure_agent(load_ledger(), agent)
     held = {r["code"]: r for r in rows}
@@ -423,6 +423,8 @@ def us_enabled_agents() -> list:
 
 def run_analysis(dry_run: bool = True) -> int:
     """美股完整分析：账户 → 每 agent 分析 → 决策 → 闸门 → IBKR 下单（dry_run=False 才真下单）。"""
+    from live_hourly_analysis import agent_mode_for, agent_model_for
+
     now = now_cn()
     try:
         broker = _broker()
@@ -446,7 +448,15 @@ def run_analysis(dry_run: bool = True) -> int:
             pool_codes = {p.get("code") for p in (pool.get("picks") or [])}
             print(f"[{now:%F %T}] {agent} 空仓，候选池复盘（可建仓 ${cash:,.0f}）")
         try:
-            content = call_llm(user_content, agent)
+            if agent_mode_for(agent) == "dsh":
+                # dsh agent：美股 persona + 工具（行情/quantdb/数学/记忆），可写代码
+                from dsh_agent import run_agent
+
+                content = run_agent(user_content, timeout_s=420,
+                                    model=agent_model_for(agent),
+                                    extra_patch=str(ROOT / "dsh" / "baymax.us.cordis.yml"))
+            else:
+                content = call_llm(user_content, agent)
         except Exception as exc:  # noqa: BLE001
             print(f"[{now:%F %T}] {agent} LLM 调用失败: {exc}")
             content = ""

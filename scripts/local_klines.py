@@ -16,6 +16,15 @@ QUANTMIND_DATA = Path(os.getenv("QUANTMIND_DATA_DIR",
                                 "/home/zbox/projects/quantmind/data"))
 
 
+def _data_dir() -> Path:
+    """quantmind 数据根：宿主 /home/zbox/projects/quantmind/data 或容器 /data。"""
+    for p in (os.getenv("QUANTMIND_DATA_DIR", ""), "/data",
+              "/home/zbox/projects/quantmind/data"):
+        if p and (Path(p) / "quantus").is_dir():
+            return Path(p)
+    return Path("/home/zbox/projects/quantmind/data")
+
+
 def _normalize(symbol: str, market: str) -> str:
     if market == "hk":
         # HK.00700 / 00700 → 0700.HK（parquet 是四位带零：0622.HK）
@@ -28,7 +37,7 @@ def get_daily(symbol: str, market: str, days: int = 60) -> list:
     """读最近 days 个交易日的本地日线（duckdb 直查，零依赖）；失败返回 []。"""
     import duckdb
 
-    base = QUANTMIND_DATA / ("quanthk" if market == "hk" else "quantus")
+    base = _data_dir() / ("quanthk" if market == "hk" else "quantus")
     sym = _normalize(symbol, market)
     # 只扫近 150 天的分区（60 日线 + 节假日余量），dt=YYYY-MM-DD 命名可裁剪
     cutoff = (date.today() - timedelta(days=150)).isoformat()

@@ -120,3 +120,36 @@ def query_quantdb(sql: str) -> str:
 if __name__ == "__main__":
     port = int(os.getenv("QUANTDB_HTTP_PORT", "8105"))
     mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+
+
+# ---------- 本地历史K线（quantus/quanthk，agent 可直接查美股/港股日线） ----------
+
+@mcp.tool
+def query_local_klines(symbol: str, market: str = "us", days: int = 60) -> str:
+    """查本地历史日线（美股 quantus / 港股 quanthk，quantmind 数据资产日更）。
+
+    Args:
+        symbol: AAPL / US.AAPL（美股）；00700 / HK.00700（港股，自动转 0700.HK）
+        market: us（默认）/ hk
+        days: 取最近 N 个交易日（默认 60，最大 500）
+    """
+    import requests
+
+    try:
+        r = requests.get("http://api:8091/api/local/klines",
+                         params={"symbol": symbol, "market": market, "days": days},
+                         timeout=10)
+        d = r.json()
+    except Exception as exc:  # noqa: BLE001
+        return f"❌ 本地K线查询失败: {exc}"
+    if not d.get("success"):
+        return f"❌ {d.get('error')}"
+    bars = (d.get("data") or {}).get("bars") or []
+    if not bars:
+        return "（本地无该标的日线数据）"
+    lines = [f"{symbol}（{market}）近 {len(bars)} 个交易日日线（本地 quantus/quanthk）：",
+             "date | open | high | low | close | volume"]
+    for b in bars[-20:]:
+        lines.append(f"{b['date']} | {b['open']:.2f} | {b['high']:.2f} | {b['low']:.2f} "
+                     f"| {b['close']:.2f} | {b['volume']:,.0f}")
+    return "\n".join(lines)

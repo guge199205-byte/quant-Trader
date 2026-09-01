@@ -49,13 +49,17 @@ def build_env(model: str = "deepseek") -> dict:
     return env
 
 
-def run_agent(task: str, timeout_s: int = 300, model: str = "deepseek") -> str:
+def run_agent(task: str, timeout_s: int = 300, model: str = "deepseek",
+             extra_patch: str | None = None) -> str:
     """跑一个 dsh headless agent 任务，返回完整回复。失败抛 RuntimeError。
-    model: deepseek（默认）/ glm（智谱端点，baymax.glm.cordis.yml 覆写）。"""
+    model: deepseek（默认）/ glm（智谱端点，baymax.glm.cordis.yml 覆写）。
+    extra_patch: 追加市场专属 persona（如 baymax.us.cordis.yml 美股规则）。"""
     if not task.strip():
         return ""
     env = build_env(model)
     patches = [str(PATCH)]
+    if extra_patch:
+        patches.append(extra_patch)
     if model == "glm":
         patches.append(str(GLM_PATCH))
     cmd = ["dsh", "--profile", "headless"]

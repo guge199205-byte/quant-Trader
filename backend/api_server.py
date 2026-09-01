@@ -1564,6 +1564,22 @@ async def put_comp_config(request: Request, market: str = "cn"):
     return {"success": True, "data": {"market": mk, "selection": cleaned}}
 
 
+# ---------- 本地历史K线（quantus/quanthk，duckdb 直读；agent 工具数据源） ----------
+
+@app.get("/api/local/klines")
+def local_klines(symbol: str, market: str = "us", days: int = Query(60, ge=5, le=500)):
+    """本地日线（quantus=美股/quanthk=港股，quantmind 数据资产日更）。
+    symbol 归一化：AAPL / US.AAPL → AAPL；00700 / HK.00700 → 0700.HK。"""
+    from scripts.local_klines import get_daily
+
+    try:
+        bars = get_daily(symbol, market, days=days)
+        return {"success": True, "data": {"symbol": symbol, "market": market,
+                                          "count": len(bars), "bars": bars[-120:]}}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"本地K线查询失败: {e}"}
+
+
 def main():
     import uvicorn
 

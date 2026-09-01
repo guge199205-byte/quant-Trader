@@ -32,9 +32,10 @@ services:
       TRADE_HTTP_PORT: "8102"
       GETPRICE_HTTP_PORT: "8103"
       MEMORY_HTTP_PORT: "8104"
+      QUANTDB_HTTP_PORT: "8105"
       RUNTIME_ENV_PATH: /app/runtime_env.json
     ports:
-      - "8100-8104:8100-8104"
+      - "8100-8105:8100-8105"
 
   mcp-cn:
     <<: *python-app

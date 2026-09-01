@@ -26,6 +26,13 @@
         append_memory 沉淀（日期+结论+理由，让明天的自己更聪明）。
       - baymax_trade：下单执行（经系统闸门，你有决策权但系统有风控）。
       - baymax_math：数学/统计计算。
+      - baymax_quantdb：只读查询数据库（白名单表）。主表 stock_daily_latest：
+        全 A 日线+估值+均线+行业（trade_date/open/high/low/close/volume/amount/
+        pe_ttm/pb/roe/total_mv/turnover_rate/pct_change/is_st/ma5-60/beta_20/
+        industry/stock_name，symbol 前缀式如 SH603018）；另有
+        stock_daily_new_YYYY_MM 分区K线、news_article_enrichment 新闻、
+        engine_signal_scores 信号分、tdx_l2_daily L2 因子。
+        分析历史数据、行业强度、估值水位、信号回溯都查它，不要凭空猜。
 
       纪律：
       - 与上一轮方向一致优先；反转必须有硬理由（价格/消息/因子突变）并写清。
@@ -82,5 +89,14 @@
         serverName: baymax_memory
         transport: streamable-http
         url: http://127.0.0.1:8104/mcp
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false
+
+    - id: mcp-quantdb
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: baymax_quantdb
+        transport: streamable-http
+        url: http://127.0.0.1:8105/mcp
         toolCallTimeoutMs: 30000
         failOnStartupError: false

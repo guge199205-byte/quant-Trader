@@ -29,6 +29,7 @@ class MCPServiceManager:
             "trade": int(os.getenv("TRADE_HTTP_PORT", "8002")),
             "price": int(os.getenv("GETPRICE_HTTP_PORT", "8003")),
             "memory": int(os.getenv("MEMORY_HTTP_PORT", "8104")),
+            "quantdb": int(os.getenv("QUANTDB_HTTP_PORT", "8105")),
         }
 
         # Service configurations
@@ -38,6 +39,7 @@ class MCPServiceManager:
             "trade": {"script": "tool_trade.py", "name": "TradeTools", "port": self.ports["trade"]},
             "price": {"script": "tool_get_price_local.py", "name": "LocalPrices", "port": self.ports["price"]},
             "memory": {"script": "tool_memory.py", "name": "Memory", "port": self.ports["memory"]},
+            "quantdb": {"script": "tool_quantdb.py", "name": "QuantDB", "port": self.ports["quantdb"]},
         }
 
         # Create logs directory

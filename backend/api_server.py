@@ -525,19 +525,23 @@ async def futu_snapshot(codes: str = ""):
 
 # ---------- 老虎证券（港股实盘通道，tigeropen SDK；凭据 config/brokers.json tiger） ----------
 
-def _tiger_broker():
-    """老虎 broker 实例（凭据从 config/brokers.json tiger 段读取）。"""
+def _tiger_broker(env: str = "SIMULATE"):
+    """老虎 broker 实例（凭据从 config/brokers.json tiger 段读取）。
+    env=REAL 用实盘账户（real_account），默认模拟盘（account）。"""
     from agent_tools.brokers.tiger_bridge import TigerBridgeBroker
     from backend.services.tdx_live import _read_brokers
 
-    return TigerBridgeBroker(_read_brokers().get("tiger") or {})
+    cfg = dict(_read_brokers().get("tiger") or {})
+    if env.upper() == "REAL" and cfg.get("real_account"):
+        cfg["account"] = cfg["real_account"]
+    return TigerBridgeBroker(cfg)
 
 
 @app.get("/api/tiger/account")
-async def tiger_account():
-    """老虎账户资产+持仓（HK 实盘）→ Live 港股实盘面板。"""
+async def tiger_account(env: str = "SIMULATE"):
+    """老虎账户资产+持仓（默认模拟盘；env=REAL 实盘）→ Live 港股实盘面板。"""
     try:
-        broker = _tiger_broker()
+        broker = _tiger_broker(env)
         cash = broker.get_cash(None, "")
         positions = broker.get_positions(None, "", market="hk")
         return {"success": True, "data": {
@@ -545,19 +549,35 @@ async def tiger_account():
             "positions": positions,
             "position_count": len(positions),
             "broker": "tiger",
+            "env": "REAL" if env.upper() == "REAL" else "SIMULATE",
+            "account": broker.account,
         }}
     except Exception as e:  # noqa: BLE001
         return {"success": False, "error": f"老虎查询失败: {e}"}
 
 
 @app.get("/api/tiger/orders")
-async def tiger_orders(limit: int = Query(50, ge=1, le=500)):
+async def tiger_orders(limit: int = Query(50, ge=1, le=500), env: str = "SIMULATE"):
     """老虎当日委托（含成交/在途）→ Live 港股成交 tab。"""
     try:
-        broker = _tiger_broker()
+        broker = _tiger_broker(env)
         return {"success": True, "data": broker.get_orders(market="hk", limit=limit)}
     except Exception as e:  # noqa: BLE001
         return {"success": False, "error": f"老虎委托查询失败: {e}"}
+
+
+@app.get("/api/tiger/transactions")
+async def tiger_transactions(start: str = Query("2026-08-01"),
+                             end: str = Query("2099-12-31"),
+                             limit: int = Query(200, ge=1, le=1000),
+                             env: str = "SIMULATE"):
+    """老虎历史成交（get_filled_orders，日期范围）→ 「已完成」历史数据源。"""
+    try:
+        broker = _tiger_broker(env)
+        return {"success": True,
+                "data": broker.get_filled_orders(start, end, market="hk", limit=limit)}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"老虎历史成交查询失败: {e}"}
 
 
 # ---------- 盈透证券（IBKR Gateway，ib_insync；凭据 config/brokers.json ib） ----------

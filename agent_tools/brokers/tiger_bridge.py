@@ -233,6 +233,38 @@ class TigerBridgeBroker(Broker):
         except Exception as exc:
             raise BrokerError(f"老虎委托查询失败: {exc}") from exc
 
+    def get_filled_orders(self, start_date: str, end_date: str,
+                          market: str = "hk", limit: int = 200) -> List[Dict[str, Any]]:
+        """历史成交（get_filled_orders，日期范围必填）——「已完成」历史数据源。"""
+        if not self.account:
+            raise BrokerError("老虎账户未配置：account（设置页填写）")
+        try:
+            from tigeropen.common.consts import Market as TigerMarket
+
+            _, trade_client = self._get_clients()
+            mkt = TigerMarket.HK if market == "hk" else TigerMarket.US
+            orders = trade_client.get_filled_orders(
+                account=self.account, market=mkt, limit=int(limit),
+                start_time=start_date, end_time=end_date) or []
+            out = []
+            for o in orders:
+                contract = getattr(o, "contract", None)
+                sym = (getattr(contract, "symbol", "") if contract else "") or getattr(o, "symbol", "")
+                out.append({
+                    "order_id": str(getattr(o, "order_id", "") or getattr(o, "id", "")),
+                    "stock_code": sym,
+                    "side": str(getattr(o, "action", "") or "").lower(),
+                    "status": str(getattr(o, "status", "") or "").lower(),
+                    "filled_volume": float(getattr(o, "filled", 0) or 0),
+                    "filled_price": float(getattr(o, "avg_fill_price", 0) or 0),
+                    "time": str(getattr(o, "trade_time", "") or "")[:19],
+                })
+            return out
+        except BrokerError:
+            raise
+        except Exception as exc:
+            raise BrokerError(f"老虎历史成交查询失败: {exc}") from exc
+
 
 def register() -> None:
     from agent_tools.brokers.base import registry

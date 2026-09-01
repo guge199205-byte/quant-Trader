@@ -600,10 +600,11 @@ export default function Live() {
     }
     return (
       <>
-        {(market === 'cn' || market === 'hk') && liveTradesFiltered.length > 0 && (
+        {(market === 'cn' || market === 'hk' || market === 'us') && liveTradesFiltered.length > 0 && (
           <>
             <div className="pos-section-title">
-              今日实盘成交（{market === 'hk' ? '富途' : '通达信桥'}）
+              今日实盘成交（
+              {market === 'hk' ? '富途' : market === 'us' ? 'IBKR' : '通达信桥'}）
             </div>
             {liveTradesFiltered.map((e, i) => {
               const isSell = String(e.side ?? '').toUpperCase() === 'SELL';

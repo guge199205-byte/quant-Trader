@@ -295,9 +295,13 @@ export const fetchFutuAccountBoth = async (): Promise<{
   };
 };
 
-// 市场感知实盘账户：cn 走通达信桥 /live/account；hk 走富途；us 无实盘返回空
+// 市场感知实盘账户：cn 走通达信桥 /live/account；hk 走富途；us 走 IBKR
 export const fetchLiveAccountFor = (market: MarketId): Promise<LiveAccount> =>
-  market === 'hk' ? fetchFutuAccount('SIMULATE') : fetchLiveAccount();
+  market === 'hk'
+    ? fetchFutuAccount('SIMULATE')
+    : market === 'us'
+      ? (fetchIbkrAccount() as unknown as Promise<LiveAccount>)
+      : fetchLiveAccount();
 
 // ---------- 港股富途订单历史（BayMax backend /api/futu/orders 直连 OpenD） ----------
 // order_list_query → LiveTradeLog（同 shape，复用 cn 成交渲染）。只取 dealt_qty>0 已成交。
@@ -337,9 +341,13 @@ export const fetchFutuTrades = async (env = 'SIMULATE'): Promise<LiveTradeLog[]>
     .sort((a, b) => (a.ts < b.ts ? 1 : -1));
 };
 
-// 市场感知成交：cn 走通达信 live_trade 日志 /live/trades；hk 走富途订单历史
+// 市场感知成交：cn 走通达信 live_trade 日志 /live/trades；hk 走富途订单历史；us 走 IBKR 委托
 export const fetchLiveTradesFor = (market: MarketId): Promise<LiveTradeLog[]> =>
-  market === 'hk' ? fetchFutuTrades('SIMULATE') : fetchLiveTrades();
+  market === 'hk'
+    ? fetchFutuTrades('SIMULATE')
+    : market === 'us'
+      ? fetchIbkrOrders()
+      : fetchLiveTrades();
 
 // ---------- 港股富途已平仓（BayMax backend /api/futu/closed 直连 OpenD） ----------
 // position_list_query 已平仓行（qty==0, realized_pl!=0）→ Live「已完成」tab 港股面板。
@@ -583,6 +591,52 @@ export interface L2FactorRow {
 
 export const fetchRealAccount = () => unwrap<RealAccount>(api.get('/live/real-account'));
 export const fetchRealLedger = () => unwrap<RealLedgerRow[]>(api.get('/live/real-ledger'));
+
+// ---------- 美股实盘（IBKR Gateway，ib_insync；凭据 config/brokers.json ib） ----------
+
+export const fetchIbkrAccount = async (): Promise<RealAccount> => {
+  const res = await api.get('/ibkr/account');
+  const d = res.data?.data ?? res.data;
+  if (!d || d.broker !== 'ibkr') throw new Error(d?.error ?? 'IBKR 账户不可用');
+  const positions: RealAccountPosition[] = Object.entries(d.positions ?? {}).map(
+    ([symbol, p]: [string, any]) => ({
+      symbol,
+      name: symbol,
+      volume: Number(p.volume) || 0,
+      cost_price: Number(p.cost_price) || 0,
+      price: Number(p.cost_price) || 0,
+      market_value: Number(p.market_value) || 0,
+      available_volume: Number(p.volume) || 0, // IBKR T+0 可卖=持仓
+    }),
+  );
+  const market_value = positions.reduce((s, p) => s + p.market_value, 0);
+  return {
+    ts: new Date().toISOString(),
+    total_asset: Number(d.cash) + market_value,
+    cash: Number(d.cash) || 0,
+    market_value,
+    today_pnl: 0,
+    total_pnl: 0,
+    positions,
+  };
+};
+
+export const fetchIbkrOrders = async (): Promise<LiveTradeLog[]> => {
+  const res = await api.get('/ibkr/orders');
+  const orders = (res.data?.data ?? []) as any[];
+  return orders
+    .filter((o) => o && (Number(o.filled_volume) > 0 || o.status !== 'cancelled'))
+    .map((o) => ({
+      ts: String(o.time || new Date().toISOString()).replace(' ', 'T'),
+      mode: 'execute',
+      code: o.stock_code,
+      name: o.stock_code,
+      side: String(o.side || '').toUpperCase(),
+      volume: Number(o.filled_volume) || 0,
+      price: Number(o.filled_price) || Number(o.order_price) || null,
+      result: { order_id: o.order_id, status: o.status, message: '' },
+    }));
+};
 export const fetchL2Factors = (limit = 200) =>
   unwrap<L2FactorRow[]>(api.get('/live/l2-factors', { params: { limit } }));
 

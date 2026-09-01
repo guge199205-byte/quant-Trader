@@ -5,6 +5,7 @@ import {
   LiveAccount,
   MarketId,
   RealLedgerRow,
+  fetchIbkrAccount,
   fetchL2Factors,
   fetchRealAccount,
   fetchRealLedger,
@@ -28,8 +29,14 @@ export default function RealAccountPanel({
   futuBoth?: { real: LiveAccount | null; simulate: LiveAccount | null } | null;
 }) {
   const isHk = market === 'hk';
+  const isUs = market === 'us';
   const futuReal = futuBoth?.real ?? null;
   const futuSim = futuBoth?.simulate ?? null;
+  const ibkr = usePolling(
+    () => (isUs ? fetchIbkrAccount().catch(() => null) : Promise.resolve(null)),
+    [isUs],
+    20000,
+  );
   // A股走 quantmind PG TDX 桥快照
   const acct = usePolling(() => fetchRealAccount(), [], 20000);
   const ledger = usePolling(() => fetchRealLedger(), [], 30000);
@@ -127,6 +134,61 @@ export default function RealAccountPanel({
         <div className="real-section">
           <div className="real-section-title">日终账本</div>
           <div className="empty-state" style={{ padding: '18px 0' }}>港股账本曲线待接入（富途历史净值）</div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------- 美股：IBKR 实盘账户（ib_insync，Gateway 需本机运行） ----------
+  if (isUs) {
+    return (
+      <div className="real-body">
+        <div className="real-account-card">
+          <div className="real-account-head">
+            <span className="real-account-title">实盘账户（IBKR）</span>
+            <span className="real-account-ts">
+              {ibkr.data ? '盈透证券 Gateway' : '加载中…'}
+            </span>
+          </div>
+          {ibkr.data ? (
+            <>
+              <div className="real-asset-row">
+                <span className="real-asset-label">总资产</span>
+                <span className="real-asset-value">{fmtMoney(ibkr.data.total_asset, '$')}</span>
+              </div>
+              <div className="real-sub-row">
+                <span>现金 {fmtMoney(ibkr.data.cash, '$')}</span>
+                <span>市值 {fmtMoney(ibkr.data.market_value, '$')}</span>
+                <span>持仓 {ibkr.data.positions.length} 只</span>
+              </div>
+              {ibkr.data.positions.length > 0 && (
+                <div className="real-positions">
+                  {ibkr.data.positions.map((p) => (
+                    <div className="real-pos-row" key={p.symbol}>
+                      <span className="real-pos-id">
+                        <span className="real-pos-name">{p.name || p.symbol}</span>
+                        <span className="real-pos-code">{p.symbol}</span>
+                      </span>
+                      <span className="real-pos-qty">{Number(p.volume).toLocaleString('en-US')}</span>
+                      <span className="real-pos-val">{fmtMoney(Number(p.market_value), '$')}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="empty-state" style={{ padding: '14px 0' }}>
+              {ibkr.error
+                ? 'IBKR 未连接（请启动 IB Gateway 并在交易所设置配置）'
+                : '加载中…'}
+            </div>
+          )}
+        </div>
+        <div className="real-section">
+          <div className="real-section-title">说明</div>
+          <div className="empty-state" style={{ padding: '18px 0' }}>
+            美股实盘经 IBKR Gateway（ib_insync）；凭据在 交易所设置 → 盈透证券(IB)
+          </div>
         </div>
       </div>
     );

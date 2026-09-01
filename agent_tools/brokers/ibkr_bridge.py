@@ -108,11 +108,13 @@ class IbkrBridgeBroker(Broker):
             raise BrokerError(f"IBKR 行情查询失败: {exc}") from exc
 
     def _quote(self, ib, symbol: str, date: str) -> Optional[Dict[str, Any]]:
+        import math
+
         ticker = ib.reqMktData(self._stock(symbol), "", False, False)
         ib.sleep(1.5)
         price = ticker.marketPrice()
         ib.cancelMktData(ticker.contract)
-        if not price or price == float("inf"):
+        if not price or not math.isfinite(float(price)) or float(price) <= 0:
             return None
         return {"symbol": symbol, "date": date, "buy price": float(price)}
 
@@ -128,14 +130,20 @@ class IbkrBridgeBroker(Broker):
     def _klines(self, ib, symbol: str, start: str, end: str, interval: str) -> List[Dict[str, Any]]:
         from ib_insync import util
 
+        # IBKR 要求 yyyymmdd hh:mm:ss 或留空（=当前）；"2026-09-01" 会被拒
+        end_dt = end.replace("-", "") + " 23:59:59" if end else ""
         bars = ib.reqHistoricalData(
-            self._stock(symbol), endDateTime=end, durationStr="1 Y",
+            self._stock(symbol), endDateTime=end_dt, durationStr="1 Y",
             barSizeSetting="1 day" if interval == "daily" else "1 hour",
             whatToShow="TRADES", useRTH=True,
         )
         return [
-            {"date": str(b.date)[:10], "open": float(b.open), "close": float(b.close),
-             "high": float(b.high), "low": float(b.low), "volume": float(b.volume)}
+            {"date": str(getattr(b, "date", ""))[:10],
+             "open": float(getattr(b, "open", 0) or 0),
+             "close": float(getattr(b, "close", 0) or 0),
+             "high": float(getattr(b, "high", 0) or 0),
+             "low": float(getattr(b, "low", 0) or 0),
+             "volume": float(getattr(b, "volume", 0) or 0)}
             for b in (bars or [])
         ]
 

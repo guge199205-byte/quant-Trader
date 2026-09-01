@@ -142,3 +142,8 @@ data/market_snapshot.json
 # 港股分账账本 + 成交日志（运行时数据）
 data/hk_ledger.json
 logs/live_trade_hk_*.jsonl
+
+# 美股分账账本 + 成交日志（运行时数据）
+data/us_ledger.json
+logs/live_trade_us_*.jsonl
+data/agent_data_us/

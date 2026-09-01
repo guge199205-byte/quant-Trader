@@ -26,8 +26,13 @@ if [ "$1" = "--check" ]; then
 fi
 
 echo "[1/2] 打 TrustedIPs 补丁（127.0.0.1 + docker 桥 172.21.0.1）..."
-docker exec $CONTAINER sh -c "sed -i 's/^TrustedIPs=127.0.0.1\$/TrustedIPs=127.0.0.1;172.21.0.1/' /home/ibgateway/Jts/jts.ini.tmpl /home/ibgateway/Jts/jts.ini"
-docker exec $CONTAINER sh -c 'grep TrustedIPs /home/ibgateway/Jts/jts.ini'
+# jts.ini 是 CRLF 行尾（Windows 应用），sed 的 $ 锚会匹配失败——用前缀匹配 + 防重复
+docker exec $CONTAINER sh -c "
+  for f in /home/ibgateway/Jts/jts.ini.tmpl /home/ibgateway/Jts/jts.ini; do
+    grep -q '172.21.0.1' \$f || sed -i 's/^TrustedIPs=127.0.0.1/TrustedIPs=127.0.0.1;172.21.0.1/' \$f
+  done
+  grep TrustedIPs /home/ibgateway/Jts/jts.ini
+"
 
 echo "[2/2] 重启容器（重新登录，等 60s）..."
 docker restart $CONTAINER

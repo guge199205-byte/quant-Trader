@@ -132,3 +132,8 @@ data/live_watch.json
 data/live_pending_orders.json
 data/agent_last_decisions.json
 logs/live_analysis.lock
+
+# L2 逐笔因子采集运行时产物
+data/l2_factors_live.json
+data/l2_state.json
+data/l2_status.json

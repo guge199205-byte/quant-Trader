@@ -165,10 +165,19 @@ def build_rows(broker, positions: list, names: dict) -> list:
 
 
 def load_l2_factors(codes: list[str]) -> dict:
-    """从 Quant-Trader api（nginx 8092 反代，自动注入 token）读 L2 因子，
-    按持仓 code（后缀式，如 300308.SZ）匹配最近一条；失败返回空 dict（不阻塞分析）。"""
+    """L2 因子：优先 BayMax 自有采集（data/l2_factors_live.json，live_l2_capture.py
+    每 5 分钟一轮），无数据时回退 quantmind API（8092 反代注入 token）。
+    按持仓 code（后缀式，如 300308.SZ）匹配；失败返回空 dict（不阻塞分析）。"""
     import requests
 
+    try:
+        from live_l2_capture import load_factors
+
+        own = load_factors()
+        if own:
+            return {c: own[c] for c in codes if c in own}
+    except Exception:  # noqa: BLE001
+        pass
     try:
         resp = requests.get(
             "http://127.0.0.1:8092/api/live/l2-factors", params={"limit": 500}, timeout=5

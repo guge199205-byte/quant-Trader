@@ -499,11 +499,13 @@ def build_flat_content(pool: list, direction: dict, cash: float, agent: str) -> 
     return "\n".join(lines)
 
 
-def agent_mode() -> str:
-    """agent 运行模式：configs/agent_mode.json {"mode": "llm"|"dsh"}。
-    llm = 单次提示词调用（旧）；dsh = DeepSeek Harness agent（工具+写代码+记忆）。"""
+def agent_mode_for(agent: str) -> str:
+    """agent 运行模式：configs/agent_mode.json {"mode": "llm"|"dsh", "dsh_agents": [...]}。
+    dsh_agents 名单内的 agent 用 dsh（试点逐个切），其余用 mode 默认值。"""
     try:
         cfg = json.loads((ROOT / "configs" / "agent_mode.json").read_text(encoding="utf-8"))
+        if agent in (cfg.get("dsh_agents") or []):
+            return "dsh"
         mode = str(cfg.get("mode") or "llm").strip().lower()
         return mode if mode in ("llm", "dsh") else "llm"
     except (OSError, json.JSONDecodeError):
@@ -1178,7 +1180,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
             labeled_content = f"【分析配置：{mode['name']}】\n\n" + user_content
             usage = None
             try:
-                if agent_mode() == "dsh":
+                if agent_mode_for(agent) == "dsh":
                     # dsh agent：工具（行情/搜索/数学/记忆）+ 可写代码，思考过程不再是单次提示词
                     from dsh_agent import run_agent
 

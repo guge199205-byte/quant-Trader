@@ -73,7 +73,8 @@ def _broker():
     cfg = {}
     try:
         data2 = json.loads((ROOT / "config" / "brokers.json").read_text(encoding="utf-8"))
-        cfg = dict((data2 or {}).get(brk) or {})
+        key = "ib" if brk == "ibkr" else brk  # brokers.json 键是 ib，映射是 ibkr
+        cfg = dict((data2 or {}).get(key) or {})
     except (OSError, json.JSONDecodeError):
         pass
     if brk == "tiger":
@@ -173,6 +174,47 @@ def load_news(codes: list, hours: int = 12, limit: int = 15) -> list:
 
 # ---------- 提示词 ----------
 
+def load_pool() -> dict:
+    """候选池（us_picks.json，date=美东今日 才有效）。"""
+    try:
+        doc = json.loads((ROOT / "data" / "us_picks.json").read_text(encoding="utf-8"))
+        if doc.get("date") != datetime.now(NY_TZ).strftime("%Y-%m-%d"):
+            return {}
+        return doc if doc.get("picks") else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def build_flat_content(pool: dict, cash: float, agent: str) -> str:
+    """空仓 agent 候选池复盘：从池里决定建仓（≤3 只）或继续空仓。"""
+    lines = [
+        f"现在是北京时间 {now_cn():%F %T}（美股盘中）。你是 {agent}（美股实盘分账账户，"
+        f"初始额度 ${AGENT_QUOTA:,.0f}）。你名下**没有持仓（空仓）**，可用现金 ${cash:,.0f}。",
+        f"候选池（{pool.get('date')} 动量评分 top {len(pool.get('picks') or [])}，"
+        f"大盘方向 {pool.get('market_direction')}）：",
+        "",
+        "| # | 代码 | score | 近20日 | 近60日 | 趋势 | 波动 |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for p in pool.get("picks") or []:
+        lines.append(
+            f"| {p.get('rank', '')} | {p['code']} | {p.get('score', 0):.3f} "
+            f"| {p.get('mom20', 0):+.2f}% | {p.get('mom60', 0):+.2f}% "
+            f"| {p.get('trend', 0):+.2f}% | {p.get('vol20', 0):.2f}% |")
+    lines += [
+        "",
+        "请给出：①一句话简评（结合候选池与美股新闻）②是否建仓及建哪些③理由。输出简洁 markdown。",
+        "",
+        "【最后必须附一个 JSON 决策块】（```json 围栏包住）：",
+        "```json",
+        '{"decisions": [{"action": "hold|buy", "code": "AAPL", "pct": 0.2, "reason": "一句话理由"}]}',
+        "```",
+        "规则：buy 的 pct=剩余额度比例（≤0.2），最多建仓 3 只；候选池整体不吸引人时"
+        "全部 hold 保持空仓观望；你无持仓，不要输出 sell。",
+    ]
+    return "\n".join(lines)
+
+
 def build_user_content(rows: list, cash: float, agent: str) -> str:
     lines = [
         f"现在是北京时间 {now_cn():%F %T}（美股盘中，America/New_York {datetime.now(NY_TZ):%F %H:%M}）。"
@@ -260,7 +302,8 @@ def _us_log(rec: dict) -> None:
 
 
 def execute_us_decisions(broker, agent: str, decisions: list, rows: list,
-                         cash: float, dry_run: bool = True) -> list:
+                         cash: float, dry_run: bool = True,
+                         pool_codes: set | None = None) -> list:
     """美股决策 → 闸门 → IBKR 下单 → us_ledger 记账。
 
     闸门(US)：T+0 无 T+1、无涨跌停、1 股整数倍、虚拟现金红线、单票≤20%、
@@ -323,9 +366,13 @@ def execute_us_decisions(broker, agent: str, decisions: list, rows: list,
                 continue
             vcash = agent_virtual_cash(ledger, agent)
             remaining = agent_remaining(ledger, agent)
-            if held.get(code) is None and new_buys >= MAX_NEW_BUYS:
-                print(f"  ⏭️ [{agent}] 买入 {code}: 单轮建仓已达上限 {MAX_NEW_BUYS} 只，跳过")
-                continue
+            if held.get(code) is None:
+                if new_buys >= MAX_NEW_BUYS:
+                    print(f"  ⏭️ [{agent}] 买入 {code}: 单轮建仓已达上限 {MAX_NEW_BUYS} 只，跳过")
+                    continue
+                if pool_codes is not None and code not in pool_codes:
+                    print(f"  ⏭️ [{agent}] 买入 {code}: 非持仓且不在候选池，跳过")
+                    continue
             price = _price_of(broker, code)
             if price <= 0:
                 print(f"  ⏭️ [{agent}] 买入 {code}: 取价失败，跳过")
@@ -384,13 +431,20 @@ def run_analysis(dry_run: bool = True) -> int:
         print(f"[{now:%F %T}] IBKR 账户查询失败: {exc}")
         return 1
     rows = build_rows(broker, positions)
-    print(f"[{now:%F %T}] IBKR 现金 ${cash:,.2f} 持仓 {len(rows)} 只")
-    if not rows:
-        print(f"[{now:%F %T}] 无持仓，本轮仅空仓复盘（跳过分析，等建仓信号由 09:35 式入口触发）")
+    print(f"[{now:%F %T}] {broker.name} 现金 ${cash:,.2f} 持仓 {len(rows)} 只")
+    pool = load_pool()
+    if not rows and not pool:
+        print(f"[{now:%F %T}] 无持仓且候选池未生成，跳过")
         return 0
     ok = 0
     for agent in us_enabled_agents():
-        user_content = build_user_content(rows, cash, agent)
+        if rows:
+            user_content = build_user_content(rows, cash, agent)
+            pool_codes = None
+        else:
+            user_content = build_flat_content(pool, cash, agent)
+            pool_codes = {p.get("code") for p in (pool.get("picks") or [])}
+            print(f"[{now:%F %T}] {agent} 空仓，候选池复盘（可建仓 ${cash:,.0f}）")
         try:
             content = call_llm(user_content, agent)
         except Exception as exc:  # noqa: BLE001
@@ -413,7 +467,8 @@ def run_analysis(dry_run: bool = True) -> int:
             exec_list = [d for d in decisions if d["action"] in ("sell", "buy")]
             if exec_list:
                 executed = execute_us_decisions(broker, agent, exec_list, rows,
-                                                cash, dry_run=dry_run)
+                                                cash, dry_run=dry_run,
+                                                pool_codes=pool_codes)
                 if executed:
                     tag = "🟡 DRY-RUN 决策" if dry_run else "✅ 已执行"
                     acts = "/".join(f"{e['action']} {e['code']}" for e in executed)

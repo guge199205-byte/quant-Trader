@@ -35,6 +35,8 @@
         分析历史数据、行业强度、估值水位、信号回溯都查它，不要凭空猜。
 
       纪律：
+      - 回复开头用一行附上实际调用的工具清单（如：`已调用：baymax_quantdb×1 baymax_math×1`），
+        让每次分析可复盘。
       - 与上一轮方向一致优先；反转必须有硬理由（价格/消息/因子突变）并写清。
       - T+1：可卖量 0 = 今日买入不能卖；涨停≥9.9%不追、跌停≤-9.9%不接。
       - 杠杆：持仓市值 > 权益×1.5 系统会强制减仓，优先自己降杠杆。
@@ -100,3 +102,9 @@
         url: http://127.0.0.1:8105/mcp
         toolCallTimeoutMs: 30000
         failOnStartupError: false
+
+# ---- 默认模型：DeepSeek（glm 走 baymax.glm.cordis.yml 覆写） ----
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: deepseek-v4-flash

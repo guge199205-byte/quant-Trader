@@ -242,6 +242,23 @@ def load_orderbook(broker, codes: list) -> dict:
     return out
 
 
+def _cross_agent_refs(last_decisions: dict, agent: str) -> str | None:
+    """其他 agent 上轮决策摘要（共识参考注入提示词）。"""
+    lines = []
+    for other, rec in (last_decisions or {}).items():
+        if other == agent or not (rec or {}).get("decisions"):
+            continue
+        acts = []
+        for d in rec["decisions"][:4]:
+            act = str(d.get("action") or "hold").upper()
+            code = str(d.get("code") or "")
+            pct = d.get("pct")
+            extra = f"（{float(pct):.0%}）" if pct and act in ("SELL", "BUY", "WATCH") else ""
+            acts.append(f"{act} {code}{extra}")
+        lines.append(f"- {other}: {'、'.join(acts)}")
+    return "\n".join(lines) if lines else None
+
+
 def load_market_context() -> dict:
     """大盘/板块上下文（live_l2_capture 每 5 分钟写 data/market_snapshot.json）。"""
     try:
@@ -296,7 +313,8 @@ def _fmt_factor(v) -> str:
 
 def build_user_content(rows: list, asset: float, cash: float, agent: str,
                        last_decisions: list | None = None,
-                       orderbook: dict | None = None) -> str:
+                       orderbook: dict | None = None,
+                       cross_refs: str | None = None) -> str:
     lines = [
         f"现在是北京时间 {now_cn():%F %T}（A股{('盘中' if in_trading_window(now_cn()) else '盘前/盘后')}）。"
         f"你是 {agent}（实盘分账账户，初始额度 ¥10 万）。你名下虚拟资产 ¥{asset:,.0f}、"
@@ -334,6 +352,10 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
         ]
     else:
         lines += ["", "（本轮为首次分析，无上一轮建议）"]
+    # 其他 agent 上轮建议（共识参考：独立判断，但分歧明显时说明理由）
+    if cross_refs:
+        lines += ["", "【其他 agent 上轮建议（仅供参考，请独立判断；如明显分歧请说明理由）】", ""]
+        lines.append(cross_refs)
     # 大盘 + 持仓相关板块（live_l2_capture 每 5 分钟采集）
     ctx = load_market_context()
     if ctx.get("indices"):
@@ -510,6 +532,16 @@ def agent_mode_for(agent: str) -> str:
         return mode if mode in ("llm", "dsh") else "llm"
     except (OSError, json.JSONDecodeError):
         return "llm"
+
+
+def agent_model_for(agent: str) -> str:
+    """dsh agent 的模型：agent_mode.json 的 models 表（默认 deepseek）。"""
+    try:
+        cfg = json.loads((ROOT / "configs" / "agent_mode.json").read_text(encoding="utf-8"))
+        model = str((cfg.get("models") or {}).get(agent) or "deepseek").strip().lower()
+        return model if model in ("deepseek", "glm") else "deepseek"
+    except (OSError, json.JSONDecodeError):
+        return "deepseek"
 
 
 def call_llm(user_content: str, model: str, system_prompt: str | None = None) -> tuple[str, dict | None]:
@@ -1163,10 +1195,11 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
         else:
             print(f"[{now:%F %T}] {agent} 名下持仓 {len(my_rows)} 只，盘中分析")
             virtual_asset = virtual_cash + sum(r["price"] * r["volume"] for r in my_rows)
+            cross = _cross_agent_refs(last_decisions, agent)
             user_content = build_user_content(my_rows, virtual_asset, virtual_cash,
                                               agent,
                                               (last_decisions.get(agent) or {}).get("decisions"),
-                                              orderbook)
+                                              orderbook, cross)
         # 比赛配置多选：选中 N 个配置 → 本轮按 N 个配置各做一轮独立分析（各自落盘一轮对话）
         from prompts.analysis_modes import selected_modes
 
@@ -1181,10 +1214,12 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
             usage = None
             try:
                 if agent_mode_for(agent) == "dsh":
-                    # dsh agent：工具（行情/搜索/数学/记忆）+ 可写代码，思考过程不再是单次提示词
+                    # dsh agent：工具（行情/搜索/数学/记忆/quantdb）+ 可写代码，
+                    # 思考过程不再是单次提示词；模型可 per-agent 配（deepseek/glm）
                     from dsh_agent import run_agent
 
-                    content = run_agent(labeled_content, timeout_s=420)
+                    content = run_agent(labeled_content, timeout_s=420,
+                                        model=agent_model_for(agent))
                 else:
                     content, usage = call_llm(
                         labeled_content, agent,

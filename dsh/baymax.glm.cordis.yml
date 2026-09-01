@@ -1,0 +1,23 @@
+# GLM 端点接入（复用 deepseek-official 适配器的 baseURL/apiKeyEnv/maxTokens 覆写）
+# 用法: dsh --profile headless --patch baymax.trading.cordis.yml --patch baymax.glm.cordis.yml "<任务>"
+# 模型选择 settings: agent-default-model {provider: deepseek-official, model: glm-5.3-flash, maxTokens: 8192}
+- id: llm-deepseek
+  config:
+    baseURL: https://open.bigmodel.cn/api/paas/v4
+    apiKeyEnv: GLM_API_KEY
+    maxTokens: 8192   # 适配器默认 256000 超 GLM 上限 131072
+    models:
+      - id: glm-5.3-flash
+        description: GLM-5.3 Flash（智谱）
+        contextWindow: 128000
+        maxTokens: 8192
+      - id: glm-5.3
+        description: GLM-5.3 完整版（智谱）
+        contextWindow: 128000
+        maxTokens: 8192
+
+# ---- 默认模型：GLM ----
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: glm-5.3-flash

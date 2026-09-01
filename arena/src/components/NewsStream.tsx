@@ -7,6 +7,7 @@ interface Props {
   tickers: string[]; // 持仓/关注代码（A股 600519.SH 格式），空 = 全部新闻
   hours?: number;
   limit?: number;
+  keyword?: string; // 港股无 HK 标签库，按关键词全文搜（腾讯/恒生/港股）；设了则跳过 ticker 匹配过滤
 }
 
 const SENTIMENT_LABEL: Record<string, string> = {
@@ -43,29 +44,30 @@ const matchedTickers = (a: NewsArticle, watch: Set<string>): string[] =>
   (a.enrichment?.tickers ?? []).filter((t) => watch.has(t));
 
 /** NEWS —— 盘中实时新闻流（Huntly/RSS 聚合 + LLM enrichment，只显示与持仓/关注相关的）。 */
-export default function NewsStream({ tickers, hours = 12, limit = 30 }: Props) {
+export default function NewsStream({ tickers, hours = 12, limit = 30, keyword = '' }: Props) {
   const watch = useMemo(() => new Set(tickers), [tickers]);
   const key = tickers.join(',');
   const news = usePolling(
-    () => fetchLiveNews(key ? tickers : [], hours, limit).catch(() => ({ articles: [] })),
-    [key, hours, limit],
+    () => fetchLiveNews(key ? tickers : [], hours, limit, keyword).catch(() => ({ articles: [] })),
+    [key, hours, limit, keyword],
     60000,
   );
 
   const items: NewsArticle[] = useMemo(() => {
-    const list = (news.data?.articles ?? []).filter(
-      (a) => a.title && matchedTickers(a, watch).length > 0,
-    );
-    return list.slice(0, limit);
-  }, [news.data, watch, limit]);
+    const list = (news.data?.articles ?? []).filter((a) => a.title);
+    // 关键词模式（港股）：服务端已按关键词全文搜，跳过 ticker 匹配过滤
+    // （HK 文章 enrichment 标的是 A 股代码或为空，按 watch 过滤会全丢）
+    if (keyword) return list.slice(0, limit);
+    return list.filter((a) => matchedTickers(a, watch).length > 0).slice(0, limit);
+  }, [news.data, watch, limit, keyword]);
 
   if (news.error && !news.data) {
     return <div className="empty-state">新闻源不可用：{news.error}</div>;
   }
-  if (news.data && items.length === 0 && tickers.length > 0) {
+  if (news.data && items.length === 0 && (tickers.length > 0 || keyword)) {
     return (
       <div className="empty-state">
-        近 {hours} 小时暂无持仓相关新闻
+        近 {hours} 小时暂无{keyword ? `「${keyword}」` : '持仓'}相关新闻
         <span className="news-empty-sub">（RSS 聚合 + 情绪标注，每 60s 刷新）</span>
       </div>
     );

@@ -187,6 +187,8 @@ export interface LiveTradeLog {
   ts: string;
   mode: string; // "execute" | "quote" | ...
   code: string;
+  name?: string; // 富途订单自带 stock_name；cn 由前端 stockNames 解析
+  side?: string; // BUY/SELL（富途）；cn live_llm_trade 仅买入
   volume: number;
   price?: number | null; // 桥 filled_price（成交价）
   limit_price?: number | null;
@@ -196,6 +198,164 @@ export interface LiveTradeLog {
 
 export const fetchLiveAccount = () => unwrap<LiveAccount>(api.get('/live/account'));
 export const fetchLiveTrades = () => unwrap<LiveTradeLog[]>(api.get('/live/trades'));
+
+// ---------- 港股富途实盘账户（BayMax backend /api/futu/* 直连 OpenD 网关） ----------
+// 富途模拟/实盘账户；futu 原始 positions 是 {code: {...}} dict，reshape 成 cn LiveAccount
+// 同一 shape，Live 页持仓/实盘 tab 复用 cn 渲染逻辑（排版与 A 股一致）。
+interface FutuPositionRaw {
+  volume: number;
+  available_volume: number;
+  price: number;
+  market_value: number;
+  cost: number;
+  name: string;
+  currency: string;
+}
+interface FutuAccountRaw {
+  total_asset: number;
+  cash: number;
+  market_value: number;
+  positions: Record<string, FutuPositionRaw>;
+}
+
+export const fetchFutuAccount = async (env = 'SIMULATE'): Promise<LiveAccount> => {
+  const res = await api.get('/futu/account', { params: { env } });
+  // 后端统一信封 {success, data:{...}}；account 在 data.data
+  const raw = (res.data?.data ?? res.data) as FutuAccountRaw | undefined;
+  if (!raw) return { asset: 0, positions: [], channel_used: `futu-${env.toLowerCase()}` };
+  const positions: LivePosition[] = Object.entries(raw.positions ?? {})
+    .filter(([, p]) => Number(p.volume) > 0)
+    .map(([code, p]) => {
+      const cost = Number(p.cost) || 0;
+      const last = Number(p.price) || 0;
+      const vol = Number(p.volume) || 0;
+      const posVal = Number(p.market_value) || last * vol;
+      return {
+        stock_code: code,
+        name: p.name || code,
+        cost_price: cost,
+        total_volume: vol,
+        available_volume: Number(p.available_volume) || 0,
+        last_price: last,
+        position_value: posVal,
+        pnl_pct: cost && last ? +(((last - cost) / cost) * 100).toFixed(2) : 0,
+        pnl: cost && last ? +((last - cost) * vol).toFixed(2) : 0,
+        buy_time: '',
+      };
+    });
+  return {
+    asset: Number(raw.total_asset) || 0,
+    positions,
+    channel_used: `futu-${env.toLowerCase()}`,
+  };
+};
+
+/** 一次子进程拉 REAL+SIMULATE 两套账户（省一次 RSA 握手，降实盘 tab 延迟）。
+ *  供 Live.tsx 挂在 15s 后台轮询，让实盘 tab 点击即见（数据始终 warm）。 */
+export const fetchFutuAccountBoth = async (): Promise<{
+  real: LiveAccount;
+  simulate: LiveAccount;
+}> => {
+  const res = await api.get('/futu/account-both');
+  const raw = (res.data?.data ?? res.data) as
+    | { real?: FutuAccountRaw; simulate?: FutuAccountRaw }
+    | undefined;
+  const reshape = (r: FutuAccountRaw | undefined, env: string): LiveAccount => {
+    if (!r) return { asset: 0, positions: [], channel_used: `futu-${env}` };
+    const positions: LivePosition[] = Object.entries(r.positions ?? {})
+      .filter(([, p]) => Number(p.volume) > 0)
+      .map(([code, p]) => {
+        const cost = Number(p.cost) || 0;
+        const last = Number(p.price) || 0;
+        const vol = Number(p.volume) || 0;
+        const posVal = Number(p.market_value) || last * vol;
+        return {
+          stock_code: code,
+          name: p.name || code,
+          cost_price: cost,
+          total_volume: vol,
+          available_volume: Number(p.available_volume) || 0,
+          last_price: last,
+          position_value: posVal,
+          pnl_pct: cost && last ? +(((last - cost) / cost) * 100).toFixed(2) : 0,
+          pnl: cost && last ? +((last - cost) * vol).toFixed(2) : 0,
+          buy_time: '',
+        };
+      });
+    return {
+      asset: Number(r.total_asset) || 0,
+      positions,
+      channel_used: `futu-${env}`,
+    };
+  };
+  return {
+    real: reshape(raw?.real, 'real'),
+    simulate: reshape(raw?.simulate, 'simulate'),
+  };
+};
+
+// 市场感知实盘账户：cn 走通达信桥 /live/account；hk 走富途；us 无实盘返回空
+export const fetchLiveAccountFor = (market: MarketId): Promise<LiveAccount> =>
+  market === 'hk' ? fetchFutuAccount('SIMULATE') : fetchLiveAccount();
+
+// ---------- 港股富途订单历史（BayMax backend /api/futu/orders 直连 OpenD） ----------
+// order_list_query → LiveTradeLog（同 shape，复用 cn 成交渲染）。只取 dealt_qty>0 已成交。
+interface FutuOrderRaw {
+  order_id: string;
+  code: string;
+  name: string;
+  trd_side: string;
+  order_type: string;
+  order_status: string;
+  qty: number;
+  price: number;
+  dealt_qty: number;
+  dealt_avg_price: number;
+  create_time: string;
+  last_err_msg: string;
+}
+
+export const fetchFutuTrades = async (env = 'SIMULATE'): Promise<LiveTradeLog[]> => {
+  const res = await api.get('/futu/orders', { params: { env } });
+  const data = (res.data?.data ?? res.data) as { orders: FutuOrderRaw[] } | undefined;
+  const orders = data?.orders ?? [];
+  return orders
+    .filter((o) => Number(o.dealt_qty) > 0) // CANCELLED/未成交不计入成交流
+    .map((o) => ({
+      ts: String(o.create_time || '').replace(' ', 'T'),
+      mode: 'execute',
+      code: o.code,
+      name: o.name,
+      side: o.trd_side,
+      volume: Number(o.dealt_qty) || 0,
+      price: Number(o.dealt_avg_price) || null,
+      limit_price: Number(o.price) || null,
+      result: { order_id: o.order_id, status: o.order_status, message: o.last_err_msg || '' },
+      message: o.last_err_msg || '',
+    }))
+    .sort((a, b) => (a.ts < b.ts ? 1 : -1));
+};
+
+// 市场感知成交：cn 走通达信 live_trade 日志 /live/trades；hk 走富途订单历史
+export const fetchLiveTradesFor = (market: MarketId): Promise<LiveTradeLog[]> =>
+  market === 'hk' ? fetchFutuTrades('SIMULATE') : fetchLiveTrades();
+
+// ---------- 港股富途已平仓（BayMax backend /api/futu/closed 直连 OpenD） ----------
+// position_list_query 已平仓行（qty==0, realized_pl!=0）→ Live「已完成」tab 港股面板。
+export interface FutuClosedRow {
+  code: string;
+  name: string;
+  cost_price: number; // 入场成本
+  last_price: number; // 平仓参考价（nominal_price）
+  realized_pl: number; // 实现盈亏
+  currency: string;
+}
+
+export const fetchFutuClosed = async (env = 'SIMULATE'): Promise<FutuClosedRow[]> => {
+  const res = await api.get('/futu/closed', { params: { env } });
+  const data = (res.data?.data ?? res.data) as { closed?: FutuClosedRow[] } | undefined;
+  return data?.closed ?? [];
+};
 
 // ---------- 实盘分账（每 agent ¥10 万虚拟子账户） ----------
 
@@ -242,10 +402,23 @@ export interface LiveNews {
   error?: string | null;
 }
 
-/** 盘中实时新闻（tickers 逗号分隔；hours=回溯小时；按时间倒序） */
-export const fetchLiveNews = (tickers: string[], hours = 12, limit = 30) =>
+/** 盘中实时新闻（tickers 逗号分隔；keyword 全文关键词；hours=回溯小时；按时间倒序）。
+ *  A 股按代码 tickers 筛；港股无 HK 标签库，传 keyword（腾讯/恒生/港股）做标题全文搜。 */
+export const fetchLiveNews = (
+  tickers: string[],
+  hours = 12,
+  limit = 30,
+  keyword = '',
+) =>
   unwrap<LiveNews>(
-    api.get('/live/news', { params: { tickers: tickers.join(','), hours, limit } }),
+    api.get('/live/news', {
+      params: {
+        tickers: tickers.join(','),
+        hours,
+        limit,
+        ...(keyword ? { keyword } : {}),
+      },
+    }),
   );
 
 // ---------- 实盘账户净值（总账户净值图） ----------
@@ -355,11 +528,15 @@ export interface CompMode {
 
 export type CompSelection = Record<string, string[]>;
 
-export const fetchCompConfig = () =>
-  unwrap<{ catalog: CompMode[]; selection: CompSelection }>(api.get('/comp-config'));
+export const fetchCompConfig = (market: MarketId = 'cn') =>
+  unwrap<{ market: string; catalog: CompMode[]; selection: CompSelection }>(
+    api.get('/comp-config', { params: { market } }),
+  );
 
-export const saveCompConfig = (selection: CompSelection) =>
-  unwrap<{ selection: CompSelection }>(api.put('/comp-config', { selection }));
+export const saveCompConfig = (market: MarketId, selection: CompSelection) =>
+  unwrap<{ market: string; selection: CompSelection }>(
+    api.put('/comp-config', { selection }, { params: { market } }),
+  );
 
 // ---------- 实盘同步数据（quantmind PG，通达信实盘账户） ----------
 

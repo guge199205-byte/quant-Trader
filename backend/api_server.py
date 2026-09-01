@@ -363,9 +363,13 @@ def live_orders():
 
 
 @app.get("/api/live/news")
-def live_news(tickers: str = "", hours: int = 24, limit: int = 10):
-    """A股盘中新闻代理 → quantmind /api/v1/news/articles（Huntly/RSS 聚合 + enrichment）。
-    tickers 逗号分隔（600519.SH,000858.SZ）；按 published_at 增量 + 情感标注。"""
+def live_news(tickers: str = "", hours: int = 24, limit: int = 10, keyword: str = ""):
+    """盘中新闻代理 → quantmind /api/v1/news/articles（Huntly/RSS 聚合 + enrichment）。
+
+    A 股按代码筛：tickers 逗号分隔（600519.SH,000858.SZ）。
+    港股无 HK 标签文章库，改用 keyword 关键词全文搜（腾讯/恒生/港股），匹配同花顺/华尔街见闻
+    等来源标题里提及港股市值/公司的文章。两者可同传（quantmind 取交集）。
+    """
     base = os.getenv("NEWS_API_BASE", "http://172.17.0.1:8000")
     import requests  # noqa: PLC0415 局部导入（与文件既有惯例一致）
 
@@ -377,6 +381,8 @@ def live_news(tickers: str = "", hours: int = 24, limit: int = 10):
     params = {"since": since, "page_size": limit, "sort": "time_desc"}
     if tickers:
         params["tickers"] = tickers
+    if keyword:
+        params["keyword"] = keyword
     try:
         resp = requests.get(f"{base}/api/v1/news/articles", params=params, timeout=10)
         resp.raise_for_status()
@@ -384,6 +390,76 @@ def live_news(tickers: str = "", hours: int = 24, limit: int = 10):
         return {"success": True, "data": resp.json()}
     except Exception as e:  # noqa: BLE001
         return {"success": True, "data": {"articles": [], "error": f"{type(e).__name__}: {e}"}}
+
+
+# ---------- 富途港股直连（OpenD 网关；BayMax 自有实现，不经外部平台） ----------
+
+
+def _futu_env(env: str) -> str:
+    return env.upper() if env.upper() in {"REAL", "SIMULATE"} else "SIMULATE"
+
+
+@app.get("/api/futu/account")
+async def futu_account(env: str = "SIMULATE"):
+    """富途账户（资产/持仓）。env=REAL 实盘 / SIMULATE 模拟（默认）。"""
+    from backend.services import futu_live
+
+    try:
+        out = await futu_live.query_account(_futu_env(env))
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"富途查询失败: {e}"}
+    return {"success": True, "data": out}
+
+
+@app.get("/api/futu/account-both")
+async def futu_account_both():
+    """一次握手查 REAL+SIMULATE 两套账户（省一次 RSA 握手，降实盘 tab 延迟）。"""
+    from backend.services import futu_live
+
+    try:
+        out = await futu_live.query_account_both()
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"富途查询失败: {e}"}
+    return {"success": True, "data": out}
+
+
+@app.get("/api/futu/orders")
+async def futu_orders(env: str = "SIMULATE"):
+    """当日订单历史（order_list_query）→ Live 成交 tab。"""
+    from backend.services import futu_live
+
+    try:
+        out = await futu_live.query_orders(_futu_env(env))
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"富途查询失败: {e}"}
+    return {"success": True, "data": out}
+
+
+@app.get("/api/futu/closed")
+async def futu_closed(env: str = "SIMULATE"):
+    """已平仓行（qty==0 且 realized_pl!=0）→ Live「已完成」tab 港股。"""
+    from backend.services import futu_live
+
+    try:
+        out = await futu_live.query_closed(_futu_env(env))
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"富途查询失败: {e}"}
+    return {"success": True, "data": out}
+
+
+@app.get("/api/futu/snapshot")
+async def futu_snapshot(codes: str = ""):
+    """实时快照（现价/昨收/当日涨跌）→ 港股盘中分析循环取价。codes 逗号分隔。"""
+    from backend.services import futu_live
+
+    code_list = [c.strip() for c in codes.split(",") if c.strip()]
+    if not code_list:
+        return {"success": False, "error": "codes 参数为空"}
+    try:
+        out = await futu_live.query_snapshot(code_list)
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"富途快照失败: {e}"}
+    return {"success": True, "data": out}
 
 
 @app.get("/api/live/ledger")
@@ -1137,14 +1213,19 @@ def _media_type(path: Path) -> str:
 # ---------- 比赛配置（Arena「比赛配置」tab ↔ 分析引擎 的读写口） ----------
 
 @app.get("/api/comp-config")
-def get_comp_config():
-    """比赛配置：目录（4 种配置的中文名/要求）+ 每模型当前多选。"""
-    return {"success": True, "data": {"catalog": MODES, "selection": load_selection()}}
+def get_comp_config(market: str = "cn"):
+    """比赛配置：目录（4 种配置的中文名/要求）+ 每模型当前多选（按市场分区）。
+
+    market=cn/hk/us；不同市场各自维护模型多选，注入的系统提示词也按市场交易规则调整。
+    """
+    mk = (market or "cn").lower()
+    return {"success": True, "data": {"market": mk, "catalog": MODES, "selection": load_selection(mk)}}
 
 
 @app.put("/api/comp-config")
-async def put_comp_config(request: Request):
-    """保存每模型多选：body = {"selection": {模型名: [配置id, ...]}}。"""
+async def put_comp_config(request: Request, market: str = "cn"):
+    """保存每模型多选（按市场分区）：body = {"selection": {模型名: [配置id, ...]}}。"""
+    mk = (market or "cn").lower()
     try:
         body = await request.json()
     except Exception:
@@ -1159,8 +1240,8 @@ async def put_comp_config(request: Request):
         if not isinstance(ids, list):
             raise HTTPException(400, f"{model} 的配置必须是数组")
         cleaned[model] = [i for i in ids if i in valid]
-    save_selection(cleaned)
-    return {"success": True, "data": {"selection": cleaned}}
+    save_selection(mk, cleaned)
+    return {"success": True, "data": {"market": mk, "selection": cleaned}}
 
 
 def main():

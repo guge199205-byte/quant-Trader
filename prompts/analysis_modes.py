@@ -39,49 +39,89 @@ MODES = [
 
 DEFAULT = "baseline"  # 未选择时的兜底配置
 
+# 各市场交易规则（注入系统提示词，让同一套模式目录在不同市场措辞正确）
+MARKET_RULES: Dict[str, str] = {
+    "cn": "注意 A股 T+1（当日买入次日方可卖出）、涨跌停板、单笔不超权益 20%、日亏 5% 熔断。",
+    "hk": "注意港股 T+0（当日可买卖）、可做空（需融券额度）、无涨跌停板、最小交易单位 100 股、汇率风险。",
+    "us": "注意美股 T+0、可做空、无涨跌停板、最小交易单位 1 股、盘前盘后流动性低。",
+}
 
-def load_selection() -> Dict[str, List[str]]:
-    """读取 {模型名: [配置id, ...]}；文件缺失/损坏回退空字典。"""
+
+def load_selection(market: str = "cn") -> Dict[str, List[str]]:
+    """读取 {模型名: [配置id, ...]}（按市场分区）。
+
+    文件结构：{"selection": {"cn": {模型: [...]}, "hk": {...}, ...}}。
+    兼容旧格式 {"selection": {模型: [...]}}（无 market 分区）→ 视作 cn。
+    """
+    mk = (market or "cn").lower()
     try:
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         sel = data.get("selection", {}) if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
-    return {k: v for k, v in sel.items() if isinstance(v, list)}
+    # 新格式：按市场分区
+    if mk in sel and isinstance(sel[mk], dict):
+        return {k: v for k, v in sel[mk].items() if isinstance(v, list)}
+    # 旧格式兼容：扁平 {模型: [...]} 只在 cn 下回退
+    if mk == "cn" and all(isinstance(v, list) for v in sel.values()):
+        return dict(sel)
+    return {}
 
 
-def save_selection(selection: Dict[str, List[str]]) -> None:
-    """原子写 selection（configs/ 目录已存在）。"""
+def save_selection(market: str, selection: Dict[str, List[str]]) -> None:
+    """原子写 selection（按市场分区，保留其他市场配置）。"""
+    mk = (market or "cn").lower()
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8")) if CONFIG_FILE.exists() else {}
+        if not isinstance(data, dict):
+            data = {}
+        sel = data.setdefault("selection", {})
+        if not isinstance(sel, dict) or any(isinstance(v, list) for v in sel.values() if not isinstance(v, dict)):
+            # 旧扁平格式 → 迁移到 cn 分区
+            old = {k: v for k, v in sel.items() if isinstance(v, list)} if isinstance(sel, dict) else {}
+            sel = {"cn": old} if old else {}
+        sel[mk] = selection
+        data["selection"] = sel
+    except (OSError, json.JSONDecodeError):
+        data = {"selection": {mk: selection}}
     CONFIG_FILE.write_text(
-        json.dumps({"selection": selection}, ensure_ascii=False, indent=2),
+        json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
 
-def selected_modes(model: str) -> List[dict]:
+def selected_modes(model: str, market: str = "cn") -> List[dict]:
     """模型选中的配置对象列表（按目录顺序）；未选择/全无效 → [基线模式]。"""
-    ids = load_selection().get(model) or []
+    ids = load_selection(market).get(model) or []
     by_id = {m["id"]: m for m in MODES}
     picked = [by_id[i] for i in ids if i in by_id]
     return picked or [by_id[DEFAULT]]
 
 
-def mode_label(model: str) -> str:
+def mode_label(model: str, market: str = "cn") -> str:
     """选中配置的中文名（'基线模式/苦行模式' 拼接），用于日志与落盘标注。"""
-    return "/".join(m["name"] for m in selected_modes(model))
+    return "/".join(m["name"] for m in selected_modes(model, market))
 
 
-def comp_config_section(model: str) -> str:
+def market_rules(market: str = "cn") -> str:
+    """该市场的交易规则提示词段。"""
+    return MARKET_RULES.get((market or "cn").lower(), MARKET_RULES["cn"])
+
+
+def comp_config_section(model: str, market: str = "cn") -> str:
     """把模型选中的配置翻译成系统提示词追加段（回放路径用：一轮运行内分 N 轮分析）。
 
     未选择/全无效 → 基线模式单轮，与历史行为等价。
+    注入选中市场的交易规则（A股 T+1 / 港股 T+0 可做空 等），让同一套模式在不同市场措辞正确。
     """
-    modes = selected_modes(model)
+    modes = selected_modes(model, market)
     lines = [
         "",
         "【本次分析要求 · 比赛配置】",
         f"你需要按 {len(modes)} 个配置分别完成独立分析（每个配置单独一轮：观察→推理→操作建议），",
         "轮次之间用分隔线标明配置名称，全部完成后再输出最终指令。",
+        "",
+        f"【市场规则】{market_rules(market)}",
         "",
     ]
     for m in modes:

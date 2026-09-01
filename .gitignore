@@ -114,3 +114,9 @@ dsh/root-dsh/
 
 # 本机私有 compose 覆盖（TdxAiData 挂载等）
 docker-compose.override.yml
+
+# 富途 OpenD RSA 私钥（本地生成，不入库；见 config/futu/README.md）
+config/futu/rsa.key
+
+# 港股候选池（hk_picks.py 每日生成）
+data/hk_picks.json

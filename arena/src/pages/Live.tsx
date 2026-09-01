@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   BenchPoint,
@@ -8,11 +8,12 @@ import {
   PositionRecord,
   TradeRecord,
   fetchBenchmark,
+  fetchFutuAccountBoth,
   fetchIndices,
-  fetchLiveAccount,
+  fetchLiveAccountFor,
   fetchLiveEquity,
   fetchLiveLedger,
-  fetchLiveTrades,
+  fetchLiveTradesFor,
   fetchLogs,
   fetchOverview,
   fetchTokenUsage,
@@ -37,6 +38,17 @@ import { fmtMoney, fmtPct, pnlClass } from '../utils/format';
 import './Live.css';
 
 const BENCH_COLOR = '#10a37f';
+
+/** 每秒自走北京时间钟——独立 state，不波及 Live 父组件的轮询/memo。 */
+function LiveClock() {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const s = new Date(now + 8 * 3600000).toISOString();
+  return <span className="live-clock">{s.slice(0, 10)} {s.slice(11, 19)}</span>;
+}
 
 type Tab = 'completed' | 'trades' | 'chat' | 'news' | 'positions' | 'comp' | 'real' | 'details';
 type TimeRange = 'all' | '5d';
@@ -256,11 +268,23 @@ export default function Live() {
     ).then((lists) => rows.map((r, i) => ({ name: r.name, lines: lists[i] })));
   }, [selectedModel, tab, rows, market], 30000);
 
-  // ---------- 通达信桥实盘（A股） ----------
-  const liveAcct = usePolling(() => fetchLiveAccount(), [], 15000);
-  const liveTrades = usePolling(() => fetchLiveTrades(), [], 15000);
+  // ---------- 实盘账户（A股：通达信桥 /live/account；港股：富途 /api/futu/account 直连 OpenD） ----------
+  const liveAcct = usePolling(() => fetchLiveAccountFor(market), [market], 15000);
+  const liveTrades = usePolling(() => fetchLiveTradesFor(market), [market], 15000);
   const livePositions = (liveAcct.data?.positions ?? []).filter(
     (p) => Number(p.total_volume) > 0,
+  );
+  // 港股实盘 tab 双卡（富途 REAL+SIMULATE，一次握手游走）后台 15s 轮询 → 点击 tab 即见，
+  // 不在 RealAccountPanel 内单独起子进程（省一次 ~4s RSA 握手）
+  const futuBoth = usePolling(
+    () => (market === 'hk' ? fetchFutuAccountBoth() : Promise.resolve(null)),
+    [market],
+    15000,
+  );
+  // 实盘总浮盈（桥实时价驱动，随 liveAcct 每 15s 刷新）
+  const totalPnl = useMemo(
+    () => livePositions.reduce((s, p) => s + Number(p.pnl ?? 0), 0),
+    [livePositions],
   );
   // 实盘分账账本（每 agent ¥10 万虚拟子账户，按模型显示各自持仓）
   const liveLedger = usePolling(() => fetchLiveLedger(), [], 30000);
@@ -297,9 +321,10 @@ export default function Live() {
     .map((t) => ({
       ts: t.ts,
       code: t.code,
+      side: t.side,
       volume: t.volume,
       price: t.price ?? null,
-      name: stockNames.data?.[t.code] ?? t.code,
+      name: (t.name || stockNames.data?.[t.code]) ?? t.code,
       agent: ledgerHolderOf[t.code] ?? null,
     }))
     .sort((a, b) => (a.ts < b.ts ? 1 : -1));
@@ -322,11 +347,26 @@ export default function Live() {
     for (const rec of Object.values(liveLedger.data?.agents ?? {})) {
       for (const p of rec.positions ?? []) set.add(p.code);
     }
+    // 实盘持仓代码（A股通达信 / 港股富途）也纳入新闻关注
+    for (const p of livePositions) set.add(p.stock_code);
     return [...set];
-  }, [heldSymbols, liveLedger.data]);
+  }, [heldSymbols, liveLedger.data, livePositions]);
+  // 港股新闻关键词：富途无 HK 标签文章库，改用持仓短名（腾讯控股→腾讯）全文搜；
+  // 无持仓则用「港股」泛搜恒生/港交所等。A股走 tickers 不用 keyword。
+  const hkNewsKeyword = useMemo(() => {
+    if (market !== 'hk') return '';
+    const top = livePositions
+      .slice()
+      .sort((a, b) => Number(b.position_value) - Number(a.position_value))[0];
+    if (!top?.name) return '港股';
+    const short = top.name
+      .replace(/(控股|实业|集团|股份.*|有限公司|Limited|Inc\.?|Corp\.?)$/i, '')
+      .trim();
+    return short || '港股';
+  }, [market, livePositions]);
   const tickerItems = useMemo(() => {
-    // A股实盘：优先滚动实盘持仓实时价（桥 quote）
-    if (market === 'cn' && livePositions.length > 0) {
+    // 实盘：优先滚动实盘持仓实时价（A股通达信桥 / 港股富途，livePositions 同 shape）
+    if ((market === 'cn' || market === 'hk') && livePositions.length > 0) {
       return livePositions
         .filter((p) => Number(p.last_price) > 0)
         .map((p) => ({
@@ -384,11 +424,11 @@ export default function Live() {
   // ---------- 右侧列表渲染 ----------
   const renderList = () => {
     if (tab === 'comp') {
-      return <CompConfigPanel models={rows.map((r) => r.name)} />;
+      return <CompConfigPanel models={rows.map((r) => r.name)} market={market} />;
     }
 
     if (tab === 'real') {
-      return <RealAccountPanel />;
+      return <RealAccountPanel market={market} currency={meta.currency} futuBoth={futuBoth.data} />;
     }
 
     if (tab === 'details') {
@@ -417,10 +457,13 @@ export default function Live() {
       const last = positions.data?.[positions.data.length - 1];
       const entries = Object.entries(last?.positions ?? {}).filter(([sym]) => sym !== 'CASH');
       const cash = Number(last?.positions?.CASH ?? 0);
-      // A股实盘持仓（通达信桥）置顶展示；按选中模型筛选（'all' = 全部）
-      if (market === 'cn' && livePositions.length > 0) {
+      // 实盘持仓置顶展示（A股通达信桥 / 港股富途，同 shape）；按选中模型筛选（'all' = 全部）
+      // 港股富途是单一共享账户，无 A 股分账（每模型 ¥10 万子账户）体系 → 不按模型筛
+      if ((market === 'cn' || market === 'hk') && livePositions.length > 0) {
         const ag =
-          selectedModel !== 'all' ? (liveLedger.data?.agents?.[selectedModel] ?? null) : null;
+          market === 'cn' && selectedModel !== 'all'
+            ? (liveLedger.data?.agents?.[selectedModel] ?? null)
+            : null;
         const mineCodes = ag ? new Set(ag.positions.map((lp) => lp.code)) : null;
         const shownPositions = mineCodes
           ? livePositions.filter((p) => mineCodes.has(p.stock_code))
@@ -428,12 +471,13 @@ export default function Live() {
         return (
           <div style={{ padding: '8px 12px' }}>
             <div className="pos-section-title">
-              {ag ? `模型 ${selectedModel} 名下持仓` : '实盘持仓（通达信桥）'}
+              {ag ? `模型 ${selectedModel} 名下持仓` : market === 'hk' ? '实盘持仓（富途模拟）' : '实盘持仓（通达信桥）'}
               <span className="pos-section-sub">
                 {ag
                   ? `${shownPositions.length} 只 · 额度已用 ¥${ag.used.toLocaleString('en-US')} / ¥${ag.quota.toLocaleString('en-US')}`
-                  : fmtMoney(liveAcct.data?.asset ?? 0, meta.currency)}
+                  : `总浮盈 ${totalPnl >= 0 ? '+' : ''}${fmtMoney(totalPnl, meta.currency)} · 总资产 ${fmtMoney(liveAcct.data?.asset ?? 0, meta.currency)}`}
               </span>
+              <LiveClock />
             </div>
             {shownPositions.length === 0 && (
               <div className="empty-state" style={{ padding: '12px 0' }}>
@@ -459,23 +503,27 @@ export default function Live() {
                 </div>
               </div>
             ))}
-            <div className="pos-section-title" style={{ marginTop: 14 }}>模拟盘持仓</div>
-            <div className="pos-row">
-              <span className="pos-sym">现金 CASH</span>
-              <span className="pos-cash">{fmtMoney(cash, meta.currency)}</span>
-            </div>
-            {entries.length === 0 && (
-              <div className="empty-state" style={{ padding: '24px 0' }}>空仓 — 无持仓</div>
+            {market !== 'hk' && (
+              <>
+                <div className="pos-section-title" style={{ marginTop: 14 }}>模拟盘持仓</div>
+                <div className="pos-row">
+                  <span className="pos-sym">现金 CASH</span>
+                  <span className="pos-cash">{fmtMoney(cash, meta.currency)}</span>
+                </div>
+                {entries.length === 0 && (
+                  <div className="empty-state" style={{ padding: '24px 0' }}>空仓 — 无持仓</div>
+                )}
+                {entries.map(([sym, qty]) => (
+                  <div className="pos-row" key={sym}>
+                    <span className="pos-sym">
+                      <span className="pos-name">{stockNames.data?.[sym] ?? sym}</span>
+                      <span className="pos-code">{sym}</span>
+                    </span>
+                    <span className="pos-qty">{Number(qty).toLocaleString('en-US')}</span>
+                  </div>
+                ))}
+              </>
             )}
-            {entries.map(([sym, qty]) => (
-              <div className="pos-row" key={sym}>
-                <span className="pos-sym">
-                  <span className="pos-name">{stockNames.data?.[sym] ?? sym}</span>
-                  <span className="pos-code">{sym}</span>
-                </span>
-                <span className="pos-qty">{Number(qty).toLocaleString('en-US')}</span>
-              </div>
-            ))}
           </div>
         );
       }
@@ -525,6 +573,7 @@ export default function Live() {
           tickers={market === 'cn' ? newsTickers : []}
           hours={12}
           limit={30}
+          keyword={hkNewsKeyword}
         />
       );
     }
@@ -548,29 +597,36 @@ export default function Live() {
     }
     return (
       <>
-        {market === 'cn' && liveTradesFiltered.length > 0 && (
+        {(market === 'cn' || market === 'hk') && liveTradesFiltered.length > 0 && (
           <>
-            <div className="pos-section-title">今日实盘成交（通达信桥）</div>
-            {liveTradesFiltered.map((e, i) => (
-              <div className="trade-card" key={`live-${e.ts}-${i}`}>
-                <div className="trade-card-head">
-                  <span className="trade-side buy">买入</span>
-                  <b className="trade-card-symbol">{e.name}</b>
-                  <span className="trade-card-code">{e.code}</span>
-                  <span className="trade-card-date">{e.ts.slice(5, 16)}</span>
+            <div className="pos-section-title">
+              今日实盘成交（{market === 'hk' ? '富途' : '通达信桥'}）
+            </div>
+            {liveTradesFiltered.map((e, i) => {
+              const isSell = String(e.side ?? '').toUpperCase() === 'SELL';
+              return (
+                <div className="trade-card" key={`live-${e.ts}-${i}`}>
+                  <div className="trade-card-head">
+                    <span className={`trade-side ${isSell ? 'sell' : 'buy'}`}>
+                      {isSell ? '卖出' : '买入'}
+                    </span>
+                    <b className="trade-card-symbol">{e.name}</b>
+                    <span className="trade-card-code">{e.code}</span>
+                    <span className="trade-card-date">{e.ts.slice(5, 16)}</span>
+                  </div>
+                  <div className="trade-card-grid">
+                    <span>归属{' '}
+                      <b style={{ color: e.agent ? modelColor(e.agent) : '#000' }}>
+                        {e.agent ?? '总账户'}
+                      </b>
+                    </span>
+                    <span>数量 <b>{e.volume.toLocaleString('en-US')}</b></span>
+                    <span>成交价 <b>{e.price != null ? fmtMoney(e.price, meta.currency) : '—'}</b></span>
+                    <span>成交金额 <b>{fmtMoney((e.price ?? 0) * e.volume, meta.currency)}</b></span>
+                  </div>
                 </div>
-                <div className="trade-card-grid">
-                  <span>归属{' '}
-                    <b style={{ color: e.agent ? modelColor(e.agent) : '#000' }}>
-                      {e.agent ?? '总账户'}
-                    </b>
-                  </span>
-                  <span>数量 <b>{e.volume.toLocaleString('en-US')}</b></span>
-                  <span>成交价 <b>{e.price != null ? fmtMoney(e.price, meta.currency) : '—'}</b></span>
-                  <span>成交金额 <b>{fmtMoney((e.price ?? 0) * e.volume, meta.currency)}</b></span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
             <div className="pos-section-title" style={{ marginTop: 10 }}>模拟盘成交</div>
           </>
         )}
@@ -789,7 +845,11 @@ export default function Live() {
               </select>
             ) : tab === 'news' ? (
               <span className="filter-static">
-                {market === 'cn' ? `${newsTickers.length} 只持仓` : '仅 A股'}
+                {market === 'cn'
+                  ? `${newsTickers.length} 只持仓`
+                  : market === 'hk'
+                    ? `关键词「${hkNewsKeyword}」`
+                    : '仅 A/H 股'}
               </span>
             ) : (
               <span className="filter-static">全部模型</span>

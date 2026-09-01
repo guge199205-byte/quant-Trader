@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { Group } from '@visx/group';
 import { GridRows, GridColumns } from '@visx/grid';
 import { Area, LinePath } from '@visx/shape';
-import { scaleTime, scaleLinear } from '@visx/scale';
+import { scaleLinear } from '@visx/scale';
 import { curveMonotoneX } from '@visx/curve';
 import { LinearGradient } from '@visx/gradient';
 import { AxisBottom, AxisLeft } from '@visx/axis';
@@ -86,23 +86,28 @@ export default function EquityChart({
     };
   }, [lines, benchmark, mode, timeRange]);
 
-  // 全数据时间域(X 轴窗口由 view 平移/缩放决定; Y 域按窗口内数据在渲染时算)
-  // 注意: 只取主曲线(lines)的时间范围 —— 基准指数常为全历史(如 SSE50 24 天)而模型
-  // 是赛季回放(如 5 天), 若基准也参与 X 域会把模型曲线挤到画面右侧一小段(看起来像
-  // 曲线从中间冒出来)。基准只作参照, 对齐到模型窗口, 超窗部分由 clipPath 裁掉。
-  const domain = useMemo(() => {
-    const all = display.lines;
-    if (!all.length) return { tMin: 0, tMax: 1 };
-    let tMin = Infinity, tMax = -Infinity;
-    for (const l of all) {
-      for (const p of l.points) {
-        tMin = Math.min(tMin, p.t);
-        tMax = Math.max(tMax, p.t);
-      }
-    }
-    if (!Number.isFinite(tMin) || tMin === tMax) { tMin = 0; tMax = 1; }
-    return { tMin, tMax };
+  // 断轴：把绝对时间压成连续序号——隔夜/隔周末在 X 轴上紧挨，不画非交易空白。
+  // 收盘 15:00 → 次日 09:30 之间 18.5h 没有数据点，scaleTime 会拉成大片空白平线，
+  // 用「采样点序号」等距分布即可剪掉。刻度仍经 allTimes 反查显示真实北京时间。
+  const allTimes = useMemo(() => {
+    const set = new Set<number>();
+    for (const l of display.lines) for (const p of l.points) set.add(p.t);
+    if (display.bench) for (const p of display.bench.points) set.add(p.t);
+    return [...set].sort((a, b) => a - b);
   }, [display]);
+  const tToIdx = useMemo(() => {
+    const m = new Map<number, number>();
+    allTimes.forEach((t, i) => m.set(t, i));
+    return m;
+  }, [allTimes]);
+  const idxOf = (t: number) => tToIdx.get(t) ?? 0;
+
+  // X 域用序号；基准指数全历史时只作参照，取主曲线序号域，超窗部分 clipPath 裁掉。
+  const domain = useMemo(() => {
+    const n = allTimes.length;
+    if (n < 2) return { idxMin: 0, idxMax: 1 };
+    return { idxMin: 0, idxMax: n - 1 };
+  }, [allTimes]);
 
   if (!lines.length) {
     return <div className="loading">暂无净值数据</div>;
@@ -133,21 +138,22 @@ export default function EquityChart({
           const iw = Math.max(width - margin.left - margin.right, 10);
           const ih = Math.max(h - margin.top - margin.bottom, 10);
 
-          // 时间轴窗口: scale=1 全览; 放大后 offsetPx 平移(0=最左, max=最右, 渲染时防越界 clamp)
-          const tSpan = domain.tMax - domain.tMin || 1;
-          const pxPerMs = (iw / tSpan) * view.scale;
+          // 序号轴窗口: scale=1 全览; 放大后 offsetPx 平移(0=最左, max=最右, 渲染时防越界 clamp)
+          const idxSpan = domain.idxMax - domain.idxMin || 1;
+          const pxPerIdx = (iw / idxSpan) * view.scale;
           const maxOffset = Math.max(0, iw * (view.scale - 1));
           const offsetPx = Math.min(view.offsetPx, maxOffset);
-          const winStart = domain.tMin + offsetPx / pxPerMs;
-          const winEnd = Math.min(winStart + tSpan / view.scale, domain.tMax);
-          const xScale = scaleTime({ domain: [winStart, winEnd], range: [0, iw] });
+          const winStartIdx = domain.idxMin + offsetPx / pxPerIdx;
+          const winEndIdx = Math.min(winStartIdx + idxSpan / view.scale, domain.idxMax);
+          const xScale = scaleLinear({ domain: [winStartIdx, winEndIdx], range: [0, iw] });
 
           // Y 域: 当前窗口内数据自适应(+7% 边距; 窗口内无点回退全范围)
           const yLines = [...display.lines, ...(display.bench ? [display.bench] : [])];
           let vMin = Infinity, vMax = -Infinity;
           for (const l of yLines) {
             for (const p of l.points) {
-              if (p.t >= winStart && p.t <= winEnd) {
+              const idx = idxOf(p.t);
+              if (idx >= winStartIdx && idx <= winEndIdx) {
                 vMin = Math.min(vMin, p.v);
                 vMax = Math.max(vMax, p.v);
               }
@@ -166,10 +172,11 @@ export default function EquityChart({
           const padY = (vMax - vMin) * 0.07 || 1;
           const yScale = scaleLinear({ domain: [vMin - padY, vMax + padY], range: [ih, 0] });
 
-          // X 轴刻度格式: 窗口 ≤1.2 天 → HH:mm; ≤8 天 → MM-DD HH:mm; 更久 → MM-DD
-          const spanDays = (winEnd - winStart) / 86400000;
+          // X 轴刻度格式按窗口内采样点数判读: ≤240点≈1交易日→HH:mm;
+          // ≤1920点≈8交易日→MM-DD HH:mm; 更久→MM-DD（断轴后点数=交易分钟，无隔夜水分）
+          const winPoints = Math.round(winEndIdx - winStartIdx) + 1;
           const tickFmt =
-            spanDays <= 1.2 ? 'HH:mm' : spanDays <= 8 ? 'MM-DD HH:mm' : 'MM-DD';
+            winPoints <= 240 ? 'HH:mm' : winPoints <= 1920 ? 'MM-DD HH:mm' : 'MM-DD';
           // 实盘数据为 +08:00（北京时间）；本机可能非北京时区，格式化时统一按 +8h 显示
           const fmtTs = (t: number) => {
             const d = new Date(t + 8 * 3600000);
@@ -178,6 +185,11 @@ export default function EquityChart({
             }
             if (tickFmt === 'HH:mm') return d.toISOString().slice(11, 16);
             return dayjs(t).format('MM-DD');
+          };
+          // 序号 → 真实时间（轴刻度与 invert 反查都用它）
+          const tsOfIdx = (v: number) => {
+            const t = allTimes[Math.round(Number(v))];
+            return t != null ? fmtTs(t) : '';
           };
 
           return (
@@ -195,7 +207,7 @@ export default function EquityChart({
                     fill: '#666', fontSize: 10, textAnchor: 'middle', dy: 8,
                     fontFamily: "'Courier New', monospace",
                   })}
-                  tickFormat={(v) => fmtTs((v as Date).getTime())}
+                  tickFormat={(v) => tsOfIdx(Number(v))}
                 />
                 <AxisLeft
                   scale={yScale}
@@ -240,7 +252,7 @@ export default function EquityChart({
                       <Group opacity={hover ? (hl ? 1 : 0.35) : focus ? 0.55 : 0.9}>
                         <Area
                           data={display.bench.points}
-                          x={(p: { t: number; v: number }) => xScale(p.t) ?? 0}
+                          x={(p: { t: number; v: number }) => xScale(idxOf(p.t)) ?? 0}
                           y0={() => yScale(baseV) ?? 0}
                           y1={(p: { t: number; v: number }) => yScale(p.v) ?? 0}
                           fill="url(#grad-bench)"
@@ -248,7 +260,7 @@ export default function EquityChart({
                         />
                         <LinePath
                           data={display.bench.points}
-                          x={(p) => xScale(p.t) ?? 0}
+                          x={(p) => xScale(idxOf(p.t)) ?? 0}
                           y={(p) => yScale(p.v) ?? 0}
                           stroke={display.bench.color}
                           strokeWidth={hl ? 2.4 : 1.2}
@@ -264,13 +276,13 @@ export default function EquityChart({
                   {display.lines.map((l, i) => {
                     const focusActive = !focus || l.id === focus;          // 图例选中判定
                     const hl = hover?.id === l.id;                          // 悬停高亮判定
-                    const winPts = l.points.filter((p) => p.t >= winStart && p.t <= winEnd);
+                    const winPts = l.points.filter((p) => { const idx = idxOf(p.t); return idx >= winStartIdx && idx <= winEndIdx; });
                     const baseV = winPts.length ? Math.min(...winPts.map((p) => p.v)) : l.points[0]?.v ?? 0;
                     return (
                       <Group key={l.id} opacity={hover ? (hl ? 1 : 0.35) : focusActive ? 1 : 0.45}>
                         <Area
                           data={l.points}
-                          x={(p: { t: number; v: number }) => xScale(p.t) ?? 0}
+                          x={(p: { t: number; v: number }) => xScale(idxOf(p.t)) ?? 0}
                           y0={() => yScale(baseV) ?? 0}
                           y1={(p: { t: number; v: number }) => yScale(p.v) ?? 0}
                           fill={`url(#grad-${i})`}
@@ -278,7 +290,7 @@ export default function EquityChart({
                         />
                         <LinePath
                           data={l.points}
-                          x={(p) => xScale(p.t) ?? 0}
+                          x={(p) => xScale(idxOf(p.t)) ?? 0}
                           y={(p) => yScale(p.v) ?? 0}
                           stroke={l.color}
                           strokeWidth={hl ? 2.8 : focusActive ? 2 : 1.3}
@@ -293,7 +305,7 @@ export default function EquityChart({
                 {display.lines.map((l) => {
                   const last = l.points[l.points.length - 1];
                   if (!last) return null;
-                  const x = xScale(last.t) ?? 0;
+                  const x = xScale(idxOf(last.t)) ?? 0;
                   const y = yScale(last.v) ?? 0;
                   // 末端标签: 圆点右侧显示 模型名+值; 靠右(>60%宽)时放左侧右对齐, 防溢出
                   const onRight = x > iw * 0.6;
@@ -370,9 +382,9 @@ export default function EquityChart({
                     const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
                     const scale = Math.max(1, Math.min(50, view.scale * factor));
                     // 以鼠标下时间点为锚,缩放后位置不变
-                    const tAtMx = xScale.invert(mx).getTime();
-                    const pxPerMs2 = (iw / tSpan) * scale;
-                    const offsetPx = Math.max(0, Math.min(iw * (scale - 1), (tAtMx - domain.tMin) * pxPerMs2 - mx));
+                    const idxAtMx = Number(xScale.invert(mx));
+                    const pxPerIdx2 = (iw / idxSpan) * scale;
+                    const offsetPx = Math.max(0, Math.min(iw * (scale - 1), (idxAtMx - domain.idxMin) * pxPerIdx2 - mx));
                     setView({ scale, offsetPx });
                   }}
                   onMouseDown={(e) => {
@@ -396,7 +408,7 @@ export default function EquityChart({
                     let best: { d: number; label: string; id: string; v: number; t: number; x: number; y: number } | null = null;
                     for (const l of candidates) {
                       for (const p of l.points) {
-                        const px = xScale(p.t) ?? -1e9;
+                        const px = xScale(idxOf(p.t)) ?? -1e9;
                         const py = yScale(p.v) ?? -1e9;
                         const d = Math.hypot(px - relX, py - relY);
                         if (!best || d < best.d) best = { d, label: l.label, id: l.id, v: p.v, t: p.t, x: px, y: py };

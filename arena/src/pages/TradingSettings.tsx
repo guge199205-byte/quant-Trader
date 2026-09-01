@@ -336,7 +336,8 @@ export default function TradingSettings({ embedded = false }: { embedded?: boole
 
   // ---- 动作：保存券商配置 ----
   const saveBroker = useCallback(async (broker: string, values: Record<string, string>) => {
-    const r = await putJson(`/quantmind/broker-config/${broker}`, values);
+    // 后端 BrokerConfigUpdate 期望 { values: {...} } 包裹；裸传 values 会触发 422
+    const r = await putJson(`/quantmind/broker-config/${broker}`, { values });
     return r.ok ? null : (r.error ?? '保存失败');
   }, []);
 

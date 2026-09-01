@@ -24,23 +24,39 @@ export default function ChatStream({
   const [open, setOpen] = useState<Set<number>>(new Set());
   const [sections, setSections] = useState<Record<number, Set<string>>>({});
 
-  /** 每条日志独立成回合；时间取日志 timestamp（完整 ISO），缺失排最后 */
+  /** 跨行合并成回合：user 开新回合，assistant 并入最近回合。
+   *  A 股日志单行含 user+assistant；港股把 user/assistant 拆到不同日志行（各 1 条），
+   *  必须跨行合并才能还原完整回合，否则 assistant-only 行「没有用户提示词」。
+   *  港股日志缺 timestamp 字段，回退从 user prompt 文本里抽日期（today's (2026-08-28)）。 */
   const rounds: MixedRound[] = useMemo(() => {
+    const extractDate = (s: string): string | null => {
+      const m = s.match(/[（(](\d{4}-\d{2}-\d{2})[）)]/);
+      return m ? m[1] : null;
+    };
     const out: MixedRound[] = [];
     for (const ag of agents) {
+      let cur: MixedRound | null = null;
+      const flush = () => {
+        if (cur && (cur.user || cur.thought)) out.push(cur);
+        cur = null;
+      };
       for (const line of ag.lines) {
-        let user = '';
-        let thought = '';
+        const lineTs = line.timestamp ?? null;
         for (const msg of line.new_messages ?? []) {
           const content = (msg.content ?? '').trim();
           if (!content) continue;
           const role = msg.role ?? 'system';
-          if (role === 'user' || role === 'human') user = content;
-          else if (role === 'assistant' || role === 'ai') thought = content;
+          if (role === 'user' || role === 'human') {
+            flush();
+            cur = { model: ag.name, ts: lineTs ?? extractDate(content), user: content, thought: '' };
+          } else if (role === 'assistant' || role === 'ai') {
+            if (!cur) cur = { model: ag.name, ts: lineTs, user: '', thought: '' };
+            cur.thought += (cur.thought ? '\n\n' : '') + content;
+            if (!cur.ts) cur.ts = lineTs;
+          }
         }
-        if (!user && !thought) continue;
-        out.push({ model: ag.name, ts: line.timestamp ?? null, user, thought });
       }
+      flush();
     }
     // 最新分析在前（跨模型全局排序）
     return out.sort((a, b) => {

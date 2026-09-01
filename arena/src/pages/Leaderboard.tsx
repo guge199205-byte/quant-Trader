@@ -60,36 +60,38 @@ export default function Leaderboard() {
 
   const sortArrow = (k: SortKey) => (sortKey === k ? (sortDesc ? ' ▲' : ' ▼') : '');
 
-  // 顶部统计（7 卡，coke leaderboard-stats）—— 币种分开：us 是 $，cn/hk 是 ¥，混加无意义
+  // 顶部统计（7 卡，coke leaderboard-stats）—— 统计随市场 filter 切换：
+  // 基于 visible（filter 后）而非 rows（全市场汇总），否则切 A股/美股/港股统计卡纹丝不动。
+  // 币种分开：us 是 $，cn/hk 是 ¥，混加无意义
   const stats = useMemo(() => {
-    if (!rows.length) return { poolUsd: null, poolCny: null, best: null, trades: 0, avgRet: null, bestSharpe: null, bestWin: null, feeUsd: 0, feeCny: 0, marketCount: 0, agentCount: 0 };
+    if (!visible.length) return { poolUsd: null, poolCny: null, best: null, trades: 0, avgRet: null, bestSharpe: null, bestWin: null, feeUsd: 0, feeCny: 0, marketCount: 0, agentCount: 0 };
     const usd = (r: RankRow) => (r.market === 'us' ? r.summary.end_equity ?? 0 : 0);
     const cny = (r: RankRow) => (r.market !== 'us' ? r.summary.end_equity ?? 0 : 0);
     const feeUsd = (r: RankRow) => (r.market === 'us' ? r.summary.total_fee ?? 0 : 0);
     const feeCny = (r: RankRow) => (r.market !== 'us' ? r.summary.total_fee ?? 0 : 0);
-    const poolUsd = rows.reduce((s, r) => s + usd(r), 0);
-    const poolCny = rows.reduce((s, r) => s + cny(r), 0);
-    const best = [...rows].sort(
+    const poolUsd = visible.reduce((s, r) => s + usd(r), 0);
+    const poolCny = visible.reduce((s, r) => s + cny(r), 0);
+    const best = [...visible].sort(
       (a, b) => (b.summary.total_return ?? -Infinity) - (a.summary.total_return ?? -Infinity),
     )[0];
-    const trades = rows.reduce((s, r) => s + (r.summary.closed_trades ?? 0), 0);
+    const trades = visible.reduce((s, r) => s + (r.summary.closed_trades ?? 0), 0);
     const avgRet =
-      rows.reduce((s, r) => s + (r.summary.total_return ?? 0), 0) / rows.length;
-    const bestSharpe = [...rows].sort(
+      visible.reduce((s, r) => s + (r.summary.total_return ?? 0), 0) / visible.length;
+    const bestSharpe = [...visible].sort(
       (a, b) => (b.summary.sharpe ?? -Infinity) - (a.summary.sharpe ?? -Infinity),
     )[0];
-    const bestWin = [...rows].sort(
+    const bestWin = [...visible].sort(
       (a, b) => (b.summary.win_rate ?? -Infinity) - (a.summary.win_rate ?? -Infinity),
     )[0];
     return {
       poolUsd, poolCny,
-      feeUsd: rows.reduce((s, r) => s + feeUsd(r), 0),
-      feeCny: rows.reduce((s, r) => s + feeCny(r), 0),
+      feeUsd: visible.reduce((s, r) => s + feeUsd(r), 0),
+      feeCny: visible.reduce((s, r) => s + feeCny(r), 0),
       best, trades, avgRet, bestSharpe, bestWin,
-      marketCount: new Set(rows.map((r) => r.market)).size,
-      agentCount: new Set(rows.map((r) => r.agent)).size,
+      marketCount: new Set(visible.map((r) => r.market)).size,
+      agentCount: new Set(visible.map((r) => r.agent)).size,
     };
-  }, [rows]);
+  }, [visible]);
 
   if (overview.error) {
     return <div className="error-box">API 连接失败：{overview.error}</div>;

@@ -1,11 +1,18 @@
 import { useEffect, useState } from 'react';
-import { CompMode, CompSelection, fetchCompConfig, saveCompConfig } from '../api/client';
+import { CompMode, CompSelection, MarketId, fetchCompConfig, saveCompConfig } from '../api/client';
 import { modelColor } from './ModelCard';
+
+const MARKET_LABEL: Record<MarketId, string> = {
+  cn: 'A 股（T+1 · 涨跌停）',
+  hk: '港股（T+0 · 可做空）',
+  us: '美股（T+0 · 可做空）',
+};
 
 /** 比赛配置面板（实况页右侧 tab）：
  *  每个模型一行，4 种分析配置多选开关；选中 N 个 → 分析引擎按 N 个配置各做一轮分析。
- *  全部中文。保存后写后端 configs/comp-config.json（实盘分析脚本与回放 prompt 共用）。 */
-export default function CompConfigPanel({ models }: { models: string[] }) {
+ *  按市场分区：cn/hk 各自维护模型多选，注入的系统提示词按市场交易规则调整（A股 T+1 / 港股 T+0 可做空）。
+ *  保存后写后端 configs/comp-config.json（实盘分析脚本与回放 prompt 共用）。 */
+export default function CompConfigPanel({ models, market }: { models: string[]; market: MarketId }) {
   const [catalog, setCatalog] = useState<CompMode[]>([]);
   const [draft, setDraft] = useState<Record<string, Set<string>>>({});
   const [saving, setSaving] = useState(false);
@@ -14,7 +21,7 @@ export default function CompConfigPanel({ models }: { models: string[] }) {
 
   useEffect(() => {
     let alive = true;
-    fetchCompConfig()
+    fetchCompConfig(market)
       .then(({ catalog: cat, selection }) => {
         if (!alive) return;
         setCatalog(cat);
@@ -28,7 +35,7 @@ export default function CompConfigPanel({ models }: { models: string[] }) {
     return () => {
       alive = false;
     };
-  }, [models.join('|')]);
+  }, [models.join('|'), market]);
 
   const toggle = (model: string, id: string) =>
     setDraft((prev) => {
@@ -45,7 +52,7 @@ export default function CompConfigPanel({ models }: { models: string[] }) {
       const selection: CompSelection = Object.fromEntries(
         Object.entries(draft).map(([m, ids]) => [m, [...ids]]),
       );
-      await saveCompConfig(selection);
+      await saveCompConfig(market, selection);
       setSavedAt(Date.now());
     } catch {
       setError('保存失败，请重试');
@@ -56,6 +63,7 @@ export default function CompConfigPanel({ models }: { models: string[] }) {
 
   return (
     <div className="comp-body">
+      <div className="comp-market-badge">{MARKET_LABEL[market]}</div>
       {catalog.length === 0 && !error && <div className="empty-state">加载配置中…</div>}
       {error && <div className="comp-error">{error}</div>}
       {models.map((model) => (
@@ -91,12 +99,12 @@ export default function CompConfigPanel({ models }: { models: string[] }) {
           {saving ? '保存中…' : '保存配置'}
         </button>
         {savedAt && Date.now() - savedAt < 3000 && (
-          <span className="comp-saved">✓ 已保存</span>
+          <span className="comp-saved">✓ 已保存（{MARKET_LABEL[market]}）</span>
         )}
       </div>
       <div className="comp-note">
         选中 N 个配置 → 每次分析将按 N 个配置各执行一轮独立分析（实盘盘中 + 回放均生效）。
-        未选择 = 基线模式单轮。
+        未选择 = 基线模式单轮。配置按市场分区，互不影响。
       </div>
     </div>
   );

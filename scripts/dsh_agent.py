@@ -26,6 +26,20 @@ ROOT = Path(__file__).resolve().parents[1]
 PATCH = ROOT / "dsh" / "baymax.trading.cordis.yml"
 GLM_PATCH = ROOT / "dsh" / "baymax.glm.cordis.yml"  # GLM 端点 + 默认模型覆写
 NEUTRAL_CWD = Path.home()          # 无 .env 的安全目录
+
+# cron 环境 PATH 不含 ~/.local/bin → 用绝对路径找 dsh（今天 v4-flash 全降级根因）
+def _dsh_bin() -> str:
+    import shutil
+
+    found = shutil.which("dsh")
+    if found:
+        return found
+    home_bin = Path.home() / ".local" / "bin" / "dsh"
+    if home_bin.is_file():
+        return str(home_bin)
+    return "dsh"
+
+DSH_BIN = _dsh_bin()
 MODEL_ENV_KEYS = ("DEEPSEEK_API_KEY", "GLM_API_KEY", "GLM_API_BASE",
                   "OPENAI_API_KEY", "OPENAI_API_BASE", "DASHSCOPE_API_KEY")
 
@@ -62,7 +76,7 @@ def run_agent(task: str, timeout_s: int = 300, model: str = "deepseek",
         patches.append(extra_patch)
     if model == "glm":
         patches.append(str(GLM_PATCH))
-    cmd = ["dsh", "--profile", "headless"]
+    cmd = [DSH_BIN, "--profile", "headless"]
     for p in patches:
         cmd += ["--patch", p]
     cmd.append(task)

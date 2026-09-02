@@ -39,20 +39,18 @@ for spec in "mcp_us:8100" "mcp_cn:8200" "mcp_hk:8300" "dsh:3081"; do
     fi
 done
 
-# 2. 交易停滞检测（所有市场 48h 无新交易记录）
+# 2. 交易停滞检测（实盘成交日志 48h 无新记录——回放 position.jsonl 不再更新，改查实盘日志）
 NOW=$(date +%s)
-for market_dir in data/agent_data data/agent_data_astock data/agent_data_hk; do
-    latest=0
-    for pf in $market_dir/*/position/position.jsonl; do
-        [ -f "$pf" ] || continue
-        mt=$(stat -c %Y "$pf" 2>/dev/null || echo 0)
-        [ "$mt" -gt "$latest" ] && latest=$mt
-    done
-    if [ "$latest" -gt 0 ] && [ $((NOW - latest)) -gt 172800 ]; then
-        ALERTS="$ALERTS
-🟡 $market_dir 已 $(( (NOW - latest) / 3600 )) 小时无新交易"
-    fi
+latest=0
+for pf in logs/live_trade_*.jsonl logs/live_watch_*.jsonl; do
+    [ -f "$pf" ] || continue
+    mt=$(stat -c %Y "$pf" 2>/dev/null || echo 0)
+    [ "$mt" -gt "$latest" ] && latest=$mt
 done
+if [ "$latest" -gt 0 ] && [ $((NOW - latest)) -gt 172800 ]; then
+    ALERTS="$ALERTS
+🟡 实盘交易日志已 $(( (NOW - latest) / 3600 )) 小时无新记录"
+fi
 
 # 3. 备份过期检测（>26h 无备份）
 latest_bak=$(ls -t /home/zbox/backups/baymax/baymax-*.tar.gz 2>/dev/null | head -1)

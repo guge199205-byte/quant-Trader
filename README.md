@@ -107,6 +107,10 @@ docker compose --profile agents run --rm -e INIT_DATE=2026-08-28 -e END_DATE=202
 > [`brokers/tdx-bridge/README.md`](brokers/tdx-bridge/README.md)。没桥也能完整跑模拟盘。
 > 首次启动自动初始化:`runtime_env*.json` / `trade_cache.sqlite` / `dsh.htpasswd` 均由容器 entrypoint 自动生成,零手工。
 
+> 🧩 **想扩展系统**:增加智能体(竞技/实盘分账/dsh 技能包三选一) →
+> [`docs/AGENT_GUIDE.md`](docs/AGENT_GUIDE.md) · 系统级技能包总览 →
+> [`docs/SKILLPACK.md`](docs/SKILLPACK.md)
+
 ## 📊 数据与数据源
 
 | 市场 | 免费初始化(内置) | 生产增强 |

@@ -8,7 +8,8 @@ const SECTIONS = [
   { id: '05', title: '赛制与实盘' },
   { id: '06', title: '成本与指标口径' },
   { id: '07', title: '决策透明' },
-  { id: '08', title: '免责声明' },
+  { id: '08', title: '扩展开发' },
+  { id: '09', title: '免责声明' },
 ];
 
 /** About 页：系统结构说明（架构/闭环/模块/赛制/指标口径），排版随 Arena 终端风。 */
@@ -230,9 +231,26 @@ dsh Web 3081（agent 会话/工具调用可视化）`}</pre>
         </p>
       </section>
 
-      {/* 08 免责声明 */}
+      {/* 08 扩展开发 */}
       <section id="about-08" className="panel about-sec">
-        <h2 className="panel-title"><span className="about-sec-num">08</span> 免责声明</h2>
+        <h2 className="panel-title"><span className="about-sec-num">08</span> 扩展开发</h2>
+        <div className="about-desc" style={{ lineHeight: 2 }}>
+          <p><b>新增智能体</b>（三选一，详见仓库 <code>docs/AGENT_GUIDE.md</code>）：</p>
+          <ul style={{ paddingLeft: 20, margin: '4px 0' }}>
+            <li><b>竞技/回放</b>：<code>configs/*_config.json</code> 的 models 加一项并 <code>enabled: true</code>（可选自定义策略类）</li>
+            <li><b>A股实盘分账</b>：<code>configs/astock_config.json</code> 加 enabled 模型 + <code>.env</code> 模型 Key；系统自动配 ¥10 万虚拟额度、风控/拒单重放全继承</li>
+            <li><b>dsh 技能包</b>：<code>dsh/skills/&lt;技能名&gt;/SKILL.md</code>（frontmatter 写触发词），容器 bind mount 即生效</li>
+          </ul>
+          <p>
+            <b>系统技能包总览</b>（12 个技能：复盘/选股/深度研究/情绪/券商通道…）→{' '}
+            <code>docs/SKILLPACK.md</code> · 完整部署 runbook → <code>docs/DEPLOYMENT.md</code>
+          </p>
+        </div>
+      </section>
+
+      {/* 09 免责声明 */}
+      <section id="about-09" className="panel about-sec">
+        <h2 className="panel-title"><span className="about-sec-num">09</span> 免责声明</h2>
         <p className="about-desc dim" style={{ lineHeight: 1.9 }}>
           本竞技场为研究平台。模拟路径：全部交易为历史行情回放，不涉及任何真实资金。
           实盘路径（A股）：经通达信桥在真实券商通道成交，但资金为分账虚拟额度（每 agent ¥10 万），不投入真实资金。

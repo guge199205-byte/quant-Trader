@@ -226,6 +226,28 @@ def load_orderbook(broker, codes: list) -> dict:
         mid = (b1 + a1) / 2
         if b1 <= 0 or a1 <= 0 or mid <= 0:
             continue
+        # 实时增量：隔夜跳空 / 5分钟涨速 / 量比(vs 5日均量)——便宜高价值
+        def _f(key: str) -> float | None:
+            try:
+                v = float(res.get(key) or 0)
+                return v if v > 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        last_close, open_px = _f("LastClose"), _f("Open")
+        now_px, before5 = _f("Now"), _f("Before5MinNow")
+        gap_pct = round((open_px / last_close - 1) * 100, 2) if open_px and last_close else None
+        speed5 = round((now_px / before5 - 1) * 100, 2) if before5 and now_px else None
+        vol_ratio = None
+        try:
+            k = broker.get_klines(code, interval="daily")
+            vols = [float(x.get("volume") or 0) for x in (k or [])[-6:-1]]
+            tvol = _f("Volume")
+            if vols and tvol:
+                avg5 = sum(vols) / len(vols)
+                vol_ratio = round(tvol / avg5, 2) if avg5 > 0 else None
+        except Exception:  # noqa: BLE001
+            pass
         sum_b, sum_s = sum(bv[:5]), sum(sv[:5])
         imb1 = (bv[0] - sv[0]) / (bv[0] + sv[0]) if (bv[0] + sv[0]) > 0 else 0.0
         imb5 = (sum_b - sum_s) / (sum_b + sum_s) if (sum_b + sum_s) > 0 else 0.0
@@ -241,7 +263,8 @@ def load_orderbook(broker, codes: list) -> dict:
             signal = "中性"
         out[code] = {"bid1": b1, "bid1_v": bv[0], "ask1": a1, "ask1_v": sv[0],
                      "imb1": round(imb1, 3), "imb5": round(imb5, 3),
-                     "spread": round((a1 - b1) / mid * 100, 3), "signal": signal}
+                     "spread": round((a1 - b1) / mid * 100, 3), "signal": signal,
+                     "gap_pct": gap_pct, "speed5": speed5, "vol_ratio": vol_ratio}
     return out
 
 
@@ -542,6 +565,18 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
                 f"| ¥{ob['ask1']:.2f} × {ob['ask1_v']:,.0f} "
                 f"| {ob['imb1']:+.2f}（五档 {ob['imb5']:+.2f}） | {ob['signal']} |"
             )
+        # 实时增量一行：隔夜跳空 / 5分钟涨速 / 量比（vs 5日均量）
+        lines.append("")
+        for r in rows:
+            ob = orderbook.get(r["code"])
+            if not ob:
+                continue
+            gap = f"{ob['gap_pct']:+.2f}%" if ob.get("gap_pct") is not None else "—"
+            spd = f"{ob['speed5']:+.2f}%" if ob.get("speed5") is not None else "—"
+            vr = f"{ob['vol_ratio']}" if ob.get("vol_ratio") is not None else "—"
+            lines.append(
+                f"- {r['code']}: 隔夜跳空 {gap}（昨收→今开） · 5分钟涨速 {spd} · 量比 {vr}")
+        lines.append("说明：跳空>2% 高开/低开注意追高风险；5分钟涨速>±1% 记为异动；量比>1.5 显著放量、<0.6 明显缩量。")
         lines += [
             "",
             "说明：五档失衡 = (买一量-卖一量)/(买一量+卖一量)，>0 买方堆积、<0 卖方堆积，"

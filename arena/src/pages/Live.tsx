@@ -57,8 +57,8 @@ function emptyTsIntervals(
       .filter((e) => e.agent === agent && e.side && Number(e.volume) > 0)
       .sort((a, b) => (a.ts < b.ts ? 1 : -1));
     if (!evts.length) {
-      // 无成交事件：持仓状态即当前账本。空仓 → 全程虚线；否则全程实线
-      if (total() === 0) out[agent] = [[0, nowTs]];
+      // 无成交事件：持仓状态即当前账本。空仓起点交给 trailingFlatFrom 兜底
+      // （净值最后变动时刻），此处不制造区间
       continue;
     }
     const intervals: [number, number][] = [];
@@ -88,16 +88,18 @@ function emptyTsIntervals(
   return out;
 }
 
-/** 空仓时间区间 → 该 agent 净值序列中需画虚线的下标段（含两端） */
+/** 空仓时间区间 → 该 agent 净值序列中需画虚线的下标段（含两端）。
+ *  groups 支持多组区间取并集（事件反推 + 空仓尾段兜底）。 */
 function tsToDashSegs(
   pts: { t: number }[],
-  intervals: [number, number][],
+  groups: [number, number][][],
 ): [number, number][] {
-  if (!intervals?.length) return [];
+  const all = groups.flat();
+  if (!all.length) return [];
   const segs: [number, number][] = [];
   let cur: [number, number] | null = null;
   pts.forEach((p, idx) => {
-    const inEmpty = intervals.some(([a, b]) => p.t >= a && p.t <= b);
+    const inEmpty = all.some(([a, b]) => p.t >= a && p.t <= b);
     if (inEmpty && !cur) cur = [idx, idx];
     else if (inEmpty && cur) cur[1] = idx;
     else if (!inEmpty && cur) {
@@ -107,6 +109,16 @@ function tsToDashSegs(
   });
   if (cur) segs.push(cur);
   return segs;
+}
+
+/** 净值序列中最后一个值变动点的下标（其后全部同值）→ 空仓尾段的起始。
+ *  事件缺失（旧路径成交未留 fill 记录）时用净值本身的变动史兜底：
+ *  当前空仓 → 从最后一次变动起虚线（变动前是有仓位的实线）。 */
+function trailingFlatFrom(vals: number[]): number {
+  for (let i = vals.length - 1; i >= 1; i--) {
+    if (Math.abs(vals[i] - vals[i - 1]) > 1e-9) return i;
+  }
+  return 0;
 }
 
 /** 每秒自走北京时间钟——独立 state，不波及 Live 父组件的轮询/memo。 */
@@ -262,10 +274,15 @@ export default function Live() {
     // A股实盘优先：每 agent 分账虚拟净值线（¥10 万起，通达信桥实时价）
     // + 总账户线（桥实时总资产）。序列 ≥2 点才画。
     if (market === 'cn' && eq) {
-      // 空仓段虚线：成交事件+账本反推真实空仓区间（阶梯状净值不能按等值段猜）
+      // 空仓段虚线：成交事件反推 + （无事件时）净值最后变动点兜底
       const emptyTs = emptyTsIntervals(
         (liveTrades.data ?? []) as unknown as Parameters<typeof emptyTsIntervals>[0],
         (liveLedger.data?.agents ?? {}) as unknown as Parameters<typeof emptyTsIntervals>[1],
+      );
+      const emptyNowAgents = new Set(
+        Object.entries(liveLedger.data?.agents ?? {})
+          .filter(([, rec]) => !(rec?.positions ?? []).length)
+          .map(([a]) => a),
       );
       // 分账线：仅空仓那一段虚线（保留信息量），持仓段一律实线
       const agentLines = Object.entries(eq.agents ?? {})
@@ -277,10 +294,16 @@ export default function Live() {
             modelColor(name),
             pts.map((e) => toEq(e.value, e.ts)),
           );
+          const groups: [number, number][][] = [emptyTs[name] ?? []];
+          if (emptyNowAgents.has(name)) {
+            // 现空仓且无（或已有）事件：净值最后变动点之后 = 空仓尾段
+            const from = trailingFlatFrom(pts.map((e) => e.value));
+            groups.push([[line.points[from].t, Date.now()]]);
+          }
           return {
             ...line,
             notional: 100000, // 分账名义基准: hover 换算金额盈亏
-            dashSegs: tsToDashSegs(line.points, emptyTs[name] ?? []),
+            dashSegs: tsToDashSegs(line.points, groups),
           };
         });
       // 总账户线（¥92.5 万量级）只兜底：没有任何分账线可画时才显示。

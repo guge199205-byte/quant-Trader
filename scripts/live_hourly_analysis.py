@@ -1314,11 +1314,12 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                                               agent,
                                               (last_decisions.get(agent) or {}).get("decisions"),
                                               orderbook, cross, stale, recap)
-        # 比赛配置多选：选中 N 个配置 → 本轮按 N 个配置各做一轮独立分析（各自落盘一轮对话）
-        from prompts.analysis_modes import selected_modes
+        # 比赛配置多选：多选时按自然日轮转（一天一种模式，跨天轮换，
+        # 盘中口径一致不横跳；单选/轮转关闭时行为不变）
+        from prompts.analysis_modes import rotated_modes
 
         agent_exec_done = False  # 每 agent 每小时只执行一轮（多模式多轮会叠加买入突破分账额度）
-        for mode in selected_modes(agent):
+        for mode in rotated_modes(agent):
             mode_prompt = mode["prompt"]
             if mode["id"] == "awareness":  # 情境感知: 注入今日排行榜上下文
                 lb = build_leaderboard()

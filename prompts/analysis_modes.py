@@ -108,6 +108,26 @@ def selected_modes(model: str, market: str = "cn") -> List[dict]:
     return picked or [by_id[DEFAULT]]
 
 
+def rotated_modes(model: str, market: str = "cn") -> List[dict]:
+    """模式轮转：一天一种模式，跨天轮换（多选时启用）。
+
+    设计意图（2026-09-03 用户确认）：多模式全跑 = 每小时 N 份完整分析，
+    token 消耗 N 倍且当天地来回换风格；改为按自然日取模选出一个模式——
+    盘中各时段分析口径一致（无风格横跳），跨天自然轮换保证多视角覆盖。
+    单选或 ANALYZE_MODE_ROTATE=0 时行为不变。
+    """
+    import datetime
+    import os
+
+    if os.getenv("ANALYZE_MODE_ROTATE", "1") != "1":
+        return selected_modes(model, market)
+    sel = selected_modes(model, market)
+    if len(sel) <= 1:
+        return sel
+    day = datetime.date.today().toordinal()  # 连续自然日序号
+    return [sel[day % len(sel)]]
+
+
 def mode_label(model: str, market: str = "cn") -> str:
     """选中配置的中文名（'基线模式/苦行模式' 拼接），用于日志与落盘标注。"""
     return "/".join(m["name"] for m in selected_modes(model, market))

@@ -144,7 +144,13 @@
 .mc-thought { background: #fbfbf6; }
 
 /* 长内容限高 + 展开全文（纯 max-height，展开后移除类名） */
-.mc-clamp { max-height: 17em; overflow: hidden; }
+.mc-clamp {
+  max-height: 17em;
+  overflow-y: auto;           /* 不点展开也能滚 */
+  overscroll-behavior: auto;  /* 滚到块底自然接续面板，不卡 */
+}
+.mc-clamp::-webkit-scrollbar { width: 8px; }
+.mc-clamp::-webkit-scrollbar-thumb { background: #c5c5c5; border-radius: 4px; }
 .mc-more {
   display: block;
   margin: 4px 14px 10px;

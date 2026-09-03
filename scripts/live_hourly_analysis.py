@@ -437,6 +437,7 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
         f"可用虚拟现金 ¥{cash:,.0f}。你名下实盘持仓：",
         f"杠杆硬约束：持仓市值超过权益（现金+市值）×{LEVERAGE_MAX} 时系统会强制减仓，"
         "请优先自行降杠杆。",
+        "表述要求：正文中股票一律用中文名称（首次可括注代码），决策 JSON 照 schema 填写。",
         *([recap] if recap else []),
         "",
         "| 股票 | 代码 | 现价 | 成本 | 数量 | 持仓金额 | 盈亏 | 盈亏% | 今日涨跌% | 可卖量 |",

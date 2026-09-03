@@ -908,7 +908,8 @@ export default function Live() {
                       market={market}
                       agent={p.agent}
                       balance={isLive ? liveNav : (p.summary?.end_equity ?? null)}
-                      ret={isLive ? (liveNav! / 100000 - 1) * 100 : (p.summary?.total_return ?? null)}
+                      // fmtPct 期望小数（内部 ×100）；这里只算净值/¥10万 的比率
+                      ret={isLive ? liveNav! / 100000 - 1 : (p.summary?.total_return ?? null)}
                       selected={p.agent === effectiveModel}
                       onClick={() =>
                         setSelectedModel((cur) => (cur === p.agent ? 'all' : p.agent))

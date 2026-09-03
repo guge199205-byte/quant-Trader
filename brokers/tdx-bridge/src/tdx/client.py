@@ -66,6 +66,31 @@ class TdxClient:
         except Exception:
             return False
 
+    def quote_fresh_check(self, stock_code: str = "600519.SH") -> bool:
+        """行情新鲜度检查：日K最后一根 bar 是否落在"预期最近交易日"上。
+
+        桥进程"假活"场景（tqcenter HTTP 通、query_stock_asset 返回缓存、
+        health_check_fast 照常通过）下行情通道其实已断——用 bar 日期戳甄别，
+        停更 1 个交易日就能从 /api/v1/health 的 quote_fresh 看出来。
+        北京时区；周末锚点顺延到上周五，法定节假日会轻微误报（UI/告警信号
+        另有净值冻结检测兜底，此处不做节假日历）。
+        """
+        try:
+            k = self.get_market_data([stock_code], period="1d", count=3)
+            bars = ((k or {}).get("Value") or {}).get(stock_code) or {}
+            dates = bars.get("Date") or []
+            if not dates:
+                return False
+            last = str(dates[-1])
+            t = time.localtime(time.time() + 8 * 3600)  # 北京
+            offset = 1 if t.tm_wday == 5 else (2 if t.tm_wday == 6 else 0)
+            anchor = time.strftime("%Y%m%d",
+                                   time.localtime(time.time() + 8 * 3600
+                                                  - offset * 86400))
+            return last >= anchor
+        except Exception:
+            return False
+
     # ---- 账户 ----
 
     def stock_account(self, account: str = "", account_type: str = "stock") -> int:

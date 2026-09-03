@@ -383,6 +383,11 @@ def main() -> int:
                               "pending": True, "result": result})
             except Exception as exc:  # noqa: BLE001
                 print(f"  ❌ [{agent}] 卖出 {code} 失败: {exc}")
+                from live_ledger import defer_on_exc
+
+                if defer_on_exc(agent, "sell", code, vol, exc,
+                                now_cn().isoformat()):
+                    print(f"  ⏳ [{agent}] 卖出 {code} 已登记延期单（桥断链，恢复后自动重放）")
                 log_line({"ts": now_cn().isoformat(), "mode": "execute", "agent": agent,
                           "code": code, "volume": vol, "error": str(exc)})
             time.sleep(1)  # 桥限流
@@ -441,6 +446,11 @@ def main() -> int:
                               "pending": True, "result": result})
             except Exception as exc:  # noqa: BLE001
                 print(f"  ❌ [{agent}] 买入 {code} 失败: {exc}")
+                from live_ledger import defer_on_exc
+
+                if defer_on_exc(agent, "buy", code, o["volume"], exc,
+                                now_cn().isoformat()):
+                    print(f"  ⏳ [{agent}] 买入 {code} 已登记延期单（桥断链，恢复后自动重放）")
                 log_line({"ts": now_cn().isoformat(), "mode": "execute", "agent": agent,
                           "code": code, "error": str(exc)})
             time.sleep(1)

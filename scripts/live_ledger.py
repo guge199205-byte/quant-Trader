@@ -112,6 +112,52 @@ def find_holder(ledger: dict, code: str) -> str | None:
     return None
 
 
+# ---------- 延期单（拒单补执行）：桥行情断开被拒的决策，恢复后自动重放 ----------
+
+def load_deferred(ledger: dict) -> list:
+    """待重放订单：在途、被拒（行情断开/桥不可达）的买卖意图。"""
+    return list(ledger.get("deferred") or [])
+
+
+def save_deferred(ledger: dict, agent: str, side: str, code: str, volume: int,
+                  reason: str, ts: str) -> dict:
+    """登记一笔延期单（不可变，返回新账本）。同 agent+code+side 只保留最新一笔，
+    防止断链期间每轮重复堆积。"""
+    item = {"agent": agent, "side": side, "code": code, "volume": int(volume),
+            "reason": reason, "ts": ts}
+    deferred = [d for d in load_deferred(ledger)
+                if not (d.get("agent") == agent and d.get("code") == code
+                        and d.get("side") == side)]
+    deferred.append(item)
+    return {**ledger, "deferred": deferred}
+
+
+def clear_deferred(ledger: dict, agent: str, side: str, code: str) -> dict:
+    """清除一条延期单（成功后调用，防重复下单）。"""
+    deferred = [d for d in load_deferred(ledger)
+                if not (d.get("agent") == agent and d.get("code") == code
+                        and d.get("side") == side)]
+    return {**ledger, "deferred": deferred}
+
+
+def defer_on_exc(agent: str, side: str, code: str, volume: int,
+                 exc: Exception, ts: str) -> bool:
+    """桥断链/拒单时登记延期单（命中断链关键字才登记），返回是否登记。
+
+    2026-09-01 事故教训：行情断开时 4 次减仓决策全部被透传拒单且无人重试，
+    白白浪费一个交易时段——被拒意图落盘，恢复后由 replay_deferred.py 重放。
+    """
+    msg = str(exc)
+    if not any(k in msg for k in ("断开", "Connection", "refused", "拒绝", "超时")):
+        return False
+    try:
+        save_ledger(save_deferred(load_ledger(), agent, side, code, volume,
+                                  msg[:120], ts))
+        return True
+    except OSError:
+        return False
+
+
 def main() -> None:
     ledger = load_ledger()
     agents = ledger.get("agents") or {}

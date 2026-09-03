@@ -63,13 +63,16 @@ def build_env(model: str = "deepseek") -> dict:
     return env
 
 
-def run_agent(task: str, timeout_s: int = 300, model: str = "deepseek",
-             extra_patch: str | None = None) -> str:
-    """跑一个 dsh headless agent 任务，返回完整回复。失败抛 RuntimeError。
-    model: deepseek（默认）/ glm（智谱端点，baymax.glm.cordis.yml 覆写）。
-    extra_patch: 追加市场专属 persona（如 baymax.us.cordis.yml 美股规则）。"""
-    if not task.strip():
-        return ""
+def _is_quota_error(msg: str) -> bool:
+    """LLM 配额类错误（Token 用尽/限流/余量不足）→ 触发降级重试。"""
+    return any(k in msg for k in (
+        "Token Insufficient", "Insufficient", "错误码 13", "insufficient",
+        "quota", "rate limit", "429", "余量不足", "No Enough Quota",
+    ))
+
+
+def _run_once(task: str, timeout_s: int, model: str,
+              extra_patch: str | None) -> str:
     env = build_env(model)
     patches = [str(PATCH)]
     if extra_patch:
@@ -91,6 +94,32 @@ def run_agent(task: str, timeout_s: int = 300, model: str = "deepseek",
     if not out:
         raise RuntimeError("dsh 无输出")
     return out
+
+
+def run_agent(task: str, timeout_s: int = 300, model: str = "deepseek",
+             extra_patch: str | None = None) -> str:
+    """跑一个 dsh headless agent 任务，返回完整回复。失败抛 RuntimeError。
+    model: deepseek（默认）/ glm（智谱端点，baymax.glm.cordis.yml 覆写）。
+    extra_patch: 追加市场专属 persona（如 baymax.us.cordis.yml 美股规则）。
+
+    2026-09 复盘：闪 speak 配额耗尽（Token Insufficient/错误码 13 ×23）会让
+    整轮分析/调仓静默失败——主模型配额类错误时自动降级到备用模型重试一次。
+    """
+    if not task.strip():
+        return ""
+    try:
+        return _run_once(task, timeout_s, model, extra_patch)
+    except RuntimeError as exc:
+        if not _is_quota_error(str(exc)):
+            raise
+        fallback = os.getenv("FALLBACK_LLM_MODEL", "").strip() or (
+            "glm" if model == "deepseek" else "deepseek")
+        need_key = "GLM_API_KEY" if fallback == "glm" else "DEEPSEEK_API_KEY"
+        if fallback == model or not os.getenv(need_key):
+            raise  # 无备用端点，原样抛给上层告警
+        print(f"[dsh_agent] {model} 配额不足（Token 用尽），降级 {fallback} 重试一次",
+              file=sys.stderr)
+        return _run_once(task, min(timeout_s, 240), fallback, extra_patch)
 
 
 def self_check() -> str:

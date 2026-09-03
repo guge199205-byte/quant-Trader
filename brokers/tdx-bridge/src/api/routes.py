@@ -188,10 +188,15 @@ def build_app(token: str, tdx: TdxClient, executor: PlanExecutor,
     app.middlewares.append(auth_middleware)
 
     async def health(request: web.Request):
+        # tdx_connected 只证明 tqcenter HTTP 链路通；行情通道死时桥照旧返回
+        # 缓存数据（净值冻死也照样 200 OK）→ 额外给 quote_fresh 维度，
+        # Linux 侧 alert / 本机 UI 可看到行情新鲜度，不再"假活"三天地还没有告警。
         tdx_connected = await asyncio.to_thread(tdx.health_check_fast, 1.0)
+        quote_fresh = await asyncio.to_thread(tdx.quote_fresh_check)
         return web.json_response({
             "status": "ok",
             "tdx_connected": tdx_connected,
+            "quote_fresh": quote_fresh,
             "server_time": datetime.now().isoformat(timespec="seconds"),
         })
 

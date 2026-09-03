@@ -311,10 +311,43 @@ def _fmt_factor(v) -> str:
     return "—" if v is None else f"{v:.3f}"
 
 
+def market_data_stale(broker) -> bool:
+    """行情新鲜度探针：日K最后一根 bar 是否停在今天之前（北京）。
+
+    2026-09-01 事故复盘：桥"假活"（HTTP 通、账户/快照全返 9/1 缓存）时
+    LLM 还拿假"今日涨跌"做减仓推理——用沪深300 日K日期戳做硬闸，
+    停更就禁止模型把价格/涨跌当决策依据。交易日盘中才判；周末/午休不误报。
+    """
+    import time
+
+    from datetime import timedelta
+
+    bj = now_cn()
+    if bj.weekday() >= 5:
+        return False
+    mins = bj.hour * 60 + bj.minute
+    if not ((9 * 60 + 25 <= mins < 11 * 60 + 30) or (13 * 60 <= mins < 15 * 60 + 10)):
+        return False
+    try:
+        k = broker.tdx_call("get_market_data",
+                            {"stock_list": ["000300.SH"], "period": "1d",
+                             "count": 3, "dividend_type": "none"})
+        bars = ((k or {}).get("Value") or {}).get("000300.SH") or {}
+        dates = bars.get("Date") or []
+        if not dates:
+            return False
+        last = str(dates[-1])
+        anchor = bj.strftime("%Y%m%d")
+        return last < anchor
+    except Exception:  # noqa: BLE001 探针失败按新鲜处理（另有 alert 兜底）
+        return False
+
+
 def build_user_content(rows: list, asset: float, cash: float, agent: str,
                        last_decisions: list | None = None,
                        orderbook: dict | None = None,
-                       cross_refs: str | None = None) -> str:
+                       cross_refs: str | None = None,
+                       stale: bool = False) -> str:
     lines = [
         f"现在是北京时间 {now_cn():%F %T}（A股{('盘中' if in_trading_window(now_cn()) else '盘前/盘后')}）。"
         f"你是 {agent}（实盘分账账户，初始额度 ¥10 万）。你名下虚拟资产 ¥{asset:,.0f}、"
@@ -325,6 +358,14 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
         "| 股票 | 代码 | 现价 | 成本 | 数量 | 持仓金额 | 盈亏 | 盈亏% | 今日涨跌% | 可卖量 |",
         "|------|------|------|------|------|----------|------|-------|-----------|--------|",
     ]
+    if stale:
+        lines[0:0] = [
+            "🚨🚨【数据新鲜度警告】系统检测到桥行情疑似停更（最新日K不是今天）：",
+            "下方的现价/今日涨跌/盈亏**全部可能是陈旧缓存，禁止据此做任何买卖决策**；",
+            "你只能基于持仓结构和风险约束（杠杆/集中度/可卖量）给出意见，",
+            "并明确标注『行情停更待确认』。若必须行动，唯一允许的动作是 watch/观察。",
+            "",
+        ]
     for r in rows:
         day = f"{r['day_chg']:+.2f}" if r["day_chg"] is not None else "—"
         lines.append(
@@ -1009,6 +1050,10 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
                           "result": result})
         except Exception as exc:  # noqa: BLE001
             print(f"  ❌ [{agent}] 卖出 {code} 失败: {exc}")
+            from live_ledger import defer_on_exc
+
+            if defer_on_exc(agent, "sell", code, vol, exc, now_cn().isoformat()):
+                print(f"  ⏳ [{agent}] 卖出 {code} 已登记延期单（桥断链，恢复后自动重放）")
             from live_trade_picks import log_line
 
             log_line({"ts": now_cn().isoformat(), "mode": "execute_intraday", "agent": agent,
@@ -1078,6 +1123,11 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
                           "pending": True, "result": result})
         except Exception as exc:  # noqa: BLE001
             print(f"  ❌ [{agent}] 买入 {code} 失败: {exc}")
+            from live_ledger import defer_on_exc
+
+            if defer_on_exc(agent, "buy", code, o["volume"], exc,
+                            now_cn().isoformat()):
+                print(f"  ⏳ [{agent}] 买入 {code} 已登记延期单（桥断链，恢复后自动重放）")
             from live_trade_picks import log_line
 
             log_line({"ts": now_cn().isoformat(), "mode": "execute_intraday", "agent": agent,
@@ -1196,10 +1246,14 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
             print(f"[{now:%F %T}] {agent} 名下持仓 {len(my_rows)} 只，盘中分析")
             virtual_asset = virtual_cash + sum(r["price"] * r["volume"] for r in my_rows)
             cross = _cross_agent_refs(last_decisions, agent)
+            stale = market_data_stale(broker)  # 盘中硬闸：日K停在昨天 → 提示词禁价
+            if stale:
+                print(f"[{now:%F %T}] 🚨 行情停更（桥假活/通道断），"
+                      f"已禁止 {agent} 基于陈旧价格做买卖决策")
             user_content = build_user_content(my_rows, virtual_asset, virtual_cash,
                                               agent,
                                               (last_decisions.get(agent) or {}).get("decisions"),
-                                              orderbook, cross)
+                                              orderbook, cross, stale)
         # 比赛配置多选：选中 N 个配置 → 本轮按 N 个配置各做一轮独立分析（各自落盘一轮对话）
         from prompts.analysis_modes import selected_modes
 

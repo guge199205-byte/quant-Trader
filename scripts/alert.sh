@@ -1,5 +1,5 @@
 #!/bin/bash
-# Trade Agent 告警检查：服务掉线 / 交易停滞 / 备份过期
+# Trade Agent 告警检查：服务掉线 / 交易停滞 / 净值冻结(行情停更) / 备份过期
 # cron: */5 * * * * bash /home/zbox/BayMax-Trader/scripts/alert.sh
 
 cd "$(dirname "$0")/.."
@@ -39,17 +39,107 @@ for spec in "mcp_us:8100" "mcp_cn:8200" "mcp_hk:8300" "dsh:3081"; do
     fi
 done
 
-# 2. 交易停滞检测（实盘成交日志 48h 无新记录——回放 position.jsonl 不再更新，改查实盘日志）
+# 2. 交易停滞检测：按"最近一笔成功成交"判定（>48h 无成功记录才告警）。
+#    2026-09-02 事故修复：行情断开时失败下单也写 live_trade_*.jsonl，
+#    旧逻辑统计文件 mtime 被失败记录"刷新鲜"掩盖，净值冻了 3 天零告警。
 NOW=$(date +%s)
-latest=0
-for pf in logs/live_trade_*.jsonl logs/live_watch_*.jsonl; do
-    [ -f "$pf" ] || continue
-    mt=$(stat -c %Y "$pf" 2>/dev/null || echo 0)
-    [ "$mt" -gt "$latest" ] && latest=$mt
-done
-if [ "$latest" -gt 0 ] && [ $((NOW - latest)) -gt 172800 ]; then
+STALE_HOURS=$(python3 - . <<'PY'
+import glob, json, re, datetime
+BJ = datetime.timezone(datetime.timedelta(hours=8))
+now = datetime.datetime.now(BJ)
+def to_ts(s):
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})", s or "")
+    if not m:
+        return None
+    y, mo, d, h, mi = map(int, m.groups())
+    return datetime.datetime(y, mo, d, h, mi, tzinfo=BJ)
+latest = None
+for pf in (glob.glob("logs/live_trade_*.jsonl")
+           + glob.glob("logs/live_watch_*.jsonl")):
+    try:
+        for line in open(pf, encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if r.get("error"):
+                continue          # 拒单/失败不算成交（2026-09 行情断开暴刷）
+            t = to_ts(r.get("ts") or r.get("timestamp"))
+            if t is not None and (latest is None or t > latest):
+                latest = t
+    except OSError:
+        continue
+if latest is None:
+    print(99999)                  # 从未成交过
+else:
+    h = (now - latest).total_seconds() / 3600
+    if h > 48:
+        print(int(h))
+PY
+)
+if [ -n "$STALE_HOURS" ]; then
     ALERTS="$ALERTS
-🟡 实盘交易日志已 $(( (NOW - latest) / 3600 )) 小时无新记录"
+🟡 实盘成交已 ${STALE_HOURS} 小时无成功记录（失败下单不计入）"
+fi
+
+# 2b. A股净值冻结检测（TDX 行情通道死而进程假活：桥 HTTP 通、返回缓存，
+#     净值分钟级采样数值纹丝不动 → 盘中 30 分钟同值即告警）。
+#     只在北京工作日盘中判定，节假日/盘后天然静止不算。
+FROZEN_VAL=$(python3 - logs/live_equity.jsonl <<'PY'
+import json, re, sys, datetime
+BJ = datetime.timezone(datetime.timedelta(hours=8))
+now = datetime.datetime.now(BJ)
+if now.weekday() >= 5:
+    raise SystemExit(0)
+mins = now.hour * 60 + now.minute
+if not ((9 * 60 + 30 <= mins < 11 * 60 + 30) or (13 * 60 <= mins < 15 * 60)):
+    raise SystemExit(0)
+def to_bj(s):
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})", s or "")
+    if not m:
+        return None
+    y, mo, d, h, mi = map(int, m.groups())
+    return datetime.datetime(y, mo, d, h, mi, tzinfo=BJ)
+rows = []
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if r.get("agent") is None and r.get("value") is not None:
+                rows.append(r)    # "agent": null 的行 = 桥总资产
+except OSError:
+    raise SystemExit(0)
+cutoff = now - datetime.timedelta(minutes=30)
+recent = [r for r in rows
+          if (t := to_bj(r.get("ts"))) is not None and t >= cutoff]
+if len(recent) < 5:               # 采样不足不判定
+    raise SystemExit(0)
+vals = {round(float(r["value"]), 2) for r in recent}
+if len(vals) == 1:
+    print(round(float(vals.pop())))
+PY
+)
+if [ -n "$FROZEN_VAL" ]; then
+    ALERTS="$ALERTS
+🔴 A股净值冻结于 ¥$FROZEN_VAL 已 30 分钟未变——TDX 行情通道疑似断开（桥假活），快查 Windows 交易机通达信行情连接"
+    # 假活自愈：向 Windows 看门狗投递重启信号（共享目录挂载可用时）
+    if [ -d /mnt/tdx-shared/bridge-windows ]; then
+        touch /mnt/tdx-shared/bridge-windows/restart_bridge.flag
+        ALERTS="$ALERTS
+🔧 已投递 restart_bridge.flag → 桥看门狗将自动重启"
+    else
+        ALERTS="$ALERTS
+⚠️ 共享目录不可用，无法投递重启信号，须手动重启桥"
+    fi
 fi
 
 # 3. 备份过期检测（>26h 无备份）

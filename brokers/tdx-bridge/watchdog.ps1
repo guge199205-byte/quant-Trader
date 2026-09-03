@@ -84,7 +84,26 @@ $deadCount = 0
 while ($true) {
     Start-Sleep -Seconds $CheckIntervalSec
     $alive = Test-BridgeAlive
-    if ($alive) {
+
+    # ---- 2026-09-01 事故复盘新增自愈信号 ----
+    # ① CLOSE_WAIT 堆积（局域网全挂、本机健康检查正常=假活）→ 重启桥
+    # ② Ubuntu 侧重启信号文件 restart_bridge.flag（净值冻结告警触发）→ 重启桥
+    $needRestart = $false
+    $restartFlag = Join-Path $ScriptDir "restart_bridge.flag"
+    try {
+        $pile = (Get-NetTCPConnection -LocalPort 8550 -State CloseWait `
+                     -ErrorAction SilentlyContinue | Measure-Object).Count
+        if ($pile -gt 30) {
+            Write-Log "⚠️ CLOSE_WAIT 堆积 ${pile} 条（假活特征），标记重启"
+            $needRestart = $true
+        }
+    } catch {}
+    if (-not $needRestart -and (Test-Path $restartFlag)) {
+        Write-Log "⚠️ 收到 Linux 侧重启信号（restart_bridge.flag），标记重启"
+        $needRestart = $true
+    }
+
+    if ($alive -and -not $needRestart) {
         if ($deadCount -gt 0) {
             Write-Log "桥已恢复健康"
             $deadCount = 0
@@ -92,13 +111,18 @@ while ($true) {
         continue
     }
 
-    # 桥无响应
-    $deadCount++
-    Write-Log "桥无响应 (连续 $deadCount 次)"
+    # 桥无响应（或假活/信号触发）
+    if ($alive) {
+        Write-Log "桥健康检查通过但触发自愈重启"
+        $deadCount = 2   # 直接走重启分支
+    } else {
+        $deadCount++
+        Write-Log "桥无响应 (连续 $deadCount 次)"
+    }
 
-    # 连续 2 次无响应才重启 (避免短暂抖动)
+    # 连续 2 次无响应才重启 (避免短暂抖动；假活/信号直接跳过抖动)
     if ($deadCount -ge 2) {
-        Write-Log "桥疑似崩溃, 正在重启..."
+        Write-Log "桥疑似崩溃/假活, 正在重启..."
         # 杀掉旧的 python 进程 (只杀 bridge 相关的, 通过端口判断)
         try {
             $conns = Get-NetTCPConnection -LocalPort 8550 -State Listen -ErrorAction SilentlyContinue
@@ -113,5 +137,7 @@ while ($true) {
         Start-Sleep -Seconds 3
         Start-Bridge
         $deadCount = 0
+        # 重启后清掉信号文件，防无限循环重启
+        Remove-Item $restartFlag -Force -ErrorAction SilentlyContinue
     }
 }

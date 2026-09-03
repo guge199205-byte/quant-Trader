@@ -4,7 +4,7 @@ import { logoOf, modelColor, shortName } from './ModelCard';
 import { renderInline } from '../utils/markdown';
 import './ModelChat.css';
 import { modeOf } from '../utils/modeTag';
-import { renderActionTags } from '../utils/actionTags';
+import { FillLike, renderActionTags } from '../utils/actionTags';
 
 /** 一个分析回合：单条日志（一次 LLM 分析 = user prompt + assistant 总结） */
 interface MixedRound {
@@ -20,8 +20,14 @@ interface MixedRound {
  *  卡片边框按模型配色区分。 */
 export default function ChatStream({
   agents,
+  fills,
+  heldCodes,
 }: {
   agents: { name: string; lines: LogLine[] }[];
+  /** 实盘成交事实（时间窗匹配 → 动作标签以成交为准，不靠文字猜） */
+  fills?: FillLike[];
+  /** 当前仍持有的代码集合（卖后仍持=减仓，卖光=清仓；买后已持=加仓） */
+  heldCodes?: Set<string>;
 }) {
   const [open, setOpen] = useState<Set<number>>(new Set());
   const [sections, setSections] = useState<Record<number, Set<string>>>({});
@@ -116,7 +122,12 @@ export default function ChatStream({
                 {shortName(r.model)}
               </span>
               {modeOf(r.user)}
-              {renderActionTags(r.thought)}
+              {renderActionTags(r.thought, {
+                fills,
+                model: r.model,
+                tsMs: r.ts ? new Date(r.ts).getTime() : null,
+                heldCodes,
+              })}
               <span className="mc-status">{r.thought ? '已分析' : '仅提示'}</span>
               <span className="mc-date">{r.ts ? r.ts.slice(5, 16) : '—'}</span>
               <span className={`mc-expand ${isOpen ? 'open' : ''}`}>{isOpen ? '▼' : '▶'}</span>

@@ -716,7 +716,13 @@ export default function Live() {
           ? chatAll.data
           : [{ name: effectiveModel, lines: logs.data ?? [] }];
       if (!agents) return <div className="empty-state">加载对话…</div>;
-      return <ChatStream agents={agents} />;
+      return (
+        <ChatStream
+          agents={agents}
+          fills={liveTradesFiltered}
+          heldCodes={new Set(livePositions.map((p) => p.stock_code))}
+        />
+      );
     }
 
     if (tab === 'news') {

@@ -312,3 +312,7 @@
 .mc-mode-chip.action.buy  { background: #e8f5e9; color: #2e7d32; border-color: #b7dfba; }
 .mc-mode-chip.action.hold { background: #f4f4f4; color: #555; border-color: #ddd; }
 .mc-mode-chip.action.empty { background: #fff; color: #999; border-style: dashed; }
+
+/* 止盈止损（黄）/ 调仓（橙） */
+.mc-mode-chip.action.tp { background: #fff8e1; color: #b26a00; border-color: #f2d98c; }
+.mc-mode-chip.action.tune { background: #fff3e0; color: #e65100; border-color: #f4c89b; }

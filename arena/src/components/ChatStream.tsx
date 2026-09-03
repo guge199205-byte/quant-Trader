@@ -9,6 +9,7 @@ import { parseAnalysis } from '../utils/parseAnalysis';
 
 /** 一个分析回合：单条日志（一次 LLM 分析 = user prompt + assistant 总结） */
 interface MixedRound {
+  kind?: 'review';
   model: string;
   /** 日志写入时间（实盘分析时间），用于全局倒序 */
   ts: string | null;
@@ -53,6 +54,13 @@ export default function ChatStream({
       };
       for (const line of ag.lines) {
         const lineTs = line.timestamp ?? null;
+        if ((line as { kind?: string }).kind === 'review') {
+          const text = (line.new_messages ?? [])
+            .filter((m) => String(m.role) === 'assistant' || String(m.role) === 'ai')
+            .map((m) => String(m.content ?? '')).join('\n\n');
+          if (text.trim()) out.push({ kind: 'review', model: ag.name, ts: lineTs, user: '', thought: text });
+          continue;
+        }
         for (const msg of line.new_messages ?? []) {
           const content = (msg.content ?? '').trim();
           if (!content) continue;
@@ -113,7 +121,8 @@ export default function ChatStream({
   return (
     <div className="mc-list">
       {rounds.map((r, i) => {
-        const isOpen = open.has(i);
+        const isReview = r.kind === 'review';
+        const isOpen = isReview ? !open.has(i) : open.has(i);
         const sec = sections[i] ?? new Set<string>();
         const pa = parsed[i];
         return (
@@ -145,11 +154,17 @@ export default function ChatStream({
                 tsMs: r.ts ? new Date(r.ts).getTime() : null,
                 heldCodes,
               })}
-              <span className="mc-status">{r.thought ? '已分析' : '仅提示'}</span>
+              <span className="mc-status" style={isReview ? { background: '#0d8a6b' } : undefined}>
+                  {isReview ? '📋 复盘' : r.thought ? '已分析' : '仅提示'}
+                </span>
               <span className="mc-date">{r.ts ? r.ts.slice(5, 16) : '—'}</span>
               <span className={`mc-expand ${isOpen ? 'open' : ''}`}>{isOpen ? '▼' : '▶'}</span>
             </div>
-            <div className="mc-summary"><span className="mc-sum-label">总结</span><span className="mc-sum-text">{renderInline(pa.summary || (r.thought || r.user).replace(/\s+/g, ' ').trim())}</span></div>
+            <div className="mc-summary"><span className="mc-sum-label">总结</span><span className="mc-sum-text">
+                  {isReview
+                    ? '盘后复盘：展开查看逐笔归因 / 行为审计 / 明日预案'
+                    : renderInline(pa.summary || (r.thought || r.user).replace(/\s+/g, ' ').trim())}
+                </span></div>
             {isOpen && (
               <div className="mc-body">
                 {r.user && (

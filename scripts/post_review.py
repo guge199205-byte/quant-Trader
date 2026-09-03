@@ -140,24 +140,65 @@ def run_review(agent: str, date: str, dry: bool = False) -> int:
         content = f"（LLM 复盘失败，降级数据摘要：{exc}）\n\n{facts}"
     (out_dir / f"{date}.md").write_text(
         f"# {agent} 盘后复盘 · {date}\n\n" + content, encoding="utf-8")
-    # JSON 抽取（尾部 JSON 块），失败留空结构
-    import re
+    # JSON 抽取：平衡块扫描（兼容围栏/尾随文本/多块），失败留空结构
+    def json_blocks(text: str) -> list:
+        blocks, i = [], 0
+        while i < len(text):
+            st = text.find("{", i)
+            if st < 0:
+                break
+            depth, in_str, j = 0, False, st
+            while j < len(text):
+                c = text[j]
+                if in_str:
+                    if c == "\\":
+                        j += 1
+                    elif c == '"':
+                        in_str = False
+                elif c == '"':
+                    in_str = True
+                elif c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        break
+                j += 1
+            try:
+                blocks.append(json.loads(text[st:j]))
+            except json.JSONDecodeError:
+                pass
+            i = j
+        return blocks
 
-    m = re.search(r"\{[\s\S]*\}", content)
     payload = {"lessons": [], "plan": [], "watch": [], "hypothesis_candidates": []}
-    if m:
-        try:
-            parsed = json.loads(m.group(0))
-            if isinstance(parsed, dict):
-                for k in payload:
-                    if parsed.get(k) is not None:
-                        payload[k] = parsed[k]
-        except json.JSONDecodeError:
-            pass
+    for b in json_blocks(content):
+        if not isinstance(b, dict):
+            continue
+        for k in payload:
+            if b.get(k) is not None:
+                payload[k] = b[k]
     payload["date"] = date
     payload["agent"] = agent
     (out_dir / f"{date}.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    # 写回 agent 对话日志流（模型对话 tab 可见；kind=review 前端渲染为复盘卡）
+    try:
+        import zoneinfo
+
+        lf = ROOT / "data" / "agent_data_astock" / agent / "log" / date / "log.jsonl"
+        lf.parent.mkdir(parents=True, exist_ok=True)
+        row = {"timestamp": datetime.now(zoneinfo.ZoneInfo("Asia/Shanghai")).isoformat(),
+               "signature": agent, "kind": "review",
+               "new_messages": [
+                   {"role": "user", "content": f"【盘后复盘任务】{date} {agent} 当日复盘（只读+沉淀）"},
+                   {"role": "assistant", "content": content},
+               ]}
+        with lf.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️ 复盘写回对话日志失败: {exc}")
     print(f"✅ {agent} 复盘完成 → logs/review/{agent}/{date}.md/.json "
           f"(lessons={len(payload['lessons'])}, plan={len(payload['plan'])})")
     return 0

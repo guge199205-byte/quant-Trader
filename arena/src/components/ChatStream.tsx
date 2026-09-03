@@ -3,6 +3,7 @@ import { LogLine } from '../api/client';
 import { logoOf, modelColor, shortName } from './ModelCard';
 import { renderInline } from '../utils/markdown';
 import './ModelChat.css';
+import { modeOf } from '../utils/modeTag';
 
 /** 一个分析回合：单条日志（一次 LLM 分析 = user prompt + assistant 总结） */
 interface MixedRound {
@@ -113,9 +114,7 @@ export default function ChatStream({
               <span className="mc-model" style={{ color: modelColor(r.model) }}>
                 {shortName(r.model)}
               </span>
-              {r.user?.includes('情境感知') && (
-                <span className="mc-mode-chip">🧠 情境感知</span>
-              )}
+              {modeOf(r.user)}
               <span className="mc-status">{r.thought ? '已分析' : '仅提示'}</span>
               <span className="mc-date">{r.ts ? r.ts.slice(5, 16) : '—'}</span>
               <span className={`mc-expand ${isOpen ? 'open' : ''}`}>{isOpen ? '▼' : '▶'}</span>

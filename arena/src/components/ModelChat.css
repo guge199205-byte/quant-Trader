@@ -298,3 +298,10 @@
   color: #888;
   white-space: nowrap;
 }
+
+/* 普通模式标签（基线/苦行/极限杠杆等）：灰底小徽标，情境感知保持蓝底/🧠 */
+.mc-mode-chip.plain {
+  background: #f4f4f4;
+  color: #555;
+  border-color: #ddd;
+}

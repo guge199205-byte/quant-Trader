@@ -4,6 +4,7 @@ import { logoOf, modelColor } from './ModelCard';
 import { fmtMoney } from '../utils/format';
 import { renderInline, renderMarkdown } from '../utils/markdown';
 import './ModelChat.css';
+import { modeOf } from '../utils/modeTag';
 
 /** 一个决策回合：user prompt（开盘任务）+ assistant 总结（决策推理）+ 当日成交 */
 interface Round {
@@ -131,9 +132,7 @@ export default function ModelChat({
               <span className="mc-model" style={{ color: modelColor(model) }}>
                 {model.replace('deepseek-v4-', '').toUpperCase()}
               </span>
-              {r.user.includes('情境感知') && (
-                <span className="mc-mode-chip">🧠 情境感知</span>
-              )}
+              {modeOf(r.user)}
               <span className="mc-status">{status}</span>
               <span className="mc-date">{dateLabel}</span>
               <span className={`mc-expand ${isOpen ? 'open' : ''}`}>{isOpen ? '▼' : '▶'}</span>

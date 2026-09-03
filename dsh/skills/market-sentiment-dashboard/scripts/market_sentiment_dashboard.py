@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]  # dsh/skills/<name>/scripts → 仓库根
+ROOT = Path(__file__).resolve().parents[4]  # dsh/skills/<name>/scripts → 仓库根
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -63,9 +63,13 @@ def market_state() -> dict:
     try:
         from market_state import build_market_state
 
-        from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
+        try:
+            from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
 
-        return {"ok": True, "state": build_market_state(TdxBridgeBroker())}
+            return {"ok": True, "state": build_market_state(TdxBridgeBroker())}
+        except Exception as exc:  # noqa: BLE001 桥/依赖不可用 → 降级（无桥分支）
+            return {"ok": True, "degraded": True,
+                    "state": build_market_state(None) + f"（桥不可用降级：{exc}）"}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 

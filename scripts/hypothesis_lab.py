@@ -40,6 +40,15 @@ DEFAULT_HYPOTHESES = {
 }
 
 
+def decide_status(want_bull: bool, diff: float | None, n: int) -> str:
+    """假设状态判定（P0-3 可测）：方向与实测一致且差≥3pp=verified；相反=contradicted。"""
+    if n < 30 or diff is None:
+        return "insufficient" if n < 30 else "proposed"
+    if abs(diff) < 0.03:
+        return "proposed"
+    return "verified" if (diff > 0) == want_bull else "contradicted"
+
+
 def _pick_samples(top: int) -> list:
     """用最新 partition 按成交额取流动性前 top 只（避免全市场权重失真）。"""
     import duckdb
@@ -114,16 +123,8 @@ def main() -> int:
         if key not in hyps:
             hyps[key] = dict(DEFAULT_HYPOTHESES[key])
         diff = (win - base_win) if win is not None else None
-        # 状态判定对照基准：方向与实测一致且差≥3pp=verified；相反≥3pp=contradicted
         want_bull = "多" in str(hyps[key].get("direction", ""))
-        if n is None or n < 30 or diff is None:
-            status = "insufficient" if n < 30 else "proposed"
-        elif abs(diff) < 0.03:
-            status = "proposed"
-        elif (diff > 0) == want_bull:
-            status = "verified"
-        else:
-            status = "contradicted"
+        status = decide_status(want_bull, diff, n)
         hyps[key].update({"win_rate": round(win, 3) if win is not None else None,
                           "avg_ret": round(avg, 3) if avg is not None else None,
                           "vs_base_pp": round(diff * 100, 1) if diff is not None else None,

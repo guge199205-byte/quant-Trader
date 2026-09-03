@@ -19,10 +19,12 @@ DB_DIR = ROOT / "logs" / "debates"
 CONF_THRESHOLD = 0.7  # 任一方高置信才仲裁
 
 
-def find_conflicts() -> list:
-    from live_hourly_analysis import load_last_decisions
+def find_conflicts(decisions_map: dict | None = None) -> list:
+    if decisions_map is None:
+        from live_hourly_analysis import load_last_decisions
 
-    last = load_last_decisions()
+        decisions_map = load_last_decisions()
+    last = decisions_map
     by_code: dict = {}
     agents = []
     for agent, rec in (last or {}).items():

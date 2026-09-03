@@ -109,6 +109,39 @@ def collect_facts(agent: str, date: str) -> str:
     return "\n".join(lines)
 
 
+def json_blocks(text: str) -> list:
+    """平衡块扫描 JSON（P0-3 可测）。"""
+    blocks, i = [], 0
+    while i < len(text):
+        st = text.find("{", i)
+        if st < 0:
+            break
+        depth, in_str, j = 0, False, st
+        while j < len(text):
+            c = text[j]
+            if in_str:
+                if c == "\\":
+                    j += 1
+                elif c == '"':
+                    in_str = False
+            elif c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    j += 1
+                    break
+            j += 1
+        try:
+            blocks.append(json.loads(text[st:j]))
+        except json.JSONDecodeError:
+            pass
+        i = j
+    return blocks
+
+
 def run_review(agent: str, date: str, dry: bool = False) -> int:
     from dsh_agent import run_agent
 
@@ -140,38 +173,7 @@ def run_review(agent: str, date: str, dry: bool = False) -> int:
         content = f"（LLM 复盘失败，降级数据摘要：{exc}）\n\n{facts}"
     (out_dir / f"{date}.md").write_text(
         f"# {agent} 盘后复盘 · {date}\n\n" + content, encoding="utf-8")
-    # JSON 抽取：平衡块扫描（兼容围栏/尾随文本/多块），失败留空结构
-    def json_blocks(text: str) -> list:
-        blocks, i = [], 0
-        while i < len(text):
-            st = text.find("{", i)
-            if st < 0:
-                break
-            depth, in_str, j = 0, False, st
-            while j < len(text):
-                c = text[j]
-                if in_str:
-                    if c == "\\":
-                        j += 1
-                    elif c == '"':
-                        in_str = False
-                elif c == '"':
-                    in_str = True
-                elif c == "{":
-                    depth += 1
-                elif c == "}":
-                    depth -= 1
-                    if depth == 0:
-                        j += 1
-                        break
-                j += 1
-            try:
-                blocks.append(json.loads(text[st:j]))
-            except json.JSONDecodeError:
-                pass
-            i = j
-        return blocks
-
+    # JSON 抽取（json_blocks 模块级）
     payload = {"lessons": [], "plan": [], "watch": [], "hypothesis_candidates": []}
     for b in json_blocks(content):
         if not isinstance(b, dict):

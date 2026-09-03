@@ -87,29 +87,33 @@ LEVELS = {
 }
 
 
-def main() -> int:
-    vol = _index_vol()
-    dd = _equity_drawdown()
-    zt, ladder = _sentiment()
-    state_txt = "平静"
+def decide_level(vol: float | None, dd: float | None,
+                zt: int | None, ladder: int | None) -> tuple[str, list]:
+    """纯判定（P0-3 可测）：波动/回撤/情绪 → (档位, 触发因素)。"""
     reasons = []
     if vol is not None and vol >= 1.2:
         reasons.append(f"波动 {vol}% 偏高")
     if dd is not None and dd >= 5:
         reasons.append(f"回撤 {dd}% 超限")
-    if dd is not None and 3 <= dd < 5:
+    elif dd is not None and dd >= 3:
         reasons.append(f"回撤 {dd}% 加深")
-    if zt and zt < 25:
+    if zt is not None and zt < 25:
         reasons.append(f"涨停仅 {zt} 家情绪偏冷")
-    if zt and zt > 90:
+    if zt is not None and zt > 90:
         reasons.append(f"涨停 {zt} 家情绪过热")
-    if ladder and ladder >= 2 and zt and zt < 25:
-        reasons.append("连板萎缩")
-    if reasons and not (len(reasons) == 1 and "波动" in reasons[0]):
-        state_txt = "防守" if (dd or 0) >= 5 else "谨慎"
-    elif reasons and dd is None and vol is not None and vol >= 1.2:
-        state_txt = "谨慎"
-    lvl = LEVELS.get("defensive" if state_txt == "防守" else "caution" if state_txt == "谨慎" else "calm")
+    if dd is not None and dd >= 5:
+        return "defensive", reasons
+    if reasons:
+        return "caution", reasons
+    return "calm", []
+
+
+def main() -> int:
+    vol = _index_vol()
+    dd = _equity_drawdown()
+    zt, ladder = _sentiment()
+    state_txt, reasons = decide_level(vol, dd, zt, ladder)
+    lvl = LEVELS.get(state_txt)
     today = datetime.now().strftime("%Y-%m-%d")
     # 防抖：同日只收紧一次；不允许放大
     st = {}
@@ -119,12 +123,14 @@ def main() -> int:
         pass
     prev_level = st.get("level")
     order = {"calm": 0, "caution": 1, "defensive": 2}
+    effective = state_txt
     if st.get("date") == today and prev_level and order.get(state_txt, 0) < order.get(prev_level, 0):
-        lvl = LEVELS.get(prev_level)
+        effective = prev_level  # 防抖：当日已收紧则维持，不放大
         reasons.append(f"防抖：当日已定 {prev_level}，不再放宽")
+    lvl = LEVELS.get(effective)
     DETAIL.mkdir(parents=True, exist_ok=True)
-    STATE.write_text(json.dumps({"date": today, "level": state_txt}, ensure_ascii=False), encoding="utf-8")
-    doc = {"date": today, "level": state_txt, "label": lvl["label"],
+    STATE.write_text(json.dumps({"date": today, "level": effective}, ensure_ascii=False), encoding="utf-8")
+    doc = {"date": today, "level": effective, "label": lvl["label"],
            "inputs": {"vol20": vol, "drawdown20": dd, "limit_up": zt, "max_ladder": ladder},
            "budget": {k: lvl[k] for k in ("leverage_max", "per_stock_pct", "max_new_buys",
                                           "leverage_trim_to")},

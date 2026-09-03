@@ -166,7 +166,7 @@ def build_rows(broker, positions: list, names: dict) -> list:
                 quote = broker.get_quote(code, "")
                 price = float((quote or {}).get("close") or 0)
             except Exception:  # noqa: BLE001
-                price = 0
+                price = quote_fallback(code)  # 桥瞬时不可用 → Fuyao → 腾讯
         pnl = price * volume - cost * volume
         pnl_pct = (price - cost) / cost * 100 if cost else 0.0
         # 今日涨跌: 日K 昨收
@@ -218,6 +218,37 @@ def load_l2_factors(codes: list[str]) -> dict:
         if code and code not in out:
             out[code] = r
     return {c: out[c] for c in codes if c in out}
+
+
+def quote_fallback(code: str) -> float:
+    """取价备胎链：通达信桥 → 同花顺 Fuyao 快照 → 腾讯行情。任一路拿到>0 即用。
+    用于桥单点瞬时不可用时让 agent 仍拿到实时价（交易闸门不受影响：桥未通不下单）。"""
+    try:
+        sys.path.insert(0, str(ROOT / "dsh/skills/ths-fuyao/scripts"))
+        from ths_fuyao import get
+
+        d = get("/api/a-share/prices/snapshot", {"thscode": code})
+        items = (d.get("data") or {}).get("item") or []
+        if items:
+            px = float(items[0].get("last_price") or 0)
+            if px > 0:
+                return px
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import urllib.request
+
+        q = ("sh" if code.endswith((".SH", ".SS")) else "sz") + code.split(".")[0]
+        with urllib.request.urlopen(f"http://qt.gtimg.cn/q={q}", timeout=4) as r:
+            raw = r.read().decode("gbk", "ignore")
+        f = raw.split("=", 1)[1].split("~") if "=" in raw else []
+        if len(f) > 3:
+            px = float(f[3])
+            if px > 0:
+                return px
+    except Exception:  # noqa: BLE001
+        pass
+    return 0.0
 
 
 def load_orderbook(broker, codes: list) -> dict:

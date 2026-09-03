@@ -55,11 +55,27 @@ def probe_fuyao() -> dict:
 
 
 def probe_aidata() -> dict:
-    try:
-        sys.path.insert(0, str(ROOT / "agent_tools"))
-        from agent_tools.datasources import tdx_aidata
+    # TdxAiData 实际跑在 Windows 侧（.so 无法在 Linux 加载）：
+    # 判据 = 客户端文件在位（共享目录镜像 / 本机默认目录），盘中健康看分钟特征
+    import os as _os
 
-        return {"ok": bool(tdx_aidata.available()), "dir": str(tdx_aidata.AIDATA_DIR)}
+    cands = [Path("/mnt/tdx-shared/TdxAiData"), Path("/opt/tdx-aidata")]
+    files_ok = any((p / "TdxAiData.ini").is_file() and (p / "libTdxAiData.so").is_file()
+                   for p in cands)
+    return {"ok": files_ok, "dirs": [str(p) for p in cands if p.is_dir()]}
+
+
+def probe_tencent() -> dict:
+    """腾讯行情（免 key 公开单只，第三备胎：现价/开高低/量/五档简化）。"""
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(
+                "http://qt.gtimg.cn/q=sh600519", timeout=5) as r:
+            raw = r.read().decode("gbk", "ignore")
+        f = raw.split("=", 1)[1].split("~") if "=" in raw else []
+        price = float(f[3]) if len(f) > 3 else 0
+        return {"ok": price > 0, "now": price}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:120]}
 
@@ -78,7 +94,7 @@ def probe_quantdb() -> dict:
 def main() -> int:
     board = {
         "ts": datetime.now().isoformat(timespec="seconds"),
-        "bridge": probe_bridge(), "fuyao": probe_fuyao(),
+        "bridge": probe_bridge(), "fuyao": probe_fuyao(), "tencent": probe_tencent(),
         "aidata": probe_aidata(), "quantdb": probe_quantdb(),
     }
     OUT.write_text(json.dumps(board, ensure_ascii=False, indent=1), encoding="utf-8")

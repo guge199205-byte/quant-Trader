@@ -27,7 +27,7 @@ import {
 import { usePolling } from '../hooks/usePolling';
 import EquityChart, { toBenchLine, toChartLine } from '../components/EquityChart';
 import RealAccountPanel from '../components/RealAccountPanel';
-import ModelCard, { modelColor } from '../components/ModelCard';
+import ModelCard, { modelColor, shortName } from '../components/ModelCard';
 import ChatStream from '../components/ChatStream';
 import NewsStream from '../components/NewsStream';
 import CompletedFeed from '../components/CompletedFeed';
@@ -155,6 +155,7 @@ interface TradeEvt {
   cash: number;
   price: number | null;
   notional: number | null;
+  agent?: string | null; // 模拟盘成交归属（all 视图多模型聚合时标注）
 }
 
 // ---------- 市场交易时段（北京时间）与交易规则 ----------
@@ -350,8 +351,21 @@ export default function Live() {
     30000,
   );
   const trades = usePolling<TradeRecord[]>(
-    () => (effectiveModel ? fetchTrades(effectiveModel, market) : Promise.resolve([])),
-    [effectiveModel, market],
+    () =>
+      effectiveModel
+        ? selectedModel === 'all'
+          ? Promise.all(
+              rows.map((r) =>
+                fetchTrades(r.name, market).catch(() => [] as TradeRecord[]),
+              ),
+            ).then((lists) =>
+              lists.flatMap((list, i) =>
+                list.map((t) => ({ ...t, agent: rows[i]?.name ?? null })),
+              ),
+            )
+          : fetchTrades(effectiveModel, market)
+        : Promise.resolve([]),
+    [effectiveModel, selectedModel, rows, market],
     30000,
   );
   const logs = usePolling<LogLine[]>(
@@ -426,7 +440,8 @@ export default function Live() {
       volume: t.volume,
       price: t.price ?? null,
       name: (t.name || stockNames.data?.[t.code]) ?? t.code,
-      agent: ledgerHolderOf[t.code] ?? null,
+      // 记录自带的 agent 优先（卖出后该股已不在任何账本，当前账本反查会丢归属）
+      agent: (t as { agent?: string | null }).agent ?? ledgerHolderOf[t.code] ?? null,
     }))
     .sort((a, b) => (a.ts < b.ts ? 1 : -1));
   /** 按选中模型过滤实盘成交（'all' = 全部） */
@@ -500,9 +515,14 @@ export default function Live() {
           cash: r.cash_after ?? 0,
           price: r.price ?? null,
           notional: r.notional ?? null,
+          agent: (r as { agent?: string | null }).agent ?? null,
         }))
         .sort((a, b) => (a.date < b.date ? 1 : -1)),
     [trades.data, stockNames.data],
+  );
+  /** 模拟盘成交按选中模型过滤（'all' = 全部，事件已带 agent 标注） */
+  const tradeEventsFiltered = tradeEvents.filter(
+    (e) => selectedModel === 'all' || e.agent === selectedModel,
   );
 
   // ---------- 顶部价格条（基准 + 最高/最低表演者） ----------
@@ -687,7 +707,7 @@ export default function Live() {
     }
 
     // TRADES —— 原始成交详细卡片（选中模型的全部成交；A股置顶今日实盘成交）
-    if (!tradeEvents.length && liveTradeEvents.length === 0) {
+    if (!tradeEventsFiltered.length && liveTradesFiltered.length === 0) {
       return <div className="empty-state">暂无成交</div>;
     }
     return (
@@ -729,10 +749,15 @@ export default function Live() {
             <div className="pos-section-title" style={{ marginTop: 10 }}>模拟盘成交</div>
           </>
         )}
-        {tradeEvents.map((e, i) => (
+        {tradeEventsFiltered.map((e, i) => (
           <div className="trade-card" key={`${e.date}-${i}`}>
             <div className="trade-card-head">
               <span className={`trade-side ${e.side}`}>{e.side === 'buy' ? '买入' : '卖出'}</span>
+              {e.agent && (
+                <span className="mc-mode-chip" style={{ marginLeft: 0, marginRight: 6 }}>
+                  {shortName(e.agent ?? '')}
+                </span>
+              )}
               <b className="trade-card-symbol">{e.name}</b>
               <span className="trade-card-code">{e.symbol}</span>
               <span className="trade-card-date">{e.date.slice(5)}</span>
@@ -958,7 +983,7 @@ export default function Live() {
               {tab === 'completed'
                 ? completedCount
                 : tab === 'trades'
-                  ? tradeEvents.length
+                  ? tradeEventsFiltered.length
                   : tab === 'chat'
                     ? selectedModel === 'all'
                       ? (chatAll.data ?? []).reduce((n, a) => n + a.lines.length, 0)

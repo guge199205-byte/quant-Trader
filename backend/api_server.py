@@ -1264,6 +1264,24 @@ def live_closed(limit: int = Query(60, ge=1, le=300)):
         else:
             aqty[code] = max(0, q0 - e["vol"])
     closed.sort(key=lambda r: r["ts"], reverse=True)
+    # 合并历史补录（旧日志格式无 fill 回报的全仓清仓，价格按可用证据近似，
+    # 带 approx 标记；与实时重建按 symbol+exit_date 去重，实时优先）
+    backfill = []
+    try:
+        for line in (logs_dir / "live_closed_backfill.jsonl").read_text(
+                encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                backfill.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        pass
+    live_keys = {(r["symbol"], r["exit_date"]) for r in closed}
+    closed.extend(r for r in backfill
+                  if (r.get("symbol"), r.get("exit_date")) not in live_keys)
+    closed.sort(key=lambda r: r["ts"], reverse=True)
     return {"success": True, "data": closed[:limit]}
 
 

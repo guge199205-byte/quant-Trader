@@ -493,6 +493,25 @@ export interface LiveClosedRow extends ClosedTradeDetail {
 export const fetchLiveClosed = (limit = 60) =>
   unwrap<LiveClosedRow[]>(api.get('/live/closed', { params: { limit } }));
 
+// ---------- 手动触发分析（对话 tab「立即分析」按钮） ----------
+
+export interface AnalysisJob {
+  id: string;
+  ts: string;
+  agents: string | string[];
+  status: 'pending' | 'running' | 'done' | 'failed';
+  note?: string;
+}
+
+/** 触发一轮手动盘中分析：'all' = 全部分账 agent，或指定模型名数组。
+ *  交易时段内与整点分析同权（可真下单）；盘外只出决策不交易。 */
+export const triggerLiveAnalysis = (agents: 'all' | string[]) =>
+  unwrap<AnalysisJob>(api.post('/live/analyze', { agents }));
+
+/** 最近手动分析任务状态（按钮回显） */
+export const fetchAnalysisJobs = (limit = 5) =>
+  unwrap<AnalysisJob[]>(api.get('/live/analyze', { params: { limit } }));
+
 // ---------- 持仓明细（数量/成本/市值/盈亏） ----------
 
 export interface HoldingRow {

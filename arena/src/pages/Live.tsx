@@ -17,6 +17,7 @@ import {
   fetchLogs,
   fetchOverview,
   fetchTokenUsage,
+  triggerLiveAnalysis,
   fetchPerformance,
   fetchPositions,
   fetchPrices,
@@ -234,6 +235,24 @@ export default function Live() {
   const [chartRange, setChartRange] = useState<TimeRange>('all');
   const [chartMode, setChartMode] = useState<'pct' | 'dollar'>('pct');
   const [selectedModel, setSelectedModel] = useState<string>('all');
+  // 「立即分析」手动触发状态（对话 tab 筛选栏按钮）
+  const [analyzeState, setAnalyzeState] = useState<'idle' | 'busy' | 'sent' | 'error'>('idle');
+  const [analyzeMsg, setAnalyzeMsg] = useState('');
+  const runManualAnalysis = async () => {
+    setAnalyzeState('busy');
+    setAnalyzeMsg('');
+    try {
+      await triggerLiveAnalysis(selectedModel === 'all' ? 'all' : [selectedModel]);
+      setAnalyzeMsg(
+        `已触发${selectedModel === 'all' ? '全部分账模型' : ` ${selectedModel}`}分析，约 1 分钟内开跑`,
+      );
+      setAnalyzeState('sent');
+      window.setTimeout(() => setAnalyzeState('idle'), 25000);
+    } catch (e) {
+      setAnalyzeMsg(`触发失败：${e instanceof Error ? e.message : String(e)}`);
+      setAnalyzeState('error');
+    }
+  };
   const [completedCount, setCompletedCount] = useState(0);
 
   // 总控聚合（三市场一次拉取）
@@ -958,6 +977,7 @@ export default function Live() {
           <div className="filter-bar">
             <span className="filter-label">{tab === 'news' ? '关注' : '模型'}</span>
             {tab === 'completed' || tab === 'trades' || tab === 'chat' || tab === 'positions' ? (
+              <>
               <select
                 className="filter-select"
                 value={selectedModel}
@@ -968,6 +988,20 @@ export default function Live() {
                   <option key={r.name} value={r.name}>{r.name}</option>
                 ))}
               </select>
+              {tab === 'chat' && (
+                <>
+                  <button
+                    className={`analyze-trigger ${analyzeState === 'busy' ? 'busy' : ''}`}
+                    disabled={analyzeState === 'busy'}
+                    onClick={() => void runManualAnalysis()}
+                    title="立即跑一轮完整分析（交易时段内与整点同权，可真下单；盘外只出决策）"
+                  >
+                    {analyzeState === 'busy' ? '提交中…' : '⚡ 立即分析'}
+                  </button>
+                  {analyzeMsg && <span className="analyze-msg">{analyzeMsg}</span>}
+                </>
+              )}
+              </>
             ) : tab === 'news' ? (
               <span className="filter-static">
                 {market === 'cn'

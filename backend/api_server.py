@@ -13,6 +13,7 @@ import os
 import shutil
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -1001,6 +1002,67 @@ def live_equity():
     for pts in agents.values():
         pts.sort(key=lambda p: str(p.get("ts", "")))
     return {"success": True, "data": {"total": total, "agents": agents}}
+
+
+# ---------- 手动触发分析（对话 tab「立即分析」按钮） ----------
+
+@app.post("/api/live/analyze")
+def live_analyze(payload: dict):
+    """投递一条手动分析任务：宿主机 worker 每分钟消费并执行。
+    body: {"agents": "all" | ["glm-5.3-flash", ...]}。
+    交易时段内与整点分析同权（可真下单）；盘外只出决策不交易。
+    """
+    agents = (payload or {}).get("agents", "all")
+    if agents == "all":
+        names = "all"
+    else:
+        if not isinstance(agents, list) or not agents:
+            return {"success": False, "error": "agents 需为 'all' 或模型名数组"}
+        # 白名单：只允许 astock_config 里 enabled 的分账 agent
+        try:
+            cfg = json.loads(
+                (Path(__file__).resolve().parents[1] / "configs"
+                 / "astock_config.json").read_text(encoding="utf-8"))
+            enabled = {m["name"] for m in cfg.get("models", []) if m.get("enabled")}
+        except (OSError, ValueError):
+            enabled = set()
+        names = [a for a in agents if a in enabled]
+        if not names:
+            return {"success": False,
+                    "error": f"无有效分账 agent（enabled: {sorted(enabled)}）"}
+    path = Path(__file__).resolve().parents[1] / "logs" / "analysis_jobs.jsonl"
+    path.parent.mkdir(exist_ok=True)
+    import time as _time
+
+    job = {"id": f"job-{int(_time.time())}",
+           "ts": datetime.now().isoformat(timespec="seconds"),
+           "agents": names, "status": "pending", "note": ""}
+    import fcntl
+
+    with path.open("a", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(job, ensure_ascii=False) + "\n")
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return {"success": True, "data": job}
+
+
+@app.get("/api/live/analyze")
+def live_analyze_status(limit: int = Query(10, ge=1, le=50)):
+    """最近手动分析任务状态（按钮回显用）。"""
+    path = Path(__file__).resolve().parents[1] / "logs" / "analysis_jobs.jsonl"
+    rows = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        pass
+    rows.sort(key=lambda r: r.get("ts", ""), reverse=True)
+    return {"success": True, "data": rows[:limit]}
 
 
 @app.get("/api/token-usage")

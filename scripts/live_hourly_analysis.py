@@ -1175,7 +1175,8 @@ def compute_forced_trims(holdings: list, virtual_cash: float,
     return out
 
 
-def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
+def run_analysis(broker, reason: str, dry_run: bool = True,
+                 agents: list | None = None) -> int:
     """完整盘中分析（每小时 cron + 9:30 开盘 + 波动触发共用）：
     在途成交 reconcile → 净值记录 → 各分账 agent 名下持仓 LLM 简评落盘
     → 解析决策（sell/buy/watch）→ 闸门校验 → 桥执行（dry_run=False 才真下单）
@@ -1224,7 +1225,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
     last_decisions = load_last_decisions()
     ok = 0
     pool, direction = None, None  # 空仓 agent 建仓用（懒加载候选池）
-    for agent in enabled_agents():
+    for agent in (agents if agents is not None else enabled_agents()):
         rec = (ledger.get("agents") or {}).get(agent) or {}
         mine_codes = set((rec.get("positions") or {}).keys())
         my_rows = [r for r in rows if r["code"] in mine_codes]
@@ -1369,7 +1370,11 @@ def main() -> int:
                         help="强制只打印不下单（覆盖配置开关；验证测试用）")
     parser.add_argument("--record-only", action="store_true",
                         help="只采样净值（cron 每 5 分钟跑），不做 LLM 分析")
+    parser.add_argument("--agents", default="",
+                        help="只分析指定分账 agent（逗号分隔；默认全部 enabled；"
+                             "手动触发用，如 --agents glm-5.3-flash）")
     args = parser.parse_args()
+    agents_filter = [a.strip() for a in args.agents.split(",") if a.strip()] or None
 
     now = now_cn()
     from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
@@ -1416,7 +1421,9 @@ def main() -> int:
         print(f"[{now:%F %T}] ⏭️ 已有分析实例在跑，跳过（防并发叠跑）")
         return 0
     broker = TdxBridgeBroker()
-    return run_analysis(broker, "每小时定时", dry_run=not do_execute)
+    label = "手动触发" if agents_filter else "每小时定时"
+    return run_analysis(broker, label, dry_run=not do_execute,
+                        agents=agents_filter)
 
 
 if __name__ == "__main__":

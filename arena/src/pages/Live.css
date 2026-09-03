@@ -1054,3 +1054,26 @@
 .real-l2-table td { padding: 3px 2px; border-bottom: 1px dotted #ddd; }
 .real-l2-name { font-weight: 700; white-space: nowrap; }
 .real-l2-code { font-weight: 400; color: #888; font-size: 10px; white-space: nowrap; }
+
+/* 「立即分析」手动触发按钮（对话 tab 筛选栏） */
+.analyze-trigger {
+  margin-left: 8px;
+  padding: 3px 10px;
+  border: 1px solid #10a37f;
+  border-radius: 12px;
+  background: #fff;
+  color: #10a37f;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.analyze-trigger:hover { background: #10a37f; color: #fff; }
+.analyze-trigger.busy { opacity: 0.55; cursor: wait; }
+.analyze-msg {
+  margin-left: 8px;
+  font-size: 10px;
+  color: #666;
+  white-space: nowrap;
+}

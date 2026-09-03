@@ -111,8 +111,15 @@ export default function EquityChart({
 
   // 时间窗裁剪 + 归一化（pct）/ 绝对（dollar）
   const display = useMemo(() => {
-    const windowed = (pts: { t: number; v: number }[]) =>
-      timeRange === '5d' && pts.length > 5 ? pts.slice(-5) : pts;
+    // 「近5日」按时间跨度截取（近 5 个自然日），不是 slice(-5)——
+    // 实盘净值是分钟级采样，按点数切会只剩 5 分钟（2026-09-03 修复）
+    const windowed = (pts: { t: number; v: number }[]) => {
+      if (timeRange !== '5d' || pts.length <= 1) return pts;
+      const last = pts[pts.length - 1].t;
+      const cutoff = last - 4 * 86400000; // 含当天共 5 个自然日
+      const w = pts.filter((p) => p.t >= cutoff);
+      return w.length >= 2 ? w : pts.slice(-5);
+    };
     const toDisplay = (pts: { t: number; v: number }[]) => {
       const w = windowed(pts);
       if (mode === 'dollar') return w;

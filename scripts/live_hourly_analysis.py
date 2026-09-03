@@ -219,9 +219,30 @@ def self_minute_feats(code: str) -> dict:
             out["mom30m"] = round((pxs[-1] / base - 1) * 100, 2)
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+
+        t0 = _dt.fromisoformat(rows[-1]["ts"])
+        b5 = float(rows[-1].get("b5") or 0)
+        if b5 <= 0:
+            for r in rows:
+                if t0 - _dt.fromisoformat(r["ts"]) >= _td(minutes=4):
+                    b5 = float(r["px"])
+                    break
+        if b5 > 0:
+            out["mom5m"] = round((pxs[-1] / b5 - 1) * 100, 2)
+    except Exception:  # noqa: BLE001
+        pass
     if len(pxs) >= 6:
         chgs = [pxs[i] / pxs[i - 1] - 1 for i in range(-5, 0)]
         out["vol5m"] = round((max(chgs) - min(chgs)) * 100, 2)
+    try:
+        last = rows[-1]
+        ins, outs = float(last.get("inside") or 0), float(last.get("outside") or 0)
+        if ins + outs > 0:
+            out["inout"] = round((ins - outs) / (ins + outs), 3)
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 
@@ -581,6 +602,10 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
                 parts.append(f"30min动量 {mf['mom30m']:+.2f}%")
             if mf.get("vol5m") is not None:
                 parts.append(f"5min波动 {mf['vol5m']:.2f}%")
+            if mf.get("mom5m") is not None:
+                parts.append(f"5min动量 {mf['mom5m']:+.2f}%")
+            if mf.get("inout") is not None:
+                parts.append(f"内外盘失衡 {mf['inout']:+.2f}")
             if mf.get("vol_ratio") is not None:
                 parts.append(f"量比 {mf['vol_ratio']}")
             if tk:
@@ -1502,28 +1527,6 @@ def main() -> int:
         cash = float((acct.get("asset") or {}).get("cash") or 0)
         record_equity(broker, asset, cash)
         print(f"[{now:%F %T}] 净值采样完成 资产 ¥{asset:,.2f}")
-        # 自建分钟序列（TdxAiData 备胎）：盘中每分钟把持仓现价/量落盘
-        try:
-            pos_codes = [p.get("stock_code") for p in (acct.get("positions") or [])
-                         if p.get("stock_code")]
-            if pos_codes:
-                mdir = ROOT / "logs" / "min_snapshots"
-                mdir.mkdir(parents=True, exist_ok=True)
-                mf = mdir / f"{now:%Y-%m-%d}.jsonl"
-                for _code in pos_codes:
-                    try:
-                        _r = broker.tdx_call("get_market_snapshot", {"stock_code": _code}) or {}
-                        _px = float(_r.get("Now") or 0)
-                        if _px > 0:
-                            with mf.open("a", encoding="utf-8") as fh:
-                                fh.write(json.dumps(
-                                    {"ts": now.isoformat(), "code": _code,
-                                     "px": _px, "vol": _r.get("Volume")},
-                                    ensure_ascii=False) + "\n")
-                    except Exception:  # noqa: BLE001
-                        continue
-        except Exception:  # noqa: BLE001
-            pass
         # 方案 C: 波动触发 — 交易时段内持仓盈亏 ±3pp 或个股涨跌 ±5% → 立即加跑完整分析
         if args.force or in_trading_window(now):
             positions = [p for p in (acct.get("positions") or [])

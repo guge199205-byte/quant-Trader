@@ -76,21 +76,32 @@ export default function ChatStream({
     });
   }, [agents]);
 
-  const toggle = (idx: number) =>
+  const scrollTo = (sel: string) =>
+    requestAnimationFrame(() => {
+      document.querySelector(sel)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+
+  const toggle = (idx: number) => {
+    const willOpen = !open.has(idx);
     setOpen((prev) => {
       const next = new Set(prev);
       if (next.has(idx)) next.delete(idx);
       else next.add(idx);
       return next;
     });
+    if (willOpen) scrollTo('[data-card="' + idx + '"] .mc-summary');
+  };
 
-  const toggleSection = (idx: number, key: string) =>
+  const toggleSection = (idx: number, key: string) => {
+    const willOpen = !(sections[idx] ?? new Set<string>()).has(key);
     setSections((prev) => {
       const cur = new Set(prev[idx] ?? []);
       if (cur.has(key)) cur.delete(key);
       else cur.add(key);
       return { ...prev, [idx]: cur };
     });
+    if (willOpen) scrollTo('[data-card="' + idx + '"] [data-sec="' + key + '"]');
+  };
 
   /** 四段式解析（总结/链路/决策/推理），与 rounds 对齐 */
   const parsed = useMemo(() => rounds.map((r) => parseAnalysis(r.thought)), [rounds]);
@@ -106,7 +117,7 @@ export default function ChatStream({
         const summary = pa.summary || (r.thought || r.user).replace(/\s+/g, ' ').trim();
         return (
           <div
-            className={`mc-card ${isOpen ? 'open' : ''}`}
+            className={`mc-card ${isOpen ? 'open' : ''}`} data-card={i}
             key={`${r.model}-${r.ts ?? i}`}
             style={{ borderColor: modelColor(r.model) }}
           >
@@ -141,7 +152,7 @@ export default function ChatStream({
             {isOpen && (
               <div className="mc-body">
                 {r.user && (
-                  <div className={`mc-section ${sec.has('prompt') ? 'folded' : ''}`}>
+                  <div className={`mc-section ${sec.has('prompt') ? 'folded' : ''}`} data-sec="prompt">
                     <div className="mc-section-head" onClick={() => toggleSection(i, 'prompt')}>
                       <span className="mc-caret">{sec.has('prompt') ? '▶' : '▼'}</span>
                       用户提示词
@@ -150,7 +161,7 @@ export default function ChatStream({
                   </div>
                 )}
                 {pa.chain && (
-                  <div className={`mc-section ${sec.has('chain') ? 'folded' : ''}`}>
+                  <div className={`mc-section ${sec.has('chain') ? 'folded' : ''}`} data-sec="chain">
                     <div className="mc-section-head" onClick={() => toggleSection(i, 'chain')}>
                       <span className="mc-caret">{sec.has('chain') ? '▶' : '▼'}</span>
                       分析链路（工具调用）
@@ -159,7 +170,7 @@ export default function ChatStream({
                   </div>
                 )}
                 {pa.decisions.length > 0 && (
-                  <div className={`mc-section ${sec.has('decisions') ? 'folded' : ''}`}>
+                  <div className={`mc-section ${sec.has('decisions') ? 'folded' : ''}`} data-sec="decisions">
                     <div className="mc-section-head" onClick={() => toggleSection(i, 'decisions')}>
                       <span className="mc-caret">{sec.has('decisions') ? '▶' : '▼'}</span>
                       交易决策{pa.decisions.length ? ` (${pa.decisions.length})` : ''}
@@ -202,7 +213,7 @@ export default function ChatStream({
                   </div>
                 )}
                 {pa.reasoning && (
-                  <div className={`mc-section ${sec.has('reason') ? 'folded' : ''}`}>
+                  <div className={`mc-section ${sec.has('reason') ? 'folded' : ''}`} data-sec="reason">
                     <div className="mc-section-head" onClick={() => toggleSection(i, 'reason')}>
                       <span className="mc-caret">{sec.has('reason') ? '▶' : '▼'}</span>
                       推理论证

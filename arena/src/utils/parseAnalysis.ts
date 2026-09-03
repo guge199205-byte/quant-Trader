@@ -127,8 +127,10 @@ export function parseAnalysis(thought?: string | null): ParsedAnalysis {
     reasoning = lines.join('\n').trim();
   }
   if (!mHead) {
-    const first = (t.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '').replace(/^#{1,6}\s*/, '').replace(/\*\*/g, '');
-    summary = first.length > 90 ? first.slice(0, 90) + '…' : first;
+    // 默认摘要：前两行完整段落（140 字内不截断，超出截断让位滚动）
+    const head = t.split('\n').map((l) => l.trim()).filter((l) => l.length > 0).slice(0, 2).join('　');
+    const clean = head.replace(/^#{1,6}\s*/, '').replace(/\*\*/g, '');
+    summary = clean.length > 140 ? clean.slice(0, 140) + '…' : clean;
   }
   return { summary, chain, reasoning, decisions };
 }

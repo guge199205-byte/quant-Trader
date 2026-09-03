@@ -479,6 +479,10 @@
   flex-direction: column;
   background: #fff;
   min-height: 600px;
+  /* 长内容（对话/决策）由右侧面板承接滚动，页面联动跟随 */
+  max-height: calc(100vh - 190px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .trade-tabs {

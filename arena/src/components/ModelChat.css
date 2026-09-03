@@ -379,3 +379,14 @@
 .mc-decision-mini-exit::-webkit-scrollbar-track {
   background: #f2f2f2;
 }
+
+/* 2026-09-03 排版自适应：摘要完整展示、滚动区加大、卡片撑满 */
+.mc-card { width: 100%; box-sizing: border-box; }
+.mc-summary {
+  max-height: 10em;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.mc-summary::-webkit-scrollbar { width: 8px; }
+.mc-summary::-webkit-scrollbar-thumb { background: #bbb; border-radius: 4px; }
+.mc-code { max-height: 60vh; }

@@ -584,6 +584,8 @@
 
 .trade-side.buy { color: var(--up-color); }
 .trade-side.sell { color: var(--down-color); }
+/* 减仓（部分卖出，桥仍持有）：橙色与清仓（红）区分 */
+.trade-side.sell.partial { color: #e65100; background: #fff3e0; }
 .trade-side.info { color: #666; }
 
 .trade-details {

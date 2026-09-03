@@ -181,6 +181,8 @@ export default function Live() {
   const liveEquity = usePolling(() => fetchLiveEquity(), [], 20000);
   // 实盘 LLM 分析 token 累计（30s 刷新，模型卡显示）
   const tokenUsage = usePolling(() => fetchTokenUsage(), [], 30000);
+  // 实盘分账账本（每 agent ¥10 万虚拟子账户；空仓判定 → 净值曲线虚线）
+  const liveLedger = usePolling(() => fetchLiveLedger(), [], 30000);
 
   const lines = useMemo(() => {
     const eq = liveEquity.data;
@@ -189,6 +191,12 @@ export default function Live() {
     // A股实盘优先：每 agent 分账虚拟净值线（¥10 万起，通达信桥实时价）
     // + 总账户线（桥实时总资产）。序列 ≥2 点才画。
     if (market === 'cn' && eq) {
+      // 空仓 agent（账本无持仓）→ 虚线；有持仓但数值平（静态分析期）同样虚线
+      const emptyLedger = new Set(
+        Object.entries(liveLedger.data?.agents ?? {})
+          .filter(([, rec]) => !(rec?.positions ?? []).length)
+          .map(([a]) => a),
+      );
       // 分账线：现金恒定/空仓 agent 用虚线保留（平线也有信息量），有变动才实线
       const agentLines = Object.entries(eq.agents ?? {})
         .filter(([, pts]) => pts.length >= 2)
@@ -203,7 +211,7 @@ export default function Live() {
               pts.map((e) => toEq(e.value, e.ts)),
             ),
             notional: 100000, // 分账名义基准: hover 换算金额盈亏
-            dash: flat,       // 空仓/无变动 → 虚线
+            dash: flat || emptyLedger.has(name), // 空仓/无变动 → 虚线
           };
         });
       // 总账户线（¥92.5 万量级）只兜底：没有任何分账线可画时才显示。
@@ -224,7 +232,7 @@ export default function Live() {
     return (perfs.data ?? []).map((p) =>
       toChartLine(p.agent, p.agent, modelColor(p.agent), p.points),
     );
-  }, [perfs.data, liveEquity.data, market]);
+  }, [perfs.data, liveEquity.data, liveLedger.data, market]);
 
   // 实盘 5 分钟净值模式（CN 有实盘点）：不画基准线——SSE50 日线会把时间轴拉到 8 月初
   const hasLiveLine = useMemo(() => {
@@ -288,7 +296,7 @@ export default function Live() {
     [livePositions],
   );
   // 实盘分账账本（每 agent ¥10 万虚拟子账户，按模型显示各自持仓）
-  const liveLedger = usePolling(() => fetchLiveLedger(), [], 30000);
+  // （hook 上移：空仓虚线判定在 lines memo 里要用）
 
   // ---------- 滚动价格条（当前市场全部 agent 持仓股票最新价） ----------
   const prices = usePolling(() => fetchPrices(market), [market], 30000);
@@ -608,11 +616,16 @@ export default function Live() {
             </div>
             {liveTradesFiltered.map((e, i) => {
               const isSell = String(e.side ?? '').toUpperCase() === 'SELL';
+              // 卖出口径区分：卖后桥仍持有该股 → 减仓；已不持有 → 清仓
+              const heldNow = livePositions.some(
+                (p) => (p.stock_code ?? p.code) === e.code,
+              );
+              const sideLabel = !isSell ? '买入' : heldNow ? '减仓' : '清仓';
               return (
                 <div className="trade-card" key={`live-${e.ts}-${i}`}>
                   <div className="trade-card-head">
-                    <span className={`trade-side ${isSell ? 'sell' : 'buy'}`}>
-                      {isSell ? '卖出' : '买入'}
+                    <span className={`trade-side ${isSell ? (heldNow ? 'sell partial' : 'sell') : 'buy'}`}>
+                      {sideLabel}
                     </span>
                     <b className="trade-card-symbol">{e.name}</b>
                     <span className="trade-card-code">{e.code}</span>

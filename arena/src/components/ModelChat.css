@@ -70,13 +70,29 @@
 
 .mc-summary {
   font-family: 'Courier New', monospace;
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 12.5px;
+  line-height: 1.6;
   color: #333;
-  padding: 8px 10px;
-  /* 完整摘要可滚动查看，不再截断 */
-  max-height: 60px;
+  padding: 10px 12px;
+  /* 折叠态摘要加高：两行以上可见，减少折叠卡片挤成一排的压迫感 */
+  min-height: 3em;
+  max-height: 110px;
   overflow-y: auto;
+}
+
+/* 分析模式徽标（情境感知等）：模型名右侧，折叠态也可见 */
+.mc-mode-chip {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #eef4ff;
+  color: #0b57d0;
+  border: 1px solid #c6dafc;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  flex: none;
 }
 
 .mc-body {

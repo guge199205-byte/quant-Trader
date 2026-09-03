@@ -121,7 +121,7 @@ export default function ModelChat({
             .map((l) => l.trim())
             .find((l) => l.length > 0) ?? '';
         const cleanFirst = firstLine.replace(/^#{1,6}\s*/, '').replace(/\*\*/g, '');
-        const summary = cleanFirst.length > 60 ? cleanFirst.slice(0, 60) + '…' : cleanFirst;
+        const summary = cleanFirst.length > 90 ? cleanFirst.slice(0, 90) + '…' : cleanFirst;
         return (
           <div className={`mc-card ${isOpen ? 'open' : ''}`} key={i}
             style={{ borderColor: modelColor(model) }}>
@@ -131,6 +131,9 @@ export default function ModelChat({
               <span className="mc-model" style={{ color: modelColor(model) }}>
                 {model.replace('deepseek-v4-', '').toUpperCase()}
               </span>
+              {r.user.includes('情境感知') && (
+                <span className="mc-mode-chip">🧠 情境感知</span>
+              )}
               <span className="mc-status">{status}</span>
               <span className="mc-date">{dateLabel}</span>
               <span className={`mc-expand ${isOpen ? 'open' : ''}`}>{isOpen ? '▼' : '▶'}</span>

@@ -68,7 +68,6 @@ export default function EquityChart({
   holdings,
   names,
   priceMap,
-  endIcons,
 }: {
   lines: ChartLine[];
   benchmark?: BenchLine | null;
@@ -85,8 +84,6 @@ export default function EquityChart({
   names?: Record<string, string>;
   /** 股票代码 → 当前价（持仓金额按现价估算并标注） */
   priceMap?: Record<string, number>;
-  /** 末端标签图标：line id → 图标字符（如模型 logo），替换圆点 */
-  endIcons?: Record<string, string>;
 }) {
   const [hover, setHover] = useState<{ x: number; y: number; label: string; id: string; v: number; t: number } | null>(null);
 
@@ -413,20 +410,8 @@ export default function EquityChart({
                   const focusActive = !focus || l.id === focus;
                   return (
                     <Group key={`end-${l.id}`} opacity={hover ? (hover.id === l.id ? 1 : 0.3) : focusActive ? 1 : 0.45}>
-                      {(() => {
-                        const icon = endIcons?.[l.id];
-                        if (icon) {
-                          return (
-                            <g>
-                              <circle cx={x} cy={y} r={9} fill="#fff" stroke={l.color} strokeWidth={1.5} />
-                              <text x={x} y={y} fontSize={11} textAnchor="middle" dominantBaseline="central">
-                                {icon}
-                              </text>
-                            </g>
-                          );
-                        }
-                        return <circle cx={x} cy={y} r={5.5} fill={l.color} stroke="#fff" strokeWidth={2} />;
-                      })()}
+                      {/* 末端标签：实心圆点，颜色=模型线色（用户口径） */}
+                      <circle cx={x} cy={y} r={5.5} fill={l.color} stroke="#fff" strokeWidth={2} />
                       <text x={lx} y={y - 8} fill={l.color} fontSize={10} fontWeight={700} textAnchor={anchor}
                         fontFamily="'Courier New', monospace">
                         {l.label}

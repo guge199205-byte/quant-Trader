@@ -398,6 +398,18 @@ export default function Live() {
         : [],
     [market, liveTrades.data, liveLedger.data],
   );
+  // 当前单价（持仓金额估算用）：账本 position_value/volume（桥实时价口径）
+  const holderPriceMap = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const rec of Object.values(liveLedger.data?.agents ?? {})) {
+      for (const p of (rec as { positions?: { code: string; volume: number; position_value?: number }[] }).positions ?? []) {
+        if (p.position_value != null && p.volume > 0) {
+          m[p.code] = Number(p.position_value) / p.volume;
+        }
+      }
+    }
+    return m;
+  }, [liveLedger.data]);
 
   // 实盘 5 分钟净值模式（CN 有实盘点）：不画基准线——SSE50 日线会把时间轴拉到 8 月初
   const hasLiveLine = useMemo(() => {
@@ -1019,6 +1031,8 @@ export default function Live() {
                 // 悬停时序补充：当时持仓（账本反推时间线）+ 附近 ±3 分钟成交（cn 实盘）
                 events={market === 'cn' ? (liveTradesFiltered as unknown as import('../components/EquityChart').HoverEvent[]) : undefined}
                 holdings={market === 'cn' && heldSpans.length ? heldSpans : undefined}
+                names={stockNames.data ?? undefined}
+                priceMap={market === 'cn' && holderPriceMap ? holderPriceMap : undefined}
                 mode={chartMode}
                 timeRange={chartRange}
                 height="clamp(360px, 44vw, 560px)"

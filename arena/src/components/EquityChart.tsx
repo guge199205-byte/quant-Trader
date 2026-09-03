@@ -66,6 +66,8 @@ export default function EquityChart({
   height = 380,
   events,
   holdings,
+  names,
+  priceMap,
 }: {
   lines: ChartLine[];
   benchmark?: BenchLine | null;
@@ -78,6 +80,10 @@ export default function EquityChart({
   events?: HoverEvent[];
   /** 悬停补充：持仓时间线（该时刻各 agent 持有代码/数量） */
   holdings?: HoldingSpan[];
+  /** 股票代码 → 中文名（tooltip 不显示代码只显示名称） */
+  names?: Record<string, string>;
+  /** 股票代码 → 当前价（持仓金额按现价估算并标注） */
+  priceMap?: Record<string, number>;
 }) {
   const [hover, setHover] = useState<{ x: number; y: number; label: string; id: string; v: number; t: number } | null>(null);
 
@@ -429,10 +435,48 @@ export default function EquityChart({
                     const tx = Math.min(hover.x + 6, iw - 212);
                     const ty = Math.max(hover.y - 58, 2);
                     const isBench = display.bench?.id === hover.id;
+                    const agentName =
+                      isBench || hover.label === '总账户' || hover.label === '分账合计'
+                        ? null
+                        : hover.id.replace(/^live-/, '');
+                    // 单框时序信息：跟随悬停模型，只列该 agent 的持仓（名称×数量×金额）与附近成交
+                    const t = hover.t;
+                    const W = 3 * 60000;
+                    const heldRows = agentName
+                      ? (holdings ?? [])
+                          .filter((h) => h.agent === agentName && t >= h.from && t <= h.to)
+                          .slice(0, 6)
+                          .map((h) => {
+                            const px = priceMap?.[h.code];
+                            return {
+                              key: `h-${h.code}`,
+                              text: `${names?.[h.code] ?? '（无名称）'} ×${h.vol}股  ${px != null ? fmtMoney(px * h.vol, currency, 0) : '金额—'}`,
+                            };
+                          })
+                      : [];
+                    const evtRows = (events ?? [])
+                      .filter((e) => {
+                        if (agentName && e.agent !== agentName) return false;
+                        const ms = new Date(e.ts).getTime();
+                        return Number.isFinite(ms) && Math.abs(ms - t) <= W;
+                      })
+                      .slice(0, 4)
+                      .map((e) => {
+                        const isBuy = String(e.side).toUpperCase() === 'BUY';
+                        return {
+                          key: `e-${e.ts}-${e.code}`,
+                          text: `${e.ts.slice(5, 16)} ${isBuy ? '买入' : '卖出'} ${names?.[e.code ?? ''] ?? ''}${e.volume ?? ''}${e.price != null ? `@${e.price}` : ''}`,
+                          color: isBuy ? '#e0483e' : '#12b886',
+                        };
+                      });
+                    const extraRows = [...heldRows, ...evtRows].filter(
+                      (r, i, arr) => arr.findIndex((x) => x.key === r.key) === i,
+                    );
+                    const extraH = extraRows.length ? 28 + extraRows.length * 13 : 0;
                     return (
                       <Group>
                         <line x1={hover.x} x2={hover.x} y1={0} y2={ih} stroke="rgba(0,0,0,0.25)" strokeDasharray="2 3" />
-                        <rect x={tx} y={ty} width={206} height={58} fill="#fff" stroke="#000" strokeWidth={1} rx={4} />
+                        <rect x={tx} y={ty} width={236} height={58 + extraH} fill="#fff" stroke="#000" strokeWidth={1} rx={4} />
                         <text x={tx + 6} y={ty + 13} fill="#000" fontSize={10} fontWeight={700}
                           fontFamily="'Courier New', monospace">
                           {hover.label} · {fmtTs(hover.t)}
@@ -458,51 +502,21 @@ export default function EquityChart({
                           fontFamily="'Courier New', monospace">
                           {isBench ? '基准指数' : hover.label === '总账户' ? '通达信桥实时总资产' : hover.label === '分账合计' ? '分账合计净值（3 agent）' : '虚拟净值（¥10万起步）'}
                         </text>
-                        {(() => {
-                          // 时序补充：当时持仓 + 附近 ±3 分钟成交（鼠标滑动即查）
-                          const t = hover.t;
-                          const W = 3 * 60000;
-                          const heldRows = (holdings ?? [])
-                            .filter((h) => t >= h.from && t <= h.to)
-                            .slice(0, 6)
-                            .map((h) => ({ key: `h-${h.agent}-${h.code}`, text: `${h.agent.replace('deepseek-v4-', '')}: ${h.code}×${h.vol}` }));
-                          const evtRows = (events ?? [])
-                            .filter((e) => {
-                              const ms = new Date(e.ts).getTime();
-                              return Number.isFinite(ms) && Math.abs(ms - t) <= W;
-                            })
-                            .slice(0, 4)
-                            .map((e) => {
-                              const isBuy = String(e.side).toUpperCase() === 'BUY';
-                              return {
-                                key: `e-${e.ts}-${e.code}`,
-                                text: `${e.ts.slice(5, 16)} ${(e.agent ?? '总账户').replace('deepseek-v4-', '')} ${isBuy ? '买入' : '卖出'} ${e.code} ${e.volume ?? ''}${e.price != null ? `@${e.price}` : ''}`,
-                                color: isBuy ? '#e0483e' : '#12b886',
-                              };
-                            });
-                          const rows = [...heldRows, ...evtRows].filter(
-                            (r, i, arr) => arr.findIndex((x) => x.key === r.key) === i,
-                          );
-                          if (!rows.length) return null;
-                          const bh = 26 + rows.length * 12;
-                          return (
-                            <g>
-                              <rect x={tx} y={ty + 60} width={236} height={bh} fill="#fff"
-                                stroke="#000" strokeWidth={1} rx={4} />
-                              <text x={tx + 6} y={ty + 73} fill="#333" fontSize={9} fontWeight={700}
-                                fontFamily="'Courier New', monospace">
-                                当时持仓/附近成交
+                        {extraH > 0 && (
+                          <g>
+                            <text x={tx + 6} y={ty + 67} fill="#333" fontSize={9} fontWeight={700}
+                              fontFamily="'Courier New', monospace">
+                              {agentName ? `${agentName.replace('deepseek-v4-', '')} 当时持仓 / 成交` : '附近成交'}
+                            </text>
+                            {extraRows.map((r, i) => (
+                              <text key={r.key} x={tx + 6} y={ty + 67 + 13 * (i + 1)}
+                                fontSize={9} fontFamily="'Courier New', monospace"
+                                fill={(r as { color?: string }).color ?? '#555'}>
+                                {r.text}
                               </text>
-                              {rows.map((r, i) => (
-                                <text key={r.key} x={tx + 6} y={ty + 73 + 12 * (i + 1)}
-                                  fontSize={9} fontFamily="'Courier New', monospace"
-                                  fill={(r as { color?: string }).color ?? '#555'}>
-                                  {r.text}
-                                </text>
-                              ))}
-                            </g>
-                          );
-                        })()}
+                            ))}
+                          </g>
+                        )}
                       </Group>
                     );
                   })()}

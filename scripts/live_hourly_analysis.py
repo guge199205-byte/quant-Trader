@@ -43,6 +43,24 @@ SELL_LIMIT_DOWN = -9.9   # 跌停不接
 LEVERAGE_MAX = 1.5       # 杠杆硬约束：持仓市值 ≤ 权益(现金+市值)×1.5，超限强制减仓
 LEVERAGE_TRIM_TO = 1.3   # 强制减仓目标：降到 1.3×
 MAX_NEW_BUYS = 3         # 空仓 agent 单轮建仓上限（每只 ≤ 20% 剩余额度）
+
+
+def _apply_risk_budget() -> None:
+    """启动时读取 configs/risk_budget.json 覆盖风控常量（阶段4 meta-agent 输出）。
+    文件缺失/损坏 → 保持模块默认。cron 每次调用都是新进程 → 每轮即最新预算。"""
+    global LEVERAGE_MAX, PER_STOCK_PCT, MAX_NEW_BUYS, LEVERAGE_TRIM_TO
+    try:
+        b = json.loads((ROOT / "configs" / "risk_budget.json").read_text(encoding="utf-8"))
+        lv = b.get("budget") or {}
+        LEVERAGE_MAX = float(lv.get("leverage_max", LEVERAGE_MAX))
+        PER_STOCK_PCT = float(lv.get("per_stock_pct", PER_STOCK_PCT))
+        MAX_NEW_BUYS = int(lv.get("max_new_buys", MAX_NEW_BUYS))
+        LEVERAGE_TRIM_TO = float(lv.get("leverage_trim_to", LEVERAGE_TRIM_TO))
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+_apply_risk_budget()
 FILL_POLL_TIMEOUT_S = 30 # 下单后等成交回报的轮询超时（限价单通常秒成）
 
 # ---- 实时盘口（桥五档，弱 L2 信号）----
@@ -269,8 +287,11 @@ def load_orderbook(broker, codes: list) -> dict:
 
 
 def _cross_agent_refs(last_decisions: dict, agent: str) -> str | None:
-    """其他 agent 上轮决策摘要（共识参考注入提示词）。"""
+    """其他 agent 上轮决策摘要（共识参考注入提示词）+ 分歧检测（阶段3 v1）。"""
     lines = []
+    mine = {}
+    for d in ((last_decisions or {}).get(agent) or {}).get("decisions") or []:
+        mine[str(d.get("code") or "")] = str(d.get("action") or "hold").lower()
     for other, rec in (last_decisions or {}).items():
         if other == agent or not (rec or {}).get("decisions"):
             continue
@@ -281,6 +302,12 @@ def _cross_agent_refs(last_decisions: dict, agent: str) -> str | None:
             pct = d.get("pct")
             extra = f"（{float(pct):.0%}）" if pct and act in ("SELL", "BUY", "WATCH") else ""
             acts.append(f"{act} {code}{extra}")
+            # 分歧检测：同代码 sell vs buy/watch（与我相反）
+            m = mine.get(code)
+            if m and ((m == "sell" and act in ("BUY", "WATCH"))
+                      or (m in ("buy", "watch") and act == "SELL")):
+                lines.append(f"- ⚠️【分歧】{other} 对 {code} 方向与你相反（{m} vs {act.lower()}）："
+                             "请在结论里明确回应其理由，证据覆盖则坚持，否则说明改变")
         lines.append(f"- {other}: {'、'.join(acts)}")
     return "\n".join(lines) if lines else None
 

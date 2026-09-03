@@ -177,9 +177,14 @@ def sync_plan_to_watch(agent: str, payload: dict) -> int:
         if sl is None and tp is None:
             sl = _extract_price(str(it.get("trigger") or ""))
         txt = str(it.get("reason") or "") + str(it.get("trigger") or "")
-        m_pct = _re.search(r"(\d{1,3})\s*%", txt)
-        pct = min(max(int(m_pct.group(1)) / 100, 0.0), 1.0) if m_pct \
-            else (0.5 if "半" in txt else 1.0)
+        m_cut = _re.search(r"减\s*(\d{1,3})\s*%", txt)
+        if m_cut:
+            pct = min(max(int(m_cut.group(1)) / 100, 0.0), 1.0)
+        elif "半" in txt:
+            pct = 0.5
+        else:
+            m_bare = _re.search(r"(?<![+\-])(\d{1,3})\s*%", txt)
+            pct = min(max(int(m_bare.group(1)) / 100, 0.0), 1.0) if m_bare else 1.0
         if act == "buy":
             rules.append({"code": code, "take_profit": tp or sl, "pct": pct,
                           "reason": str(it.get("reason") or "")[:80]})
@@ -194,9 +199,14 @@ def sync_plan_to_watch(agent: str, payload: dict) -> int:
         if not price:
             continue
         txt = str(it.get("reason") or "") + str(it.get("trigger") or "")
-        m_pct = _re.search(r"(\d{1,3})\s*%", txt)
-        pct = min(max(int(m_pct.group(1)) / 100, 0.0), 1.0) if m_pct \
-            else (0.5 if "半" in txt else 1.0)
+        m_cut = _re.search(r"减\s*(\d{1,3})\s*%", txt)
+        if m_cut:
+            pct = min(max(int(m_cut.group(1)) / 100, 0.0), 1.0)
+        elif "半" in txt:
+            pct = 0.5
+        else:
+            m_bare = _re.search(r"(?<![+\-])(\d{1,3})\s*%", txt)
+            pct = min(max(int(m_bare.group(1)) / 100, 0.0), 1.0) if m_bare else 1.0
         if act == "buy":
             rules.append({"code": str(it["code"]), "take_profit": price, "pct": pct,
                           "reason": str(it.get("reason") or "")[:80]})

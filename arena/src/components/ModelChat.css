@@ -316,3 +316,22 @@
 /* 止盈止损（黄）/ 调仓（橙） */
 .mc-mode-chip.action.tp { background: #fff8e1; color: #b26a00; border-color: #f2d98c; }
 .mc-mode-chip.action.tune { background: #fff3e0; color: #e65100; border-color: #f4c89b; }
+
+/* 交易决策迷你卡（四段式对话：决策区） */
+.mc-decision-mini {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px dashed #eee;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+}
+.mc-decision-mini:last-child { border-bottom: none; }
+.mc-decision-mini-side { font-weight: 700; padding: 0 6px; border-radius: 3px; }
+.mc-decision-mini-side.buy { color: #e0483e; background: #fdecea; }
+.mc-decision-mini-side.sell { color: #12b886; background: #e6f7f0; }
+.mc-decision-mini-side.hold { color: #555; background: #f0f0f0; }
+.mc-decision-mini-code { font-weight: 700; flex: none; }
+.mc-decision-mini-pct { color: #666; flex: none; }
+.mc-decision-mini-reason { color: #444; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

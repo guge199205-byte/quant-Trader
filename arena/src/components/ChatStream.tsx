@@ -5,6 +5,7 @@ import { renderInline } from '../utils/markdown';
 import './ModelChat.css';
 import { modeOf } from '../utils/modeTag';
 import { FillLike, renderActionTags } from '../utils/actionTags';
+import { parseAnalysis } from '../utils/parseAnalysis';
 
 /** 一个分析回合：单条日志（一次 LLM 分析 = user prompt + assistant 总结） */
 interface MixedRound {
@@ -91,6 +92,9 @@ export default function ChatStream({
       return { ...prev, [idx]: cur };
     });
 
+  /** 四段式解析（总结/链路/决策/推理），与 rounds 对齐 */
+  const parsed = useMemo(() => rounds.map((r) => parseAnalysis(r.thought)), [rounds]);
+
   if (!rounds.length) return <div className="empty-state">暂无分析记录</div>;
 
   return (
@@ -98,7 +102,8 @@ export default function ChatStream({
       {rounds.map((r, i) => {
         const isOpen = open.has(i);
         const sec = sections[i] ?? new Set<string>();
-        const summary = (r.thought || r.user).replace(/\s+/g, ' ').trim();
+        const pa = parsed[i];
+        const summary = pa.summary || (r.thought || r.user).replace(/\s+/g, ' ').trim();
         return (
           <div
             className={`mc-card ${isOpen ? 'open' : ''}`}
@@ -144,13 +149,50 @@ export default function ChatStream({
                     {!sec.has('prompt') && <pre className="mc-code">{renderInline(r.user)}</pre>}
                   </div>
                 )}
-                {r.thought && (
-                  <div className={`mc-section ${sec.has('thought') ? 'folded' : ''}`}>
-                    <div className="mc-section-head" onClick={() => toggleSection(i, 'thought')}>
-                      <span className="mc-caret">{sec.has('thought') ? '▶' : '▼'}</span>
-                      分析内容
+                {pa.chain && (
+                  <div className={`mc-section ${sec.has('chain') ? 'folded' : ''}`}>
+                    <div className="mc-section-head" onClick={() => toggleSection(i, 'chain')}>
+                      <span className="mc-caret">{sec.has('chain') ? '▶' : '▼'}</span>
+                      分析链路（工具调用）
                     </div>
-                    {!sec.has('thought') && <pre className="mc-code mc-thought">{renderInline(r.thought)}</pre>}
+                    {!sec.has('chain') && <pre className="mc-code">{renderInline(pa.chain)}</pre>}
+                  </div>
+                )}
+                {pa.decisions.length > 0 && (
+                  <div className={`mc-section ${sec.has('decisions') ? 'folded' : ''}`}>
+                    <div className="mc-section-head" onClick={() => toggleSection(i, 'decisions')}>
+                      <span className="mc-caret">{sec.has('decisions') ? '▶' : '▼'}</span>
+                      交易决策{pa.decisions.length ? ` (${pa.decisions.length})` : ''}
+                    </div>
+                    {!sec.has('decisions') && (
+                      <div className="mc-trades">
+                        {pa.decisions.slice(0, 6).map((d, k) => {
+                          const act = String(d.action || '').toLowerCase();
+                          const cls = act === 'buy' ? 'buy' : act === 'sell' ? 'sell' : 'hold';
+                          const tag =
+                            act === 'buy' ? '买入' : act === 'sell' ? '卖出' : act === 'watch' ? '观察' : '持有';
+                          return (
+                            <div className="mc-decision-mini" key={`${d.code}-${k}`}>
+                              <span className={`mc-decision-mini-side ${cls}`}>{tag}</span>
+                              <b className="mc-decision-mini-code">{d.code ?? '—'}</b>
+                              {d.pct != null && (
+                                <span className="mc-decision-mini-pct">{Math.round(d.pct * 100)}%</span>
+                              )}
+                              <span className="mc-decision-mini-reason">{d.reason ?? ''}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {pa.reasoning && (
+                  <div className={`mc-section ${sec.has('reason') ? 'folded' : ''}`}>
+                    <div className="mc-section-head" onClick={() => toggleSection(i, 'reason')}>
+                      <span className="mc-caret">{sec.has('reason') ? '▶' : '▼'}</span>
+                      推理论证
+                    </div>
+                    {!sec.has('reason') && <pre className="mc-code mc-thought">{renderInline(pa.reasoning)}</pre>}
                   </div>
                 )}
               </div>

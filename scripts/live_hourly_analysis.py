@@ -1319,6 +1319,13 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
         from prompts.analysis_modes import rotated_modes
 
         agent_exec_done = False  # 每 agent 每小时只执行一轮（多模式多轮会叠加买入突破分账额度）
+        # 盘面状态（系统确定性注入，模型不可争辩；5 分钟缓存）
+        try:
+            from market_state import build_market_state
+
+            state_text = build_market_state(broker)
+        except Exception:  # noqa: BLE001
+            state_text = ""
         for mode in rotated_modes(agent):
             mode_prompt = mode["prompt"]
             if mode["id"] == "awareness":  # 情境感知: 注入今日排行榜上下文
@@ -1328,8 +1335,9 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
             # 模式正文必须进提示词：dsh agent 与直连 LLM 一视同仁
             # （此前 dsh 分支只收到【分析配置：名称】标签，苦行/极限杠杆等
             #  纪律文字从未进入 v4-flash 的上下文——2026-09-03 修复）
-            labeled_content = (f"【分析配置：{mode['name']}】\n{mode_prompt}\n\n"
-                               + user_content)
+            labeled_content = (f"【分析配置：{mode['name']}】\n{mode_prompt}\n"
+                               + (f"{state_text}\n" if state_text else "")
+                               + "\n" + user_content)
             usage = None
             try:
                 if agent_mode_for(agent) == "dsh":
@@ -1337,7 +1345,13 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                     # 思考过程不再是单次提示词；模型可 per-agent 配（deepseek/glm）
                     from dsh_agent import run_agent
 
-                    content = run_agent(labeled_content, timeout_s=420,
+                    task = labeled_content
+                    if agent == "deepseek-v4-flash":
+                        # v4-flash 专属工作法：四段式输出/时间盒/A股情绪认知/退出框架
+                        from prompts.flash_agent_extra import FLASH_AGENT_EXTRA
+
+                        task = FLASH_AGENT_EXTRA + "\n\n" + labeled_content
+                    content = run_agent(task, timeout_s=420,
                                         model=agent_model_for(agent))
                 else:
                     content, usage = call_llm(

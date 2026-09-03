@@ -1081,3 +1081,40 @@
   color: #666;
   white-space: nowrap;
 }
+
+/* ---------- 比赛配置 v2 视觉（2026-09-03） ---------- */
+.comp-body { gap: 12px; padding: 14px; }
+.comp-market-badge {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+  padding: 4px 10px; border: 1.5px solid #000; background: #000; color: #fff;
+}
+.comp-model {
+  border: 1.5px solid #000; padding: 10px 12px;
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.08);
+}
+.comp-model-head { gap: 8px; margin-bottom: 8px; }
+.comp-model-logo { font-size: 15px; line-height: 1; }
+.comp-model-count {
+  font-size: 9px; color: #fff; background: #10a37f;
+  padding: 1px 7px; border-radius: 8px; font-weight: 700;
+}
+.comp-model-switches { gap: 8px; }
+.comp-switch {
+  border: 1.5px solid #999; border-radius: 3px; padding: 6px 9px;
+}
+.comp-switch:hover { border-color: #000; background: #f0f0f0; }
+.comp-switch.on { background: #10a37f; border-color: #0d8a6b; color: #fff; }
+.comp-switch.on .comp-switch-box { color: #fff; }
+.comp-model-desc {
+  margin-top: 8px; font-family: 'Courier New', monospace; font-size: 9.5px;
+  line-height: 1.6; color: #666; border-top: 1px dashed #ddd; padding-top: 6px;
+}
+.comp-save-row { position: sticky; bottom: 0; background: #fff; padding: 10px 0 2px; border-top: 1.5px solid #000; }
+.comp-save {
+  border: 1.5px solid #000; background: #000; color: #fff;
+  font-weight: 700; font-size: 11px; padding: 8px 18px; cursor: pointer;
+  font-family: 'Courier New', monospace; letter-spacing: 0.06em;
+}
+.comp-save:hover { background: #10a37f; border-color: #10a37f; }
+.comp-save:disabled { opacity: 0.5; cursor: wait; }
+.comp-saved-at { margin-left: 10px; font-size: 10px; color: #0d8a6b; font-weight: 700; }

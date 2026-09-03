@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CompMode, CompSelection, MarketId, fetchCompConfig, saveCompConfig } from '../api/client';
-import { modelColor } from './ModelCard';
+import { logoOf, modelColor } from './ModelCard';
 
 const MARKET_LABEL: Record<MarketId, string> = {
   cn: 'A 股（T+1 · 涨跌停）',
@@ -69,8 +69,9 @@ export default function CompConfigPanel({ models, market }: { models: string[]; 
       {models.map((model) => (
         <div className="comp-model" key={model}>
           <div className="comp-model-head">
+            <span className="comp-model-logo">{logoOf(model)}</span>
             <span className="comp-model-name" style={{ color: modelColor(model) }}>
-              {model}
+              {model.replace('deepseek-v4-', '').toUpperCase()}
             </span>
             <span className="comp-model-count">{draft[model]?.size ?? 0} 个配置</span>
           </div>
@@ -92,12 +93,23 @@ export default function CompConfigPanel({ models, market }: { models: string[]; 
               );
             })}
           </div>
+          {(draft[model]?.size ?? 0) > 0 && (
+            <div className="comp-model-desc">
+              {catalog
+                .filter((c) => draft[model]?.has(c.id))
+                .map((c) => c.prompt.replace(/\s+/g, ' ').slice(0, 46))
+                .join(' ｜ ')}
+            </div>
+          )}
         </div>
       ))}
       <div className="comp-save-row">
         <button type="button" className="comp-save" onClick={save} disabled={saving}>
           {saving ? '保存中…' : '保存配置'}
         </button>
+        {savedAt != null && !error && (
+          <span className="comp-saved-at">✅ 已保存 {new Date(savedAt).toLocaleTimeString('zh-CN', { hour12: false })}，下一轮分析生效</span>
+        )}
         {savedAt && Date.now() - savedAt < 3000 && (
           <span className="comp-saved">✓ 已保存（{MARKET_LABEL[market]}）</span>
         )}

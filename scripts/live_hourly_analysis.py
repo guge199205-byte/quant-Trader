@@ -53,8 +53,11 @@ OB_IMB_WEAK = 0.15       # 五档失衡 ≥ ±15% → 偏买/偏卖信号
 # 决策 JSON 格式（与 live_llm_trade.py 的 DECISION_SCHEMA 一致）
 INTRA_DAY_SCHEMA = (
     '{"decisions": [{"action": "hold|sell|buy|watch", "code": "600519.SH", '
-    '"pct": 0.2, "stop_loss": 1500.0, "take_profit": 1650.0, '
-    '"reason": "一句话理由"}]}'
+    '"name": "贵州茅台", "pct": 0.2, "stop_loss": 1500.0, '
+    '"take_profit": 1650.0, "move_stop": 1520.0, '
+    '"invalidation": "跌破1500或买入理由失效", "confidence": 0.8, '
+    '"risk_amount": 2000.0, '
+    '"reason": "一句话理由（必填：宏观/板块/技术证据+为什么现在动手）"}]}'
 )
 
 
@@ -937,9 +940,14 @@ def parse_intraday_decision(text: str) -> list | None:
             out.append({
                 "action": action,
                 "code": str(x.get("code") or "").strip(),
+                "name": str(x.get("name") or "").strip(),
                 "pct": float(x.get("pct") or 0),
                 "stop_loss": _num(x.get("stop_loss")),
                 "take_profit": _num(x.get("take_profit")),
+                "move_stop": _num(x.get("move_stop")),
+                "invalidation": str(x.get("invalidation") or ""),
+                "confidence": float(x.get("confidence") or 0),
+                "risk_amount": _num(x.get("risk_amount")),
                 "reason": str(x.get("reason") or ""),
             })
         return out or None

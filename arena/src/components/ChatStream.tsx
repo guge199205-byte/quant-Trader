@@ -171,14 +171,29 @@ export default function ChatStream({
                           const cls = act === 'buy' ? 'buy' : act === 'sell' ? 'sell' : 'hold';
                           const tag =
                             act === 'buy' ? '买入' : act === 'sell' ? '卖出' : act === 'watch' ? '观察' : '持有';
+                          const exitBits = [
+                            d.stop_loss != null ? `止损 ${d.stop_loss}` : '',
+                            d.take_profit != null ? `止盈 ${d.take_profit}` : '',
+                            d.move_stop != null ? `移动止损 ${d.move_stop}` : '',
+                            d.confidence ? `置信 ${Math.round(d.confidence * 100)}%` : '',
+                            d.risk_amount != null ? `风险 ¥${d.risk_amount.toLocaleString('en-US')}` : '',
+                          ].filter(Boolean);
                           return (
                             <div className="mc-decision-mini" key={`${d.code}-${k}`}>
-                              <span className={`mc-decision-mini-side ${cls}`}>{tag}</span>
-                              <b className="mc-decision-mini-code">{d.code ?? '—'}</b>
-                              {d.pct != null && (
-                                <span className="mc-decision-mini-pct">{Math.round(d.pct * 100)}%</span>
+                              <div className="mc-decision-mini-row">
+                                <span className={`mc-decision-mini-side ${cls}`}>{tag}</span>
+                                <b className="mc-decision-mini-code">{d.name || d.code || '—'}</b>
+                                {d.pct != null && (
+                                  <span className="mc-decision-mini-pct">{Math.round(d.pct * 100)}%</span>
+                                )}
+                                <span className="mc-decision-mini-reason">{d.reason ?? ''}</span>
+                              </div>
+                              {(exitBits.length > 0 || d.invalidation) && (
+                                <div className="mc-decision-mini-exit">
+                                  {exitBits.join(' · ')}
+                                  {d.invalidation ? ` · 失效: ${d.invalidation}` : ''}
+                                </div>
                               )}
-                              <span className="mc-decision-mini-reason">{d.reason ?? ''}</span>
                             </div>
                           );
                         })}

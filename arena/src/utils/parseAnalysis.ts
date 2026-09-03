@@ -5,7 +5,14 @@
 export interface DecItem {
   action: string; // buy / sell / hold / watch
   code?: string;
+  name?: string;
   pct?: number;
+  stop_loss?: number;
+  take_profit?: number;
+  move_stop?: number;
+  invalidation?: string;
+  confidence?: number;
+  risk_amount?: number;
   reason?: string;
 }
 

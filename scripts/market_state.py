@@ -35,6 +35,56 @@ def _index_stats(broker, code: str) -> dict | None:
     return {"trend": trend, "vol_ratio": vol_ratio, "pos": pos * 100}
 
 
+def _quantdb_breadth() -> str | None:
+    """昨日收盘全景（quantdb market_sentiment 最新 dt，EOD 口径）→ 温度计行。
+
+    已验证（2026-09-03）：该表按动量粗判涨跌停严重失真（涨停占比 27% 不合理），
+    故只取可信聚合：上涨/下跌家数、动量均值、买/卖压力均值；且做自校验——
+    上涨+下跌占比 <80% 或动量均值超出 [-2,2] 视为脏数据整体丢弃，宁缺毋滥。
+    返回 None 表示不可用（不注入）。
+    """
+    roots = ("/home/zbox/projects/quantmind/data/quantdb"
+             "/5_technical_derived/market_sentiment",
+             "/data/quantdb/5_technical_derived/market_sentiment")
+    import glob
+    import os
+
+    root = next((p for p in roots if os.path.isdir(p)), None)
+    if not root:
+        return None
+    ds = sorted(int(os.path.basename(f).split("=")[1])
+                for f in glob.glob(f"{root}/dt=*"))
+    if not ds:
+        return None
+    try:
+        import duckdb
+
+        df = duckdb.connect().execute(
+            f"SELECT momentum_1d, buy_pressure, sell_pressure "
+            f"FROM read_parquet('{root}/dt={ds[-1]}')").df()
+    except Exception:  # noqa: BLE001
+        return None
+    if df.empty:
+        return None
+    mom = df["momentum_1d"].dropna()
+    up = int((mom > 0).sum())
+    down = int((mom < 0).sum())
+    total = len(mom)
+    if total == 0 or (up + down) / total < 0.8:  # 自校验：覆盖不完整视为脏
+        return None
+    if mom.mean() < -2 or mom.mean() > 2 or mom.abs().max() > 10:
+        return None  # 明显失真（涨停占比异常等）→ 丢弃
+    bp = float(df["buy_pressure"].mean()) if "buy_pressure" in df else None
+    sp = float(df["sell_pressure"].mean()) if "sell_pressure" in df else None
+    press = ""
+    if bp is not None and sp is not None:
+        press = f" · 买压 {bp:.2f}/卖压 {sp:.2f}"
+    dt = str(ds[-1])
+    return (f"情绪温度（quantdb 昨日收盘全景 {dt[:4]}-{dt[4:6]}-{dt[6:]}）："
+            f"上涨 {up}/{total} 下跌 {down}/{total}（涨跌比 {up / max(down, 1):.2f}）"
+            f" · 动量均值 {mom.mean():+.3f}{press}（非今日实时，仅盘前/盘后参考）")
+
+
 def build_market_state(broker=None) -> str:
     """【盘面状态（系统判定）】文本块：时段 + 大盘三态 + 动作基调 + 情绪提示。
 
@@ -94,6 +144,9 @@ def build_market_state(broker=None) -> str:
         extra = ""
     text = (f"【盘面状态（系统判定）】时段={session}；{regime}{extra}；"
             f"动作基调={tune}。情绪提示：涨跌停与情绪极端点（一字/天地板）一律不参与，错过就错过。")
+    breath = _quantdb_breadth()
+    if breath:
+        text += "\n" + breath
     with _lock:
         _cache = {"ts": now.timestamp(), "text": text}
     return text

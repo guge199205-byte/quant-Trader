@@ -425,12 +425,46 @@ def build_trade_recap(agent: str, days: int = 7) -> str:
             + "（回顾只为一致性参考：若当时理由已失效，允许改变方向并写明原因）")
 
 
+def load_review_recap(agent: str) -> str:
+    """昨日复盘要点（logs/review/{agent}/{date}.json）→ 注入今日分析。
+    v1.5 自我进化闭环：昨天的教训/预案今天直接可见；行情若已变，以今日
+    证据为准（防刻舟求剑）。"""
+    import datetime as _dt
+
+    today = _dt.date.today()
+    for back in range(1, 6):
+        d = today - _dt.timedelta(days=back)
+        p = ROOT / "logs" / "review" / agent / f"{d:%Y-%m-%d}.json"
+        if not p.is_file():
+            continue
+        try:
+            r = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        lessons = [str(x)[:90] for x in (r.get("lessons") or [])][:2]
+        plan = [f"{x.get('code') or ''} {str(x.get('trigger') or x.get('action') or '')[:40]}"
+                for x in (r.get("plan") or []) if isinstance(x, dict)][:2]
+        watch = [f"{x.get('code') or ''} {str(x.get('price') or x.get('action') or '')[:24]}"
+                 for x in (r.get("watch") or []) if isinstance(x, dict)][:2]
+        if not (lessons or plan or watch):
+            continue
+        lines = [f"【昨日复盘要点（{d:%Y-%m-%d}，参考非指令）】"]
+        if lessons:
+            lines.append("教训：" + "｜".join("- " + x for x in lessons))
+        if plan or watch:
+            lines.append("预案：" + "；".join(plan + watch))
+        lines.append("注：若今日行情/理由已变化，以今日证据为准。")
+        return "\n".join(lines)
+    return ""
+
+
 def build_user_content(rows: list, asset: float, cash: float, agent: str,
                        last_decisions: list | None = None,
                        orderbook: dict | None = None,
                        cross_refs: str | None = None,
                        stale: bool = False,
-                       recap: str | None = None) -> str:
+                       recap: str | None = None,
+                       review: str | None = None) -> str:
     lines = [
         f"现在是北京时间 {now_cn():%F %T}（A股{('盘中' if in_trading_window(now_cn()) else '盘前/盘后')}）。"
         f"你是 {agent}（实盘分账账户，初始额度 ¥10 万）。你名下虚拟资产 ¥{asset:,.0f}、"
@@ -439,6 +473,7 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
         "请优先自行降杠杆。",
         "表述要求：正文中股票一律用中文名称（首次可括注代码），决策 JSON 照 schema 填写。",
         *([recap] if recap else []),
+        *([review] if review else []),
         "",
         "| 股票 | 代码 | 现价 | 成本 | 数量 | 持仓金额 | 盈亏 | 盈亏% | 今日涨跌% | 可卖量 |",
         "|------|------|------|------|------|----------|------|-------|-----------|--------|",
@@ -1354,10 +1389,11 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                 print(f"[{now:%F %T}] 🚨 行情停更（桥假活/通道断），"
                       f"已禁止 {agent} 基于陈旧价格做买卖决策")
             recap = build_trade_recap(agent)  # 近7日成交回顾（防隔日行为漂移）
+            review = load_review_recap(agent)  # 昨日复盘要点（自我进化 v1.5）
             user_content = build_user_content(my_rows, virtual_asset, virtual_cash,
                                               agent,
                                               (last_decisions.get(agent) or {}).get("decisions"),
-                                              orderbook, cross, stale, recap)
+                                              orderbook, cross, stale, recap, review)
         # 比赛配置多选：多选时按自然日轮转（一天一种模式，跨天轮换，
         # 盘中口径一致不横跳；单选/轮转关闭时行为不变）
         from prompts.analysis_modes import rotated_modes

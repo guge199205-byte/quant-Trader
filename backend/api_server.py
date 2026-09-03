@@ -1103,6 +1103,108 @@ def live_trades(limit: int = Query(200, ge=1, le=5000)):
     return {"success": True, "data": records[:limit]}
 
 
+# ---------- 实盘已平仓流（右侧「已完成」feed；全仓卖出的成交事件） ----------
+
+@app.get("/api/live/closed")
+def live_closed(limit: int = Query(60, ge=1, le=300)):
+    """实盘已平仓事件：卖出后该 agent 该股归零 → 一笔完整平仓。
+
+    账本只存当前快照，用 fill 成交事件倒走重建：倒走穿越一笔卖出时该
+    agent 该股数量已为 0，说明这笔卖出就是清仓（卖掉了全部持仓）。
+    成本取事件日志自带的 cost_price（记账时快照），无成本则 pnl 置 None。
+    2026-09-03 之前「已完成」feed 一直读模拟盘平仓文件（迁移实盘后不再更新）。
+    """
+    logs_dir = Path(__file__).resolve().parents[1] / "logs"
+    events: list = []
+    for f in sorted(logs_dir.glob("live_trade_*.jsonl")):
+        if any(m in f.name for m in ("_us_", "_hk_")):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("error"):
+                continue
+            mode = rec.get("mode")
+            if mode == "fill_confirm":
+                fv = int(rec.get("volume") or 0)
+                fp = rec.get("price")
+            else:
+                fill = rec.get("fill") or {}
+                fv = int(fill.get("filled_volume") or 0)
+                fp = fill.get("filled_price")
+            if fv <= 0 or not rec.get("side"):
+                continue
+            try:
+                price = float(fp or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            if price <= 0:
+                continue
+            events.append({
+                "ts": rec.get("ts") or "",
+                "agent": rec.get("agent"),
+                "code": rec.get("code"),
+                "side": str(rec["side"]).lower(),
+                "vol": fv,
+                "price": price,
+                "cost": rec.get("cost_price"),
+            })
+    events.sort(key=lambda r: r["ts"], reverse=True)
+
+    # 当前账本 → (agent, code) 数量/成本起点（倒走基准）
+    qty: dict = {}
+    cost_now: dict = {}
+    try:
+        raw = json.loads((logs_dir / "live_ledger.json").read_text(encoding="utf-8"))
+        for agent, rec in (raw.get("agents") or {}).items():
+            qty.setdefault(agent, {})
+            cost_now.setdefault(agent, {})
+            for code, p in (rec.get("positions") or {}).items():
+                qty[agent][code] = int(p.get("volume") or 0)
+                cost_now[agent][code] = p.get("cost_price")
+    except (OSError, ValueError):
+        pass
+
+    closed: list = []
+    seen: set = set()
+    for e in events:
+        agent, code = e["agent"], e["code"]
+        if not agent or not code:
+            continue
+        aqty = qty.setdefault(agent, {})
+        acost = cost_now.setdefault(agent, {})
+        q0 = int(aqty.get(code) or 0)
+        if e["side"] == "sell" and q0 == 0 and e["price"] > 0:
+            key = (e["ts"], agent, code)
+            if key not in seen:
+                seen.add(key)
+                entry = e["cost"] if e["cost"] is not None else acost.get(code)
+                closed.append({
+                    "ts": e["ts"], "agent": agent, "symbol": code,
+                    "exit_date": str(e["ts"])[:10], "qty": e["vol"],
+                    "entry_price": float(entry or 0),
+                    "exit_price": e["price"],
+                    "notional": round(e["price"] * e["vol"], 2),
+                    "fee": 0.0,
+                    "pnl": (round((e["price"] - float(entry)) * e["vol"], 2)
+                            if entry not in (None, 0) else None),
+                    "hold_days": None,
+                })
+        # 倒走复原：卖出的逆向是加回，买入的逆向是扣减
+        if e["side"] == "sell":
+            aqty[code] = q0 + e["vol"]
+        else:
+            aqty[code] = max(0, q0 - e["vol"])
+    closed.sort(key=lambda r: r["ts"], reverse=True)
+    return {"success": True, "data": closed[:limit]}
+
+
 # ---------- 当日实时指数（顶部行情条） ----------
 
 # A 股主流指数（通达信代码）：上证指数用 000001.SH（999999 该源不支持）

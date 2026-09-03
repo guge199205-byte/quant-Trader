@@ -2,10 +2,12 @@ import { useMemo } from 'react';
 import {
   ClosedTradeDetail,
   FutuClosedRow,
+  LiveClosedRow,
   MarketId,
   LiveTradeLog,
   fetchFutuClosed,
   fetchFutuTrades,
+  fetchLiveClosed,
   fetchTradeDetail,
 } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
@@ -53,20 +55,34 @@ const fmtQty = (v: number): string => v.toLocaleString('en-US', { maximumFractio
 /** COMPLETED —— nof1 风格"completed a trade"平仓消息流（当前市场全部模型，最新在前）。 */
 export default function CompletedFeed({ agents, market, currency, stockNames = {}, onCount }: Props) {
   const isHk = market === 'hk';
+  // A股实盘口径：已完成 = /api/live/closed 真实清仓事件（模拟盘平仓文件已停更）
+  const isCnLive = market === 'cn';
   const key = agents.join('|');
 
-  // cn/us：按 agent 拉 FIFO 平仓明细（replay）
+  // cn（实盘）/us：模拟盘 FIFO 平仓明细 —— cn 已废弃此源，仅 us 继续用
   const feeds = usePolling(
     () =>
-      Promise.all(
-        agents.map(
-          async (a): Promise<AgentTrades> => ({
-            agent: a,
-            trades: await fetchTradeDetail(a, market, 25).catch(() => [] as ClosedTradeDetail[]),
-          }),
-        ),
-      ),
-    [key, market],
+      isCnLive
+        ? Promise.resolve([] as AgentTrades[])
+        : Promise.all(
+            agents.map(
+              async (a): Promise<AgentTrades> => ({
+                agent: a,
+                trades: await fetchTradeDetail(a, market, 25).catch(() => [] as ClosedTradeDetail[]),
+              }),
+            ),
+          ),
+    [key, market, isCnLive],
+    30000,
+  );
+
+  // cn 实盘：真实清仓流（卖出后该 agent 该股归零；30s 轮询随成交滚动）
+  const cnClosed = usePolling(
+    () =>
+      isCnLive
+        ? fetchLiveClosed(60).catch(() => [] as LiveClosedRow[])
+        : Promise.resolve([] as LiveClosedRow[]),
+    [isCnLive],
     30000,
   );
 
@@ -115,13 +131,17 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
   );
 
   const items: FeedItem[] = useMemo(() => {
+    if (isCnLive) {
+      // 实盘口径：真实清仓事件直接成 feed（agent 字段自带）
+      return (cnClosed.data ?? []).map((t) => ({ ...t, agent: t.agent }));
+    }
     const out: FeedItem[] = [];
     for (const f of feeds.data ?? []) {
       for (const t of f.trades) out.push({ ...t, agent: f.agent });
     }
     out.sort((a, b) => (a.exit_date < b.exit_date ? 1 : -1));
     return out;
-  }, [feeds.data]);
+  }, [feeds.data, cnClosed.data, isCnLive]);
 
   const hkItems = hkFeed.data ?? [];
   const count = isHk ? hkItems.length : items.length;
@@ -190,18 +210,23 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
     );
   }
 
-  if (feeds.loading && !items.length) {
+  if ((isCnLive ? cnClosed.loading : feeds.loading) && !items.length) {
     return <div className="loading"><div className="spinner" />加载中…</div>;
   }
-  if (feeds.error && !items.length) {
-    return <div className="empty-state">加载失败：{feeds.error}</div>;
+  if ((isCnLive ? cnClosed.error : feeds.error) && !items.length) {
+    return <div className="empty-state">加载失败：{isCnLive ? cnClosed.error : feeds.error}</div>;
   }
-  if (!items.length) return <div className="empty-state">暂无已平仓交易</div>;
+  if (!items.length)
+    return (
+      <div className="empty-state">
+        {isCnLive ? '暂无已平仓交易（实盘清仓成交会自动出现在这里）' : '暂无已平仓交易'}
+      </div>
+    );
 
   return (
     <div className="completed-feed">
       {items.map((t, i) => {
-        const pnl = t.pnl;
+        const pnl = t.pnl ?? 0;
         const entryNotional = t.qty * t.entry_price;
         return (
           <div className="feed-card" key={`${t.agent}-${t.exit_date}-${t.symbol}-${i}`}>

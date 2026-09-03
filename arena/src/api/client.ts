@@ -482,6 +482,17 @@ export const fetchTradeDetail = (agent: string, market: MarketId, limit = 25) =>
     api.get(`/agents/${encodeURIComponent(agent)}/trade-detail`, { params: { market, limit } }),
   );
 
+// ---------- 实盘已平仓流（/api/live/closed；右侧「已完成」feed 实盘口径） ----------
+
+export interface LiveClosedRow extends ClosedTradeDetail {
+  ts: string; // 完整成交时间（feed 排序/展示用）
+  agent: string; // 分账 agent
+}
+
+/** 实盘全仓清仓事件（卖出后该 agent 该股归零），最新在前 */
+export const fetchLiveClosed = (limit = 60) =>
+  unwrap<LiveClosedRow[]>(api.get('/live/closed', { params: { limit } }));
+
 // ---------- 持仓明细（数量/成本/市值/盈亏） ----------
 
 export interface HoldingRow {

@@ -28,7 +28,6 @@ import { usePolling } from '../hooks/usePolling';
 import EquityChart, { toBenchLine, toChartLine } from '../components/EquityChart';
 import RealAccountPanel from '../components/RealAccountPanel';
 import ModelCard, { modelColor } from '../components/ModelCard';
-import ModelChat from '../components/ModelChat';
 import ChatStream from '../components/ChatStream';
 import NewsStream from '../components/NewsStream';
 import CompletedFeed from '../components/CompletedFeed';
@@ -653,20 +652,14 @@ export default function Live() {
     }
 
     if (tab === 'chat') {
-      // 全部模型：混合时间流（不按模型分组，各模型最新分析都排前面）
-      if (selectedModel === 'all') {
-        if (!chatAll.data) return <div className="empty-state">加载对话…</div>;
-        return <ChatStream agents={chatAll.data} />;
-      }
-      return (
-        <ModelChat
-          logs={logs.data ?? []}
-          trades={trades.data ?? []}
-          positions={positions.data ?? []}
-          model={effectiveModel}
-          currency={meta.currency}
-        />
-      );
+      // 统一用 ChatStream：'all' = 各模型混合时间流；筛选单模型 = 同组件
+      // 只喂该模型（界面与「全部」一致，仅数据收窄）
+      const agents =
+        selectedModel === 'all'
+          ? chatAll.data
+          : [{ name: effectiveModel, lines: logs.data ?? [] }];
+      if (!agents) return <div className="empty-state">加载对话…</div>;
+      return <ChatStream agents={agents} />;
     }
 
     if (tab === 'news') {

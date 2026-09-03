@@ -109,7 +109,8 @@ docker compose --profile agents run --rm -e INIT_DATE=2026-08-28 -e END_DATE=202
 
 > 🧩 **想扩展系统**:增加智能体(竞技/实盘分账/dsh 技能包三选一) →
 > [`docs/AGENT_GUIDE.md`](docs/AGENT_GUIDE.md) · 系统级技能包总览 →
-> [`docs/SKILLPACK.md`](docs/SKILLPACK.md)
+> [`docs/SKILLPACK.md`](docs/SKILLPACK.md) · 智能体演进路线 →
+> [`docs/AGENT_ROADMAP.md`](docs/AGENT_ROADMAP.md)
 
 ## 📊 数据与数据源
 

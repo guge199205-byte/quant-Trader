@@ -115,3 +115,4 @@ python scripts/live_hourly_analysis.py --dry-run
 ```
 
 系统级技能包总览（全部技能、与外部技能目录关系、开发规范索引）：见 [SKILLPACK.md](SKILLPACK.md)。
+智能体能力演进路线（自我进化/假设库/辩论/风险预算/多市场复刻）：见 [AGENT_ROADMAP.md](AGENT_ROADMAP.md)。

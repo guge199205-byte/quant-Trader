@@ -273,7 +273,7 @@ export default function Live() {
   );
   const meta = marketMeta(market);
 
-  const [tab, setTab] = useState<Tab>('completed');
+  const [tab, setTab] = useState<Tab>('chat'); // 默认=模型对话（用户口径）
   const [chartRange, setChartRange] = useState<TimeRange>('all');
   const [chartMode, setChartMode] = useState<'pct' | 'dollar'>('pct');
   const [selectedModel, setSelectedModel] = useState<string>('all');

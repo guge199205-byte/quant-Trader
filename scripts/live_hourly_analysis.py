@@ -1397,6 +1397,15 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                         task = FLASH_AGENT_EXTRA + "\n\n" + labeled_content
                     content = run_agent(task, timeout_s=420,
                                         model=agent_model_for(agent))
+                    # dsh 不返回 token 数 → 按字符量估算（中文 ≈1.8 字符/token），
+                    # 标记 usage_est 供前端区分；否则模型卡 token 统计会永久冻结
+                    # （2026-09-03 实测 flash 自 9/2 09:35 起停更）
+                    usage = {
+                        "prompt_tokens": int(len(task) / 1.8),
+                        "completion_tokens": int(len(content or "") / 1.8),
+                        "total_tokens": int((len(task) + len(content or "")) / 1.8),
+                        "usage_est": True,
+                    }
                 else:
                     content, usage = call_llm(
                         labeled_content, agent,

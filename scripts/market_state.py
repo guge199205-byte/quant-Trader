@@ -67,13 +67,15 @@ def _quantdb_breadth() -> str | None:
     if df.empty:
         return None
     mom = df["momentum_1d"].dropna()
+    total_all = len(mom)
+    mom = mom[mom.abs() <= 10]  # 剔除明显脏值（新股/异常），保留主体分布
+    if len(mom) < max(1, int(total_all * 0.9)):
+        return None  # 极端值占比过高 → 整体视为脏
     up = int((mom > 0).sum())
     down = int((mom < 0).sum())
     total = len(mom)
     if total == 0 or (up + down) / total < 0.8:  # 自校验：覆盖不完整视为脏
         return None
-    if mom.mean() < -2 or mom.mean() > 2 or mom.abs().max() > 10:
-        return None  # 明显失真（涨停占比异常等）→ 丢弃
     bp = float(df["buy_pressure"].mean()) if "buy_pressure" in df else None
     sp = float(df["sell_pressure"].mean()) if "sell_pressure" in df else None
     press = ""

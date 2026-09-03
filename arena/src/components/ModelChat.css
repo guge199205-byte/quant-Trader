@@ -1,90 +1,65 @@
-/* ModelChat —— nof1.ai 风格模型对话卡（coke 终端风：白底/黑描边/无圆角/Courier） */
+/* ============================================================
+   ModelChat / ChatStream —— 对话卡整体重设计（2026-09-03 v2）
+   原则：纯文档流（无绝对定位/无特殊布局上下文）→ 结构上不可能重叠；
+   终端风延续（白底/黑描边/Courier）；单一滚动容器（右侧面板）。
+   区块：头部 / 总结条 / 四小节（提示词·链路·决策·推理）
+   ============================================================ */
 
+/* ---------- 列表与卡片骨架 ---------- */
 .mc-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
-
 .mc-card {
+  width: 100%;
+  box-sizing: border-box;
   border: 2px solid #000;
   background: #fff;
 }
+.mc-card.open { background: #fcfcfc; }
 
-.mc-card.open {
-  background: #fafafa;
-}
-
+/* ---------- 头部 ---------- */
 .mc-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  /* 消息卡首行框高度：8px 太矮 → 12px */
-  padding: 12px 14px;
-  border-bottom: 1px solid #000;
+  padding: 10px 14px;
+  border-bottom: 2px solid #000;
   cursor: pointer;
   user-select: none;
+  flex-wrap: wrap;
 }
-
-.mc-head:hover {
-  background: #f0f0f0;
-}
-
-.mc-logo {
-  font-size: 16px;
-  line-height: 1;
-}
-
+.mc-head:hover { background: #f5f5f5; }
+.mc-logo { font-size: 16px; line-height: 1; }
 .mc-model {
   font-family: 'Courier New', monospace;
   font-weight: 700;
   font-size: 13px;
   letter-spacing: 0.04em;
 }
-
 .mc-status {
   font-family: 'Courier New', monospace;
-  font-size: 11px;
+  font-size: 10px;
   background: #000;
   color: #fff;
   padding: 2px 8px;
   letter-spacing: 0.08em;
 }
-
 .mc-date {
   font-family: 'Courier New', monospace;
   font-size: 11px;
-  font-weight: 700;              /* 加粗便于扫读 */
+  font-weight: 700;
   color: #333;
   margin-left: auto;
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0.03em;
 }
+.mc-expand { font-size: 10px; color: #10a37f; }
+.mc-expand.open { color: #000; }
 
-.mc-expand {
-  font-size: 10px;
-  color: #10a37f;
-  transition: transform 0.12s;
-}
-
-.mc-expand.open {
-  color: #000;
-}
-
-.mc-summary {
-  font-family: 'Courier New', monospace;
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: #333;
-  padding: 10px 12px;
-  /* 摘要完整展示：不设高度上限，超长内容直接撑开卡片，由页面滚动承接
-     （内部小滚动区无可见滚动条，会让人误以为内容被截断） */
-  min-height: 3em;
-}
-
-/* 分析模式徽标（情境感知等）：模型名右侧，折叠态也可见 */
+/* ---------- 标签（模式/动作） ---------- */
 .mc-mode-chip {
-  margin-left: 8px;
+  display: inline-block;
   padding: 2px 8px;
   border-radius: 10px;
   background: #eef4ff;
@@ -92,28 +67,56 @@
   border: 1px solid #c6dafc;
   font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.03em;
   white-space: nowrap;
+}
+.mc-mode-chip.plain { background: #f4f4f4; color: #555; border-color: #ddd; }
+.mc-mode-chip.action { border-radius: 4px; }
+.mc-mode-chip.action.sell { background: #fdecea; color: #c62828; border-color: #f3b9b4; }
+.mc-mode-chip.action.buy  { background: #e8f5e9; color: #2e7d32; border-color: #b7dfba; }
+.mc-mode-chip.action.hold { background: #f4f4f4; color: #555; border-color: #ddd; }
+.mc-mode-chip.action.empty{ background: #fff; color: #999; border-style: dashed; }
+.mc-mode-chip.action.tp   { background: #fff8e1; color: #b26a00; border-color: #f2d98c; }
+.mc-mode-chip.action.tune { background: #fff3e0; color: #e65100; border-color: #f4c89b; }
+.mc-tokens { font-size: 9px; color: #888; white-space: nowrap; }
+
+/* ---------- 总结条（始终可见） ---------- */
+.mc-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 14px;
+  border-bottom: 1px dashed #bbb;
+  background: #f7f9f7;
+}
+.mc-sum-label {
   flex: none;
+  font-family: 'Courier New', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  background: #10a37f;
+  padding: 2px 6px;
+  letter-spacing: 0.1em;
+  margin-top: 1px;
+}
+.mc-sum-text {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  color: #222;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.mc-body {
-  border-top: 1px dashed #999;
-}
-
-.mc-section {
-  border-top: 1px solid #000;
-}
-
-.mc-section:first-child {
-  border-top: none;
-}
-
+/* ---------- 小节（四段式） ---------- */
+.mc-body { border-top: 2px solid #000; }
+.mc-section { border-bottom: 1px solid #ddd; }
+.mc-section:last-child { border-bottom: none; }
 .mc-section-head {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
+  padding: 7px 14px;
   font-family: 'Courier New', monospace;
   font-size: 11px;
   font-weight: 700;
@@ -121,68 +124,107 @@
   cursor: pointer;
   background: #fff;
 }
+.mc-section-head:hover { background: #efefef; }
+.mc-caret { font-size: 10px; color: #10a37f; }
 
-.mc-section-head:hover {
-  background: #f0f0f0;
-}
-
-.mc-caret {
-  font-size: 10px;
-  color: #10a37f;
-}
-
+/* 内容块：统一内边距与排版，整段撑开（滚动交给右侧面板） */
 .mc-code {
   margin: 0;
-  padding: 8px 10px;
+  padding: 10px 14px;
   font-family: 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.7;
   color: #222;
   white-space: pre-wrap;
   word-break: break-word;
-  /* 不设内部滚动：整段撑开，由右侧面板统一承接滚动（单一滚动容器，
-     嵌套滚动会互相抢滚轮导致卡顿——2026-09-03 修复） */
+  overflow-wrap: anywhere;
   background: #fafafa;
+  border-top: 1px dashed #ddd;
+}
+.mc-thought { background: #fbfbf6; }
+
+/* 长内容限高 + 展开全文（纯 max-height，展开后移除类名） */
+.mc-clamp { max-height: 17em; overflow: hidden; }
+.mc-more {
+  display: block;
+  margin: 4px 14px 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #10a37f;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: 'Courier New', monospace;
+}
+.mc-more:hover { text-decoration: underline; }
+
+/* ---------- 交易决策（迷你行动卡） ---------- */
+.mc-trades {
+  padding: 8px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #fafafa;
+  border-top: 1px dashed #ddd;
+}
+.mc-decision-mini {
+  border: 1px solid #ddd;
+  border-left: 4px solid #999;
+  background: #fff;
+  padding: 7px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+}
+.mc-decision-mini:has(.mc-decision-mini-side.buy)  { border-left-color: #e0483e; }
+.mc-decision-mini:has(.mc-decision-mini-side.sell) { border-left-color: #12b886; }
+.mc-decision-mini-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.mc-decision-mini-side { font-weight: 700; padding: 1px 7px; border-radius: 3px; }
+.mc-decision-mini-side.buy  { color: #e0483e; background: #fdecea; }
+.mc-decision-mini-side.sell { color: #12b886; background: #e6f7f0; }
+.mc-decision-mini-side.hold { color: #555; background: #f0f0f0; }
+.mc-decision-mini-code { font-weight: 700; }
+.mc-decision-mini-pct { color: #666; }
+.mc-decision-mini-reason {
+  color: #333;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.mc-decision-mini-exit {
+  font-size: 10px;
+  color: #8a6d00;
+  background: #fffbe6;
+  border: 1px solid #f2e2ac;
+  padding: 3px 7px;
+  border-radius: 3px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.mc-no-trade {
+  padding: 10px 14px;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: #888;
+  background: #fafafa;
+  border-top: 1px dashed #ddd;
 }
 
-.mc-thought {
-  border-top: 1px dashed #ccc;
-}
-
-/* ---------- 块级 markdown 排版（renderMarkdown 输出） ---------- */
-
-.mc-md-p {
-  padding: 2px 0;
-}
-
-/* 小节头：### 标题 → 黑底白字（coke 风格），与正文区分 */
-.mc-md-h3,
-.mc-md-h4 {
+/* ---------- markdown 块（保留） ---------- */
+.mc-md-p { padding: 2px 0; }
+.mc-md-h3, .mc-md-h4 {
   margin: 10px 0 4px;
   padding: 4px 10px;
   background: #000;
   color: #fff;
   font-size: 12.5px;
   font-weight: 700;
-  letter-spacing: 0.03em;
 }
-
-/* #### 次级标题 → 浅灰底黑字，层次弱于 h3 */
-.mc-md-h4 {
-  background: #ececec;
-  color: #000;
-}
-
-.mc-md-list {
-  margin: 2px 0;
-  padding-left: 20px;
-}
-
-.mc-md-list li {
-  margin: 3px 0;
-}
-
-/* ⚠️ / 【】 开头行 → 警示条：黄底 + 左侧竖条 */
+.mc-md-h4 { background: #ececec; color: #000; }
+.mc-md-list { margin: 2px 0; padding-left: 20px; }
+.mc-md-list li { margin: 3px 0; }
 .mc-md-warn {
   margin: 8px 0;
   padding: 6px 10px;
@@ -190,235 +232,19 @@
   border-left: 4px solid #f5a623;
   color: #5a4a00;
 }
+.mc-md-warn strong { color: #8a6d00; }
 
-.mc-md-warn strong {
-  color: #8a6d00;
-}
-
-.mc-trades {
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  background: #fafafa;
-}
-
-.mc-decision {
-  border: 2px solid #000;
-  background: #fff;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0;
-}
-
-.mc-field {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px 8px;
-  border-bottom: 1px solid #ddd;
-  border-right: 1px solid #ddd;
-  min-width: 0;
-}
-
-.mc-field:nth-child(2n),
-.mc-field-wide {
-  border-right: none;
-}
-
-.mc-field:nth-last-child(-n + 1) {
-  border-bottom: none;
-}
-
-.mc-key {
-  font-family: 'Courier New', monospace;
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  color: #888;
-  text-transform: uppercase;
-}
-
-.mc-val {
-  font-family: 'Courier New', monospace;
-  font-size: 11px;
-  font-weight: 700;
-  word-break: break-word;
-}
-
-.mc-val.na {
-  color: #bbb;
-  font-weight: 400;
-}
-
-/* 决策卡：证券中文名 + 小字灰代码 */
-.mc-sym-name {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  min-width: 0;
-}
-
-.mc-sym-code {
-  font-size: 9px;
-  font-weight: 400;
-  color: #999;
-  font-variant-numeric: tabular-nums;
-}
-
-/* 买入红 / 卖出绿（跟随全局 up/down 语义） */
-.mc-side.buy {
-  color: #e0483e;
-}
-
-.mc-side.sell {
-  color: #12b886;
-}
-
-/* 决策理由：全宽行 + 正文（非粗体，可换行） */
-.mc-field-wide {
-  grid-column: 1 / -1;
-}
-
-.mc-reason {
-  font-weight: 400;
-  line-height: 1.6;
-}
-
-.mc-no-trade {
-  padding: 10px;
-  font-family: 'Courier New', monospace;
-  font-size: 11px;
-  color: #888;
-}
-
-/* ChatModelList —— 全部模型视图的 token 累计（位于 mc-date 之后） */
-.mc-tokens {
-  font-family: 'Courier New', monospace;
-  font-size: 9px;
-  color: #888;
-  white-space: nowrap;
-}
-
-/* 普通模式标签（基线/苦行/极限杠杆等）：灰底小徽标，情境感知保持蓝底/🧠 */
-.mc-mode-chip.plain {
-  background: #f4f4f4;
-  color: #555;
-  border-color: #ddd;
-}
-
-/* 分析动作标签（空仓/持仓/减仓/加仓/买入/卖出/清仓/新增） */
-.mc-mode-chip.action { border-radius: 4px; }
-.mc-mode-chip.action.sell { background: #fdecea; color: #c62828; border-color: #f3b9b4; }
-.mc-mode-chip.action.buy  { background: #e8f5e9; color: #2e7d32; border-color: #b7dfba; }
-.mc-mode-chip.action.hold { background: #f4f4f4; color: #555; border-color: #ddd; }
-.mc-mode-chip.action.empty { background: #fff; color: #999; border-style: dashed; }
-
-/* 止盈止损（黄）/ 调仓（橙） */
-.mc-mode-chip.action.tp { background: #fff8e1; color: #b26a00; border-color: #f2d98c; }
-.mc-mode-chip.action.tune { background: #fff3e0; color: #e65100; border-color: #f4c89b; }
-
-/* 交易决策迷你卡（四段式对话：决策区） */
-.mc-decision-mini {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 4px 0;
-  border-bottom: 1px dashed #eee;
-  font-family: 'Courier New', monospace;
-  font-size: 11px;
-}
-.mc-decision-mini:last-child { border-bottom: none; }
-.mc-decision-mini-side { font-weight: 700; padding: 0 6px; border-radius: 3px; }
-.mc-decision-mini-side.buy { color: #e0483e; background: #fdecea; }
-.mc-decision-mini-side.sell { color: #12b886; background: #e6f7f0; }
-.mc-decision-mini-side.hold { color: #555; background: #f0f0f0; }
-.mc-decision-mini-code { font-weight: 700; flex: none; }
-.mc-decision-mini-pct { color: #666; flex: none; }
-/* 决策理由：完整展示（换行），超高内部滚动 */
-.mc-decision-mini-reason {
-  color: #444;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.55;
-  flex: 1;
-  min-width: 0;
-}
-
-/* 决策迷你卡：两行（动作行 + 退出框架行） */
-.mc-decision-mini { flex-direction: column; align-items: stretch; gap: 2px; }
-.mc-decision-mini-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.mc-decision-mini-exit {
-  font-size: 10px;
-  color: #8a6d00;
-  background: #fffbe6;
-  padding: 2px 6px;
-  border-radius: 3px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-/* 滚动条统一（终端风细条） */
-.mc-code::-webkit-scrollbar,
-.mc-decision-mini-reason::-webkit-scrollbar,
-.mc-decision-mini-exit::-webkit-scrollbar {
-  width: 8px; height: 8px;
-}
-.mc-code::-webkit-scrollbar-thumb,
-.mc-decision-mini-reason::-webkit-scrollbar-thumb,
-.mc-decision-mini-exit::-webkit-scrollbar-thumb {
-  background: #bbb; border-radius: 4px;
-}
-.mc-code::-webkit-scrollbar-track,
-.mc-decision-mini-reason::-webkit-scrollbar-track,
-.mc-decision-mini-exit::-webkit-scrollbar-track {
-  background: #f2f2f2;
-}
-
-/* 2026-09-03 排版自适应：摘要完整展示、滚动区加大、卡片撑满 */
-.mc-card { width: 100%; box-sizing: border-box; }
-.mc-summary {
-  /* 摘要完整撑开，面板统一滚动 */
-}
-.mc-summary::-webkit-scrollbar { width: 8px; }
-.mc-summary::-webkit-scrollbar-thumb { background: #bbb; border-radius: 4px; }
-.mc-code { max-height: 60vh; }
-
-/* 长内容限高 + 展开全文（无嵌套滚动，单一面板滚动） */
-.mc-clamp {
-  -webkit-line-clamp: 12;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.mc-more {
-  margin: 2px 0 8px 10px;
-  padding: 0;
-  border: none;
-  background: none;
-  color: #10a37f;
-  font-size: 10px;
-  font-weight: 700;
-  cursor: pointer;
-  font-family: 'Courier New', monospace;
-}
-.mc-more:hover { text-decoration: underline; }
-
-/* 长内容限高 + 展开全文（无嵌套滚动，单一面板滚动） */
-.mc-clamp {
-  -webkit-line-clamp: 12;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.mc-more {
-  margin: 2px 0 8px 10px;
-  padding: 0;
-  border: none;
-  background: none;
-  color: #10a37f;
-  font-size: 10px;
-  font-weight: 700;
-  cursor: pointer;
-  font-family: 'Courier New', monospace;
-}
-.mc-more:hover { text-decoration: underline; }
+/* 决策卡（ModelDetail 旧卡）保留字段样式 */
+.mc-decision { border: 2px solid #000; background: #fff; display: grid; grid-template-columns: 1fr 1fr; }
+.mc-field { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-bottom: 1px solid #ddd; border-right: 1px solid #ddd; min-width: 0; }
+.mc-field:nth-child(2n), .mc-field-wide { border-right: none; }
+.mc-field:nth-last-child(-n + 1) { border-bottom: none; }
+.mc-key { font-family: 'Courier New', monospace; font-size: 9px; letter-spacing: 0.1em; color: #888; text-transform: uppercase; }
+.mc-val { font-family: 'Courier New', monospace; font-size: 11px; font-weight: 700; word-break: break-word; }
+.mc-val.na { color: #bbb; font-weight: 400; }
+.mc-sym-name { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; }
+.mc-sym-code { font-size: 9px; color: #999; font-variant-numeric: tabular-nums; }
+.mc-side.buy { color: #e0483e; }
+.mc-side.sell { color: #12b886; }
+.mc-field-wide { grid-column: 1 / -1; }
+.mc-reason { font-weight: 400; line-height: 1.6; }

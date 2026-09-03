@@ -116,7 +116,6 @@ export default function ChatStream({
         const isOpen = open.has(i);
         const sec = sections[i] ?? new Set<string>();
         const pa = parsed[i];
-        const summary = pa.summary || (r.thought || r.user).replace(/\s+/g, ' ').trim();
         return (
           <div
             className={`mc-card ${isOpen ? 'open' : ''}`} data-card={i}
@@ -150,7 +149,7 @@ export default function ChatStream({
               <span className="mc-date">{r.ts ? r.ts.slice(5, 16) : '—'}</span>
               <span className={`mc-expand ${isOpen ? 'open' : ''}`}>{isOpen ? '▼' : '▶'}</span>
             </div>
-            <div className="mc-summary">{renderInline(summary)}</div>
+            <div className="mc-summary"><span className="mc-sum-label">总结</span><span className="mc-sum-text">{renderInline(pa.summary || (r.thought || r.user).replace(/\s+/g, ' ').trim())}</span></div>
             {isOpen && (
               <div className="mc-body">
                 {r.user && (

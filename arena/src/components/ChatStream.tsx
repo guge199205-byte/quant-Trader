@@ -4,6 +4,7 @@ import { logoOf, modelColor, shortName } from './ModelCard';
 import { renderInline } from '../utils/markdown';
 import './ModelChat.css';
 import { modeOf } from '../utils/modeTag';
+import { renderActionTags } from '../utils/actionTags';
 
 /** 一个分析回合：单条日志（一次 LLM 分析 = user prompt + assistant 总结） */
 interface MixedRound {
@@ -115,6 +116,7 @@ export default function ChatStream({
                 {shortName(r.model)}
               </span>
               {modeOf(r.user)}
+              {renderActionTags(r.thought)}
               <span className="mc-status">{r.thought ? '已分析' : '仅提示'}</span>
               <span className="mc-date">{r.ts ? r.ts.slice(5, 16) : '—'}</span>
               <span className={`mc-expand ${isOpen ? 'open' : ''}`}>{isOpen ? '▼' : '▶'}</span>

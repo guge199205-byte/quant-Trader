@@ -305,3 +305,10 @@
   color: #555;
   border-color: #ddd;
 }
+
+/* 分析动作标签（空仓/持仓/减仓/加仓/买入/卖出/清仓/新增） */
+.mc-mode-chip.action { border-radius: 4px; }
+.mc-mode-chip.action.sell { background: #fdecea; color: #c62828; border-color: #f3b9b4; }
+.mc-mode-chip.action.buy  { background: #e8f5e9; color: #2e7d32; border-color: #b7dfba; }
+.mc-mode-chip.action.hold { background: #f4f4f4; color: #555; border-color: #ddd; }
+.mc-mode-chip.action.empty { background: #fff; color: #999; border-style: dashed; }

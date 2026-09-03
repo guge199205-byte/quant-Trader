@@ -27,6 +27,24 @@ export interface ChartLine {
   abs?: boolean;
 }
 
+/** 悬停补充信息（可选）：当时持仓 + 附近成交（时序事实，随鼠标滑动查看） */
+export interface HoverEvent {
+  ts: string;
+  agent?: string | null;
+  side?: string;
+  code?: string;
+  volume?: number;
+  price?: number | null;
+}
+
+export interface HoldingSpan {
+  agent: string;
+  code: string;
+  vol: number;
+  from: number; // 毫秒（含）
+  to: number; // 毫秒（含）
+}
+
 export interface BenchLine {  id: string;
   label: string;
   color: string;
@@ -46,6 +64,8 @@ export default function EquityChart({
   mode = 'pct',
   timeRange = 'all',
   height = 380,
+  events,
+  holdings,
 }: {
   lines: ChartLine[];
   benchmark?: BenchLine | null;
@@ -54,6 +74,10 @@ export default function EquityChart({
   timeRange?: 'all' | '5d';
   /** 数字 = 固定 px；字符串 = 任意 CSS 值（如 clamp(...) 响应式高度） */
   height?: number | string;
+  /** 悬停补充：成交事件（拖尾时间窗内展示买卖） */
+  events?: HoverEvent[];
+  /** 悬停补充：持仓时间线（该时刻各 agent 持有代码/数量） */
+  holdings?: HoldingSpan[];
 }) {
   const [hover, setHover] = useState<{ x: number; y: number; label: string; id: string; v: number; t: number } | null>(null);
 
@@ -434,6 +458,51 @@ export default function EquityChart({
                           fontFamily="'Courier New', monospace">
                           {isBench ? '基准指数' : hover.label === '总账户' ? '通达信桥实时总资产' : hover.label === '分账合计' ? '分账合计净值（3 agent）' : '虚拟净值（¥10万起步）'}
                         </text>
+                        {(() => {
+                          // 时序补充：当时持仓 + 附近 ±3 分钟成交（鼠标滑动即查）
+                          const t = hover.t;
+                          const W = 3 * 60000;
+                          const heldRows = (holdings ?? [])
+                            .filter((h) => t >= h.from && t <= h.to)
+                            .slice(0, 6)
+                            .map((h) => ({ key: `h-${h.agent}-${h.code}`, text: `${h.agent.replace('deepseek-v4-', '')}: ${h.code}×${h.vol}` }));
+                          const evtRows = (events ?? [])
+                            .filter((e) => {
+                              const ms = new Date(e.ts).getTime();
+                              return Number.isFinite(ms) && Math.abs(ms - t) <= W;
+                            })
+                            .slice(0, 4)
+                            .map((e) => {
+                              const isBuy = String(e.side).toUpperCase() === 'BUY';
+                              return {
+                                key: `e-${e.ts}-${e.code}`,
+                                text: `${e.ts.slice(5, 16)} ${(e.agent ?? '总账户').replace('deepseek-v4-', '')} ${isBuy ? '买入' : '卖出'} ${e.code} ${e.volume ?? ''}${e.price != null ? `@${e.price}` : ''}`,
+                                color: isBuy ? '#e0483e' : '#12b886',
+                              };
+                            });
+                          const rows = [...heldRows, ...evtRows].filter(
+                            (r, i, arr) => arr.findIndex((x) => x.key === r.key) === i,
+                          );
+                          if (!rows.length) return null;
+                          const bh = 26 + rows.length * 12;
+                          return (
+                            <g>
+                              <rect x={tx} y={ty + 60} width={236} height={bh} fill="#fff"
+                                stroke="#000" strokeWidth={1} rx={4} />
+                              <text x={tx + 6} y={ty + 73} fill="#333" fontSize={9} fontWeight={700}
+                                fontFamily="'Courier New', monospace">
+                                当时持仓/附近成交
+                              </text>
+                              {rows.map((r, i) => (
+                                <text key={r.key} x={tx + 6} y={ty + 73 + 12 * (i + 1)}
+                                  fontSize={9} fontFamily="'Courier New', monospace"
+                                  fill={(r as { color?: string }).color ?? '#555'}>
+                                  {r.text}
+                                </text>
+                              ))}
+                            </g>
+                          );
+                        })()}
                       </Group>
                     );
                   })()}

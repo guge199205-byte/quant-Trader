@@ -26,7 +26,7 @@ import {
   marketMeta,
 } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
-import EquityChart, { toBenchLine, toChartLine } from '../components/EquityChart';
+import EquityChart, { toBenchLine, toChartLine, HoldingSpan } from '../components/EquityChart';
 import RealAccountPanel from '../components/RealAccountPanel';
 import ModelCard, { modelColor, shortName } from '../components/ModelCard';
 import ChatStream from '../components/ChatStream';
@@ -119,6 +119,48 @@ function trailingFlatFrom(vals: number[]): number {
     if (Math.abs(vals[i] - vals[i - 1]) > 1e-9) return i;
   }
   return 0;
+}
+
+/** 持仓时间线（悬停补充）：按 agent/代码 从当前账本出发倒走成交事件，
+ *  重建每段持仓的 (from,to] 毫秒区间与数量；当前持仓以 buy_ts 为起点，
+ *  已清仓的股票区间只由事件支撑，历史未知段不臆造。 */
+function holdingsTimelineOf(
+  events: { ts: string; agent?: string | null; side?: string; volume?: number; code?: string }[],
+  ledgerAgents: Record<string, { positions?: { code: string; volume: number }[] }>,
+): HoldingSpan[] {
+  const spans: HoldingSpan[] = [];
+  const now = Date.now();
+  for (const [agent, rec] of Object.entries(ledgerAgents ?? {})) {
+    const pos = rec?.positions ?? [];
+    const qty = new Map<string, number>();
+    const buyTs = new Map<string, number>();
+    for (const p of pos) {
+      qty.set(p.code, p.volume);
+      const bt = new Date((p as { buy_ts?: string }).buy_ts ?? '').getTime();
+      buyTs.set(p.code, Number.isFinite(bt) ? bt : 0);
+    }
+    const evts = (events ?? [])
+      .filter((e) => e.agent === agent && e.side && Number(e.volume) > 0 && e.code)
+      .sort((a, b) => (a.ts < b.ts ? 1 : -1));
+    let prevT = now;
+    for (const e of evts) {
+      const t = new Date(e.ts).getTime();
+      const code = e.code ?? '';
+      const v = qty.get(code) ?? 0;
+      if (t < prevT && v > 0) spans.push({ agent, code, vol: v, from: t, to: prevT });
+      // 倒走复原：卖出前持有更多，买入前持有更少
+      if (String(e.side).toLowerCase() === 'sell') qty.set(code, v + (Number(e.volume) || 0));
+      else qty.set(code, Math.max(0, v - (Number(e.volume) || 0)));
+      prevT = t;
+    }
+    // 事件之前仍持有的（当前账本有 buy_ts）→ 从买入时刻起
+    for (const [code, v] of qty) {
+      if (v <= 0) continue;
+      const from = buyTs.get(code);
+      spans.push({ agent, code, vol: v, from: from ?? 0, to: prevT });
+    }
+  }
+  return spans;
 }
 
 /** 每秒自走北京时间钟——独立 state，不波及 Live 父组件的轮询/memo。 */
@@ -344,6 +386,18 @@ export default function Live() {
       toChartLine(p.agent, p.agent, modelColor(p.agent), p.points),
     );
   }, [perfs.data, liveEquity.data, liveLedger.data, liveTrades.data, market]);
+
+  // 悬停补充（时序事实）：当时持仓时间线 + 成交事件（仅 cn 实盘数据可支撑）
+  const heldSpans = useMemo(
+    () =>
+      market === 'cn'
+        ? holdingsTimelineOf(
+            liveTrades.data as unknown as Parameters<typeof holdingsTimelineOf>[0],
+            liveLedger.data?.agents as unknown as Parameters<typeof holdingsTimelineOf>[1],
+          )
+        : [],
+    [market, liveTrades.data, liveLedger.data],
+  );
 
   // 实盘 5 分钟净值模式（CN 有实盘点）：不画基准线——SSE50 日线会把时间轴拉到 8 月初
   const hasLiveLine = useMemo(() => {
@@ -962,6 +1016,9 @@ export default function Live() {
                 lines={lines}
                 benchmark={benchLine}
                 currency={meta.currency}
+                // 悬停时序补充：当时持仓（账本反推时间线）+ 附近 ±3 分钟成交（cn 实盘）
+                events={market === 'cn' ? (liveTradesFiltered as unknown as import('../components/EquityChart').HoverEvent[]) : undefined}
+                holdings={market === 'cn' && heldSpans.length ? heldSpans : undefined}
                 mode={chartMode}
                 timeRange={chartRange}
                 height="clamp(360px, 44vw, 560px)"

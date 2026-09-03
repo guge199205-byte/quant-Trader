@@ -39,6 +39,76 @@ import './Live.css';
 
 const BENCH_COLOR = '#10a37f';
 
+/** 空仓时间段反推（成交事件 + 当前账本，时间戳毫秒；纯事实驱动——
+ *  净值曲线本身是阶梯状（桥行情缓存分钟级刷新），按数值连段判空仓会整线误虚。
+ *  账本只存当前快照，用成交事件倒走重建：穿越一笔清仓卖出 → 空仓区间开始；
+ *  穿越一笔买入 → 空仓区间结束。无任何事件且现空仓 → 视为自数据起点空仓。 */
+function emptyTsIntervals(
+  events: { ts: string; agent?: string | null; code?: string; side?: string; volume?: number }[],
+  ledgerAgents: Record<string, { positions?: { code: string; volume: number }[] }>,
+): Record<string, [number, number][]> {
+  const out: Record<string, [number, number][]> = {};
+  const nowTs = Date.now();
+  for (const [agent, rec] of Object.entries(ledgerAgents ?? {})) {
+    const qty = new Map<string, number>();
+    for (const p of rec?.positions ?? []) qty.set(p.code, p.volume);
+    const total = () => [...qty.values()].reduce((s, v) => s + v, 0);
+    const evts = (events ?? [])
+      .filter((e) => e.agent === agent && e.side && Number(e.volume) > 0)
+      .sort((a, b) => (a.ts < b.ts ? 1 : -1));
+    if (!evts.length) {
+      // 无成交事件：持仓状态即当前账本。空仓 → 全程虚线；否则全程实线
+      if (total() === 0) out[agent] = [[0, nowTs]];
+      continue;
+    }
+    const intervals: [number, number][] = [];
+    let emptyEnd: number | null = null;
+    for (const e of evts) {
+      const t = new Date(e.ts).getTime();
+      const stateAfter = total() > 0;
+      const code = e.code ?? '';
+      const vol = Number(e.volume) || 0;
+      if (String(e.side).toLowerCase() === 'sell') qty.set(code, (qty.get(code) ?? 0) + vol);
+      else qty.set(code, Math.max(0, (qty.get(code) ?? 0) - vol));
+      const stateBefore = total() > 0;
+      if (!stateAfter && stateBefore && code) {
+        // 倒走穿越清仓卖出：此刻（正向）刚卖光 → 空仓区间起点
+        intervals.push([t, emptyEnd ?? nowTs]);
+      } else if (stateAfter && !stateBefore) {
+        // 倒走穿越买入：此刻（正向）刚买回 → 空仓区间终点
+        emptyEnd = t;
+      }
+    }
+    if (total() === 0 && intervals.length === 0) {
+      // 倒走到底仍空仓（历史无买入记录）→ 自数据起点空仓
+      intervals.push([0, emptyEnd ?? nowTs]);
+    }
+    out[agent] = intervals;
+  }
+  return out;
+}
+
+/** 空仓时间区间 → 该 agent 净值序列中需画虚线的下标段（含两端） */
+function tsToDashSegs(
+  pts: { t: number }[],
+  intervals: [number, number][],
+): [number, number][] {
+  if (!intervals?.length) return [];
+  const segs: [number, number][] = [];
+  let cur: [number, number] | null = null;
+  pts.forEach((p, idx) => {
+    const inEmpty = intervals.some(([a, b]) => p.t >= a && p.t <= b);
+    if (inEmpty && !cur) cur = [idx, idx];
+    else if (inEmpty && cur) cur[1] = idx;
+    else if (!inEmpty && cur) {
+      segs.push(cur);
+      cur = null;
+    }
+  });
+  if (cur) segs.push(cur);
+  return segs;
+}
+
 /** 每秒自走北京时间钟——独立 state，不波及 Live 父组件的轮询/memo。 */
 function LiveClock() {
   const [now, setNow] = useState(() => Date.now());
@@ -181,8 +251,9 @@ export default function Live() {
   const liveEquity = usePolling(() => fetchLiveEquity(), [], 20000);
   // 实盘 LLM 分析 token 累计（30s 刷新，模型卡显示）
   const tokenUsage = usePolling(() => fetchTokenUsage(), [], 30000);
-  // 实盘分账账本（每 agent ¥10 万虚拟子账户；空仓判定 → 净值曲线虚线）
+  // 实盘账本/成交（上移：空仓段反推在 lines memo 里要用）
   const liveLedger = usePolling(() => fetchLiveLedger(), [], 30000);
+  const liveTrades = usePolling(() => fetchLiveTradesFor(market), [market], 15000);
 
   const lines = useMemo(() => {
     const eq = liveEquity.data;
@@ -191,27 +262,25 @@ export default function Live() {
     // A股实盘优先：每 agent 分账虚拟净值线（¥10 万起，通达信桥实时价）
     // + 总账户线（桥实时总资产）。序列 ≥2 点才画。
     if (market === 'cn' && eq) {
-      // 空仓 agent（账本无持仓）→ 虚线；有持仓但数值平（静态分析期）同样虚线
-      const emptyLedger = new Set(
-        Object.entries(liveLedger.data?.agents ?? {})
-          .filter(([, rec]) => !(rec?.positions ?? []).length)
-          .map(([a]) => a),
+      // 空仓段虚线：成交事件+账本反推真实空仓区间（阶梯状净值不能按等值段猜）
+      const emptyTs = emptyTsIntervals(
+        (liveTrades.data ?? []) as unknown as Parameters<typeof emptyTsIntervals>[0],
+        (liveLedger.data?.agents ?? {}) as unknown as Parameters<typeof emptyTsIntervals>[1],
       );
-      // 分账线：现金恒定/空仓 agent 用虚线保留（平线也有信息量），有变动才实线
+      // 分账线：仅空仓那一段虚线（保留信息量），持仓段一律实线
       const agentLines = Object.entries(eq.agents ?? {})
         .filter(([, pts]) => pts.length >= 2)
         .map(([name, pts]) => {
-          const vals = pts.map((p) => p.value);
-          const flat = Math.min(...vals) === Math.max(...vals);
+          const line = toChartLine(
+            `live-${name}`,
+            name,
+            modelColor(name),
+            pts.map((e) => toEq(e.value, e.ts)),
+          );
           return {
-            ...toChartLine(
-              `live-${name}`,
-              name,
-              modelColor(name),
-              pts.map((e) => toEq(e.value, e.ts)),
-            ),
+            ...line,
             notional: 100000, // 分账名义基准: hover 换算金额盈亏
-            dash: flat || emptyLedger.has(name), // 空仓/无变动 → 虚线
+            dashSegs: tsToDashSegs(line.points, emptyTs[name] ?? []),
           };
         });
       // 总账户线（¥92.5 万量级）只兜底：没有任何分账线可画时才显示。
@@ -232,7 +301,7 @@ export default function Live() {
     return (perfs.data ?? []).map((p) =>
       toChartLine(p.agent, p.agent, modelColor(p.agent), p.points),
     );
-  }, [perfs.data, liveEquity.data, liveLedger.data, market]);
+  }, [perfs.data, liveEquity.data, liveLedger.data, liveTrades.data, market]);
 
   // 实盘 5 分钟净值模式（CN 有实盘点）：不画基准线——SSE50 日线会把时间轴拉到 8 月初
   const hasLiveLine = useMemo(() => {
@@ -279,7 +348,6 @@ export default function Live() {
 
   // ---------- 实盘账户（A股：通达信桥 /live/account；港股：富途 /api/futu/account 直连 OpenD） ----------
   const liveAcct = usePolling(() => fetchLiveAccountFor(market), [market], 15000);
-  const liveTrades = usePolling(() => fetchLiveTradesFor(market), [market], 15000);
   const livePositions = (liveAcct.data?.positions ?? []).filter(
     (p) => Number(p.total_volume) > 0,
   );
@@ -617,9 +685,7 @@ export default function Live() {
             {liveTradesFiltered.map((e, i) => {
               const isSell = String(e.side ?? '').toUpperCase() === 'SELL';
               // 卖出口径区分：卖后桥仍持有该股 → 减仓；已不持有 → 清仓
-              const heldNow = livePositions.some(
-                (p) => (p.stock_code ?? p.code) === e.code,
-              );
+              const heldNow = livePositions.some((p) => p.stock_code === e.code);
               const sideLabel = !isSell ? '买入' : heldNow ? '减仓' : '清仓';
               return (
                 <div className="trade-card" key={`live-${e.ts}-${i}`}>

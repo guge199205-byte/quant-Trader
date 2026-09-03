@@ -18,14 +18,16 @@ export interface ChartLine {
   points: { t: number; v: number }[]; // v 为绝对净值
   /** 名义基准金额（如实盘分账 ¥10 万）→ hover 时换算金额盈亏 */
   notional?: number;
-  /** 虚线（空仓/现金恒定的平线用，保留信息量但不抢视线） */
+  /** 整线虚线（空仓/现金恒定的平线用，保留信息量但不抢视线） */
   dash?: boolean;
+  /** 分段虚线：points 下标区间 [from,to]（含两端）画虚线，其余实线。
+   *  用于「空仓那一段才虚线」：买入后自动回实线，不整线虚化。 */
+  dashSegs?: [number, number][];
   /** 绝对金额线：不参与 pct 归一化，走右侧独立刻度（如分账合计 ¥30 万量级） */
   abs?: boolean;
 }
 
-export interface BenchLine {
-  id: string;
+export interface BenchLine {  id: string;
   label: string;
   color: string;
   points: { t: number; v: number }[]; // v 为指数点位
@@ -334,16 +336,27 @@ export default function EquityChart({
                           fill={`url(#grad-${i})`}
                           curve={curveMonotoneX}
                         />
-                        <LinePath
-                          data={l.points}
-                          x={(p) => xScale(idxOf(p.t)) ?? 0}
-                          y={(p) => yOf(l, p.v) ?? 0}
-                          stroke={l.color}
-                          strokeWidth={hl ? 2.8 : focusActive ? 2 : 1.3}
-                          strokeDasharray={l.dash ? '4 4' : focusActive ? undefined : '6 5'}
-                          filter={hl ? 'url(#line-glow)' : undefined}
-                          curve={curveMonotoneX}
-                        />
+                        {/* 折线：无分段 → 整条一条 path；有 dashSegs → 按实/虚窗口逐段画，
+                            空仓段 4 4 虚线，其余保持实线（或未聚焦时的 6 5 淡线） */}
+                        {((l.dashSegs && l.dashSegs.length) ? dashWindows(l.points.length, l.dashSegs) : [[0, l.points.length]])
+                          .map(([s, e], k) => {
+                            const segPts = l.points.slice(s, e);
+                            if (!segPts.length) return null;
+                            const dashed = !!l.dashSegs?.some(([a, b]) => s >= a && s <= b);
+                            return (
+                              <LinePath
+                                key={`${l.id}-${k}`}
+                                data={segPts}
+                                x={(p) => xScale(idxOf(p.t)) ?? 0}
+                                y={(p) => yOf(l, p.v) ?? 0}
+                                stroke={l.color}
+                                strokeWidth={hl ? 2.8 : focusActive ? 2 : 1.3}
+                                strokeDasharray={dashed ? '4 4' : focusActive ? undefined : '6 5'}
+                                filter={hl ? 'url(#line-glow)' : undefined}
+                                curve={curveMonotoneX}
+                              />
+                            );
+                          })}
                       </Group>
                     );
                   })}
@@ -547,6 +560,26 @@ export const toChartLine = (
   color,
   points: points.map((p) => ({ t: dayjs(p.date).valueOf(), v: p.equity })),
 });
+
+/** dashSegs（[from,to] 含两端）→ 实/虚渲染窗口 [start,end) 列表（升序、首尾补齐）。
+ *  用于「空仓段虚线、持仓段实线」：窗口按分段边界切开，虚线区间标 dashed。 */
+export const dashWindows = (
+  n: number,
+  segs: [number, number][],
+): [number, number][] => {
+  if (n <= 0) return [];
+  const cuts = new Set<number>([0, n]);
+  for (const [a, b] of segs) {
+    cuts.add(Math.max(0, Math.min(n - 1, a)));
+    cuts.add(Math.max(0, Math.min(n, b + 1)));
+  }
+  const edges = [...cuts].sort((x, y) => x - y);
+  const out: [number, number][] = [];
+  for (let i = 0; i + 1 < edges.length; i++) {
+    if (edges[i + 1] > edges[i]) out.push([edges[i], edges[i + 1]]);
+  }
+  return out;
+};
 
 /** 指数序列 → 基准线 */
 export const toBenchLine = (

@@ -10,22 +10,27 @@
 | `/quantmind/skills/`（只读挂载） | 外部 quantmind 仓库技能（可选增强） | dsh 容器内 `/quantmind/skills` 直读，技能契约脚本可用 `docker exec quantmind` 跑重依赖 |
 | `dsh/baymax.*.cordis.yml` | 交易 agent persona/端点补丁（非技能） | dsh `--patch` 参数，盘中分析用 MCP 工具链 |
 
-## 技能清单（12 个，A股/美股/港股）
+## 技能清单（15 个，A股/美股/港股）
 
 | 技能 | 干什么 |
 |---|---|
+| `stock-universal-analysis` | **个股全维度数据体检**：任意 A 股一次拉齐历史日线（前后复权）/板块市值/财报三表/估值技术/因子，QuantDB 直读（2026-09 新增） |
+| `realtime-quotes-tdx` | **通达信实时行情直读**：五档快照/当日 bar/六指数，含行情新鲜度硬检（防"假活"报陈旧价）（2026-09 新增） |
+| `stock-news-sentiment` | **个股实时新闻+情绪**：QuantDB 新闻库/实时源 → FinBERT 或 AI 标注 → 情绪聚合与消息面结论（2026-09 新增） |
 | `market-analysis` | 大盘快照研报：指数/广度/情绪/行业热力/资金流 → MD+PDF 报告 |
 | `stock-research` | 个股深度研究（多 Agent 框架，借鉴 TradingAgents-CN） |
 | `stock-picks` | 每日复盘后的股票推荐（多维度选股） |
 | `stock-market-analysis` | 全市场信号扫描/行业强度/数据导出 |
 | `daily-review` | A股每日复盘（专业版，QuantDB 本地数据） |
-| `news-sentiment-research` | 新闻情绪方法论：RSS 历史库 → FinBERT 情绪因子 |
+| `news-sentiment-research` | 新闻情绪方法论：RSS 历史库 → FinBERT 情绪因子（研究/回测用） |
 | `quantdb-sdk` | QuantDB 数据 SDK：Key 配置/数据集目录/查询 |
 | `quantdb-fields` | QuantDB 字段单位速查手册（实测验证） |
 | `futuapi` | 富途 OpenAPI 交易/行情助手（HK） |
 | `install-futu-opend` | Futu OpenD 一键安装升级（HK 前置） |
 | `ibkr-cli` | IB Gateway/TWS 安装配置与 CLI 操作（US） |
 | `tigeropen` | 老虎 OpenAPI 交易与行情（US/HK 备选通道） |
+
+> 三个新增技能之间协作：`stock-universal-analysis`（历史/基本盘）+ `realtime-quotes-tdx`（实时价/盘口校验）+ `stock-news-sentiment`（消息面）组合 = 一个完整个股快照分析；新闻里的价格一律调用实时技能复核，禁止把新闻数字当现价。
 
 新增技能规范（目录结构、SKILL.md frontmatter、环境契约写法）：见 [AGENT_GUIDE.md](AGENT_GUIDE.md) §③。
 

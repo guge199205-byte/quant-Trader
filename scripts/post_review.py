@@ -142,12 +142,142 @@ def json_blocks(text: str) -> list:
     return blocks
 
 
+
+import re as _re
+
+
+def _extract_price(text: str) -> float | None:
+    """从预案 trigger/文字提取首个价位（75.5 / 80.00）。"""
+    if not text:
+        return None
+    m = _re.search(r"(\d+(?:\.\d+)?)", str(text))
+    return float(m.group(1)) if m else None
+
+
+def sync_plan_to_watch(agent: str, payload: dict) -> int:
+    """P0：复盘预案/观察 → 分钟哨兵条件位（live_watch.json），agent 整组替换。
+    plan: action sell+stop_loss/take_profit 或 trigger 含价 → watch 规则；
+    watch: {code, price, action} → 按 action 映射。文本含'半' → pct 0.5。
+    返回落盘规则数（0 = 该 agent 条件位被清空）。"""
+    from live_price_watch import save_watch_rules
+
+    rules = []
+    for it in (payload.get("plan") or []):
+        if not isinstance(it, dict) or not it.get("code"):
+            continue
+        act = str(it.get("action") or "").lower()
+        if act not in ("sell", "buy", "watch"):
+            continue
+        code = str(it["code"])
+        sl = it.get("stop_loss")
+        tp = it.get("take_profit")
+        if sl is None:
+            sl = _extract_price(str(it.get("trigger") or "") +
+                                (f" 跌破 {it.get('stop_loss')}" if it.get("stop_loss") else ""))
+        if sl is None and tp is None:
+            sl = _extract_price(str(it.get("trigger") or ""))
+        txt = str(it.get("reason") or "") + str(it.get("trigger") or "")
+        m_pct = _re.search(r"(\d{1,3})\s*%", txt)
+        pct = min(max(int(m_pct.group(1)) / 100, 0.0), 1.0) if m_pct \
+            else (0.5 if "半" in txt else 1.0)
+        if act == "buy":
+            rules.append({"code": code, "take_profit": tp or sl, "pct": pct,
+                          "reason": str(it.get("reason") or "")[:80]})
+        else:
+            rules.append({"code": code, "stop_loss": sl or tp, "pct": pct,
+                          "reason": str(it.get("reason") or "")[:80]})
+    for it in (payload.get("watch") or []):
+        if not isinstance(it, dict) or not it.get("code"):
+            continue
+        price = it.get("price") or _extract_price(str(it.get("trigger") or ""))
+        act = str(it.get("action") or "sell").lower()
+        if not price:
+            continue
+        txt = str(it.get("reason") or "") + str(it.get("trigger") or "")
+        m_pct = _re.search(r"(\d{1,3})\s*%", txt)
+        pct = min(max(int(m_pct.group(1)) / 100, 0.0), 1.0) if m_pct \
+            else (0.5 if "半" in txt else 1.0)
+        if act == "buy":
+            rules.append({"code": str(it["code"]), "take_profit": price, "pct": pct,
+                          "reason": str(it.get("reason") or "")[:80]})
+        else:
+            rules.append({"code": str(it["code"]), "stop_loss": price, "pct": pct,
+                          "reason": str(it.get("reason") or "")[:80]})
+    decisions = []
+    for r in rules:
+        decisions.append({"action": "watch", "code": r["code"],
+                          "stop_loss": r.get("stop_loss"), "take_profit": r.get("take_profit"),
+                          "pct": r["pct"], "reason": r["reason"]})
+    n = save_watch_rules(agent, decisions)
+    print(f"  🔔 预案→哨兵同步 {agent}: {n} 条条件位")
+    return n
+
+
+def load_yesterday_outcome(agent: str, date: str) -> str:
+    """昨日预案结局对照（自动判定触发）→ 注入今日复盘。
+    用桥日K最近两根（昨收与今日高低收）对照昨日 plan/watch 价位。"""
+    import datetime as _dt
+
+    today = _dt.date.fromisoformat(date)
+    p = ROOT / "logs" / "review" / agent / f"{today - _dt.timedelta(days=1):%Y-%m-%d}.json"
+    if not p.is_file():
+        return ""
+    try:
+        y = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    items = (y.get("plan") or []) + (y.get("watch") or [])
+    priced = []
+    for it in items:
+        if not isinstance(it, dict) or not it.get("code"):
+            continue
+        price = it.get("price") or it.get("stop_loss") or it.get("take_profit")             or _extract_price(str(it.get("trigger") or ""))
+        if price:
+            priced.append((str(it["code"]), str(it.get("action") or "watch"), float(price),
+                           str(it.get("reason") or "")[:60]))
+    if not priced:
+        return ""
+    try:
+        from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
+
+        broker = TdxBridgeBroker()
+        lines = ["【昨日预案对照（自动判定，供归因）】"]
+        ok = 0
+        for code, act, price, reason in priced:
+            try:
+                bars = broker.get_klines(code, interval="daily")
+            except Exception:  # noqa: BLE001
+                continue
+            if not bars or len(bars) < 2:
+                continue
+            last = bars[-1]
+            if str(last.get("date") or "")[:8] != date.replace("-", ""):
+                lines.append(f"- {code}: 今日 bar 未就绪，无法对照")
+                continue
+            low, high = float(last.get("low") or 0), float(last.get("high") or 0)
+            close = float(last.get("close") or 0)
+            if act == "buy" and high >= price:
+                lines.append(f"- {code} 买入观察@{price}: ✅ 触发（高 {high}），今收 {close}")
+            elif act == "sell" and low <= price:
+                lines.append(f"- {code} 卖出预案@{price}: ✅ 触发（低 {low}），今收 {close}")
+            else:
+                lines.append(f"- {code} {act}@{price}: ⬜ 未触发（区间 {low}-{high}）")
+            ok += 1
+        lines.append("注：触发后的对错交给本轮归因判断（今日结果是否如预案预期）。")
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def run_review(agent: str, date: str, dry: bool = False) -> int:
     from dsh_agent import run_agent
 
     display = {"deepseek-v4-flash": "v4-flash", "deepseek-v4-pro": "v4-pro",
                "glm-5.3-flash": "glm"}.get(agent, agent)
     facts = collect_facts(agent, date)
+    outcome = load_yesterday_outcome(agent, date)  # 昨日预案结局对照（自动判定）
+    if outcome:
+        facts += "\n\n" + outcome
     prompt = build_review_prompt(agent, display, date, facts)
     try:
         from market_state import build_market_state
@@ -200,6 +330,10 @@ def run_review(agent: str, date: str, dry: bool = False) -> int:
         pass
     payload["date"] = date
     payload["agent"] = agent
+    try:
+        sync_plan_to_watch(agent, payload)  # P0：预案/观察 → 分钟哨兵条件位
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️ 预案→哨兵同步失败: {exc}")
     (out_dir / f"{date}.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     # 写回 agent 对话日志流（模型对话 tab 可见；kind=review 前端渲染为复盘卡）

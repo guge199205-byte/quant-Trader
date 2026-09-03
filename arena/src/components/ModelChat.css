@@ -54,8 +54,11 @@
 .mc-date {
   font-family: 'Courier New', monospace;
   font-size: 11px;
-  color: #666;
+  font-weight: 700;              /* 加粗便于扫读 */
+  color: #333;
   margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
 }
 
 .mc-expand {

@@ -1057,9 +1057,18 @@ def live_trades(limit: int = Query(200, ge=1, le=5000)):
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if rec.get("mode") in ("execute", "execute_intraday", "sell") and (
-                "result" in rec or "error" in rec or "fill" in rec or "pending" in rec
+            if rec.get("mode") in ("execute", "execute_intraday", "sell",
+                                   "fill_confirm") and (
+                "result" in rec or "error" in rec or "fill" in rec
+                or "pending" in rec or rec.get("mode") == "fill_confirm"
             ):
+                # fill_confirm（reconcile 兜底确认的成交）没有嵌套 result/fill，
+                # 平铺 volume/price——补一层 fill 让前端 hasFill 判定放行
+                # （2026-09-03：强平守护 13:00 的成交确认因此没进「成交」页）
+                if rec.get("mode") == "fill_confirm" and not rec.get("fill"):
+                    rec["fill"] = {"order_id": rec.get("order_id"),
+                                   "filled_price": rec.get("price"),
+                                   "filled_volume": rec.get("volume")}
                 records.append(rec)
     records.sort(key=lambda r: r.get("ts", ""), reverse=True)
     # 补成交价：桥当日委托 filled_price（按 order_id，回退按 code）

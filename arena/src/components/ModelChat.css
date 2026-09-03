@@ -140,10 +140,8 @@
   color: #222;
   white-space: pre-wrap;
   word-break: break-word;
-  /* 长内容限高 + 可见滚动条：完整内容可滚到，不截断不省略 */
-  max-height: 46vh;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  /* 不设内部滚动：整段撑开，由右侧面板统一承接滚动（单一滚动容器，
+     嵌套滚动会互相抢滚轮导致卡顿——2026-09-03 修复） */
   background: #fafafa;
 }
 
@@ -341,8 +339,6 @@
   color: #444;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 6.2em;
-  overflow-y: auto;
   line-height: 1.55;
   flex: 1;
   min-width: 0;
@@ -359,8 +355,6 @@
   border-radius: 3px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 4.6em;
-  overflow-y: auto;
 }
 
 /* 滚动条统一（终端风细条） */
@@ -383,9 +377,7 @@
 /* 2026-09-03 排版自适应：摘要完整展示、滚动区加大、卡片撑满 */
 .mc-card { width: 100%; box-sizing: border-box; }
 .mc-summary {
-  max-height: 10em;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  /* 摘要完整撑开，面板统一滚动 */
 }
 .mc-summary::-webkit-scrollbar { width: 8px; }
 .mc-summary::-webkit-scrollbar-thumb { background: #bbb; border-radius: 4px; }

@@ -84,14 +84,15 @@ function toDecItems(blocks: unknown[]): DecItem[] {
 /** 匹配数字序号段（②分析链路… / ④决策…），【】标记不可用时的回退 */
 function numberedFallback(t: string): { chain: string; decisionsText: string } {
   const sliceOf = (re: RegExp, endRe: RegExp) => {
+    const tail = (x: string) => x.replace(/[①②③④]\s*$/, '').trim();
     const m = t.match(re);
     if (!m || m.index == null) return '';
     const rest = t.slice(m.index + m[0].length);
     const e = rest.match(endRe);
-    return (e && e.index != null ? rest.slice(0, e.index) : rest).trim();
+    return tail(e && e.index != null ? rest.slice(0, e.index) : rest);
   };
-  const chain = sliceOf(/②\s*分析链路[：:]/u, /③/);
-  const decisionsText = sliceOf(/④\s*决策[：:]?/u, /$/u);
+  const chain = sliceOf(/②\s*分析链路/u, /③/);
+  const decisionsText = sliceOf(/④\s*决策/u, /$/u);
   return { chain: chain || '', decisionsText };
 }
 
@@ -102,7 +103,7 @@ export function parseAnalysis(thought?: string | null): ParsedAnalysis {
   let reasoning = t;
   let decisions: DecItem[] = [];
 
-  const mHead = t.match(/【总体总结】([\s\S]*?)(?=【分析链路】|【推理论证】|【决策】|$)/);
+  const mHead = t.match(/【总体总结】([\s\S]*?)(?=【分析链路】|【推理论证】|【决策】|[①②③④]|$)/);
   const mChain = t.match(/【分析链路】([\s\S]*?)(?=【推理论证】|【决策】|$)/);
   const mReason = t.match(/【推理论证】([\s\S]*?)(?=【决策】|$)/);
   const mDec = t.match(/【决策】([\s\S]*)$/);
@@ -127,10 +128,11 @@ export function parseAnalysis(thought?: string | null): ParsedAnalysis {
     reasoning = lines.join('\n').trim();
   }
   if (!mHead) {
-    // 默认摘要：前两行完整段落（140 字内不截断，超出截断让位滚动）
-    const head = t.split('\n').map((l) => l.trim()).filter((l) => l.length > 0).slice(0, 2).join('　');
-    const clean = head.replace(/^#{1,6}\s*/, '').replace(/\*\*/g, '');
-    summary = clean.length > 140 ? clean.slice(0, 140) + '…' : clean;
+    // 默认摘要：完整段落，遇 ②③④/小节标题即停（不硬切在编号上）
+    const endM = t.match(/[②③④]|^分析链路|^推理论证|^\s*决策|^【/m);
+    const body = endM && endM.index != null ? t.slice(0, endM.index) : t;
+    const clean = body.replace(/^#{1,6}\s*/, '').replace(/\*\*/g, '').trim();
+    summary = clean.length > 260 ? clean.slice(0, 260) + '…' : clean;
   }
   return { summary, chain, reasoning, decisions };
 }

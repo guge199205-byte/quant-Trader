@@ -189,6 +189,42 @@ def build_rows(broker, positions: list, names: dict) -> list:
     return rows
 
 
+def self_minute_feats(code: str) -> dict:
+    """TdxAiData 备胎：用自采分钟快照序列算 30min 动量 / 5min 波动。
+    样本不足返回 {}（沿用现有降级）。"""
+    try:
+        rows = []
+        for f in sorted((ROOT / "logs" / "min_snapshots").glob("*.jsonl"))[-2:]:
+            for l in f.read_text(encoding="utf-8").splitlines():
+                r = json.loads(l)
+                if r.get("code") == code and r.get("px"):
+                    rows.append(r)
+    except (OSError, ValueError):
+        return {}
+    rows.sort(key=lambda r: r["ts"])
+    if len(rows) < 8:
+        return {}
+    pxs = [float(r["px"]) for r in rows]
+    out = {}
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+
+        t0 = _dt.fromisoformat(rows[-1]["ts"])
+        base = None
+        for r in rows:
+            t = _dt.fromisoformat(r["ts"])
+            if t0 - t >= _td(minutes=25):
+                base = float(r["px"])
+        if base:
+            out["mom30m"] = round((pxs[-1] / base - 1) * 100, 2)
+    except Exception:  # noqa: BLE001
+        pass
+    if len(pxs) >= 6:
+        chgs = [pxs[i] / pxs[i - 1] - 1 for i in range(-5, 0)]
+        out["vol5m"] = round((max(chgs) - min(chgs)) * 100, 2)
+    return out
+
+
 def load_l2_factors(codes: list[str]) -> dict:
     """L2 因子：优先 BayMax 自有采集（data/l2_factors_live.json，live_l2_capture.py
     每 5 分钟一轮），无数据时回退 quantmind API（8092 反代注入 token）。
@@ -535,6 +571,8 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
         for r in rows:
             rec = l2.get(r["code"]) or {}
             mf = rec.get("minute_feats") or {}
+            if not mf:
+                mf = self_minute_feats(r["code"])  # TdxAiData 备胎：自采分钟序列
             tk = rec.get("tick_imb") or {}
             if not mf and not tk:
                 continue
@@ -1464,6 +1502,28 @@ def main() -> int:
         cash = float((acct.get("asset") or {}).get("cash") or 0)
         record_equity(broker, asset, cash)
         print(f"[{now:%F %T}] 净值采样完成 资产 ¥{asset:,.2f}")
+        # 自建分钟序列（TdxAiData 备胎）：盘中每分钟把持仓现价/量落盘
+        try:
+            pos_codes = [p.get("stock_code") for p in (acct.get("positions") or [])
+                         if p.get("stock_code")]
+            if pos_codes:
+                mdir = ROOT / "logs" / "min_snapshots"
+                mdir.mkdir(parents=True, exist_ok=True)
+                mf = mdir / f"{now:%Y-%m-%d}.jsonl"
+                for _code in pos_codes:
+                    try:
+                        _r = broker.tdx_call("get_market_snapshot", {"stock_code": _code}) or {}
+                        _px = float(_r.get("Now") or 0)
+                        if _px > 0:
+                            with mf.open("a", encoding="utf-8") as fh:
+                                fh.write(json.dumps(
+                                    {"ts": now.isoformat(), "code": _code,
+                                     "px": _px, "vol": _r.get("Volume")},
+                                    ensure_ascii=False) + "\n")
+                    except Exception:  # noqa: BLE001
+                        continue
+        except Exception:  # noqa: BLE001
+            pass
         # 方案 C: 波动触发 — 交易时段内持仓盈亏 ±3pp 或个股涨跌 ±5% → 立即加跑完整分析
         if args.force or in_trading_window(now):
             positions = [p for p in (acct.get("positions") or [])

@@ -18,6 +18,7 @@ TARGETS = [
     ROOT / "logs" / "debates",         # 分歧仲裁
     ROOT / "logs" / "daily_report",    # 系统日报
     ROOT / "logs" / "budget",          # 风险预算明细
+    ROOT / "logs" / "min_snapshots",   # 自采分钟序列（TdxAiData 备胎）
 ]
 
 

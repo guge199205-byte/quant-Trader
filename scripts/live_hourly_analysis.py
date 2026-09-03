@@ -1265,7 +1265,11 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                 lb = build_leaderboard()
                 if lb:
                     mode_prompt = mode_prompt + f"\n今日各 agent 虚拟净值排行榜（¥10 万起点）：\n{lb}"
-            labeled_content = f"【分析配置：{mode['name']}】\n\n" + user_content
+            # 模式正文必须进提示词：dsh agent 与直连 LLM 一视同仁
+            # （此前 dsh 分支只收到【分析配置：名称】标签，苦行/极限杠杆等
+            #  纪律文字从未进入 v4-flash 的上下文——2026-09-03 修复）
+            labeled_content = (f"【分析配置：{mode['name']}】\n{mode_prompt}\n\n"
+                               + user_content)
             usage = None
             try:
                 if agent_mode_for(agent) == "dsh":

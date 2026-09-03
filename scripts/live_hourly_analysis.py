@@ -343,17 +343,75 @@ def market_data_stale(broker) -> bool:
         return False
 
 
+def build_trade_recap(agent: str, days: int = 7) -> str:
+    """近 N 日成交回顾（事实摘要，防隔日行为漂移）：从成交文件按 agent 聚合
+    有成交回报的买卖，每只股票最多列 4 条。只陈述事实不替模型下结论——
+    注入的是"我上周做了什么"，不是"我该继续做什么"。"""
+    from datetime import datetime, timedelta
+
+    cutoff = (datetime.now().astimezone()
+              - timedelta(days=days)).strftime("%Y-%m-%d")
+    events: list = []
+    for f in sorted((ROOT / "logs").glob("live_trade_*.jsonl")):
+        if any(m in f.name for m in ("_us_", "_hk_")):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if r.get("error") or r.get("agent") != agent or not r.get("side"):
+                continue
+            ts = str(r.get("ts") or "")
+            if ts[:10] < cutoff:
+                continue
+            if r.get("mode") == "fill_confirm":
+                fv, fp = int(r.get("volume") or 0), r.get("price")
+            else:
+                fill = r.get("fill") or {}
+                fv, fp = int(fill.get("filled_volume") or 0), fill.get("filled_price")
+            if fv <= 0:
+                continue
+            events.append({"ts": ts, "code": r.get("code"),
+                           "side": str(r["side"]).lower(), "vol": fv,
+                           "price": float(fp or 0)})
+    if not events:
+        return ""
+    events.sort(key=lambda e: e["ts"])
+    by_code: dict = {}
+    for e in events:
+        by_code.setdefault(e["code"], []).append(e)
+    lines = []
+    for code, evs in by_code.items():
+        for e in evs[-4:]:
+            d = e["ts"][5:10].replace("-", "/")
+            act = "买入" if e["side"] == "buy" else "卖出"
+            px = f" @{e['price']:.2f}" if e["price"] else ""
+            lines.append(f"- {d} {act} {e['code']} {e['vol']}股{px}")
+    if not lines:
+        return ""
+    return ("【近期交易回顾（近{days}日，仅事实参考）】".format(days=days)
+            + "\n" + "\n".join(lines) + "\n"
+            + "（回顾只为一致性参考：若当时理由已失效，允许改变方向并写明原因）")
+
+
 def build_user_content(rows: list, asset: float, cash: float, agent: str,
                        last_decisions: list | None = None,
                        orderbook: dict | None = None,
                        cross_refs: str | None = None,
-                       stale: bool = False) -> str:
+                       stale: bool = False,
+                       recap: str | None = None) -> str:
     lines = [
         f"现在是北京时间 {now_cn():%F %T}（A股{('盘中' if in_trading_window(now_cn()) else '盘前/盘后')}）。"
         f"你是 {agent}（实盘分账账户，初始额度 ¥10 万）。你名下虚拟资产 ¥{asset:,.0f}、"
         f"可用虚拟现金 ¥{cash:,.0f}。你名下实盘持仓：",
         f"杠杆硬约束：持仓市值超过权益（现金+市值）×{LEVERAGE_MAX} 时系统会强制减仓，"
         "请优先自行降杠杆。",
+        *([recap] if recap else []),
         "",
         "| 股票 | 代码 | 现价 | 成本 | 数量 | 持仓金额 | 盈亏 | 盈亏% | 今日涨跌% | 可卖量 |",
         "|------|------|------|------|------|----------|------|-------|-----------|--------|",
@@ -1251,10 +1309,11 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
             if stale:
                 print(f"[{now:%F %T}] 🚨 行情停更（桥假活/通道断），"
                       f"已禁止 {agent} 基于陈旧价格做买卖决策")
+            recap = build_trade_recap(agent)  # 近7日成交回顾（防隔日行为漂移）
             user_content = build_user_content(my_rows, virtual_asset, virtual_cash,
                                               agent,
                                               (last_decisions.get(agent) or {}).get("decisions"),
-                                              orderbook, cross, stale)
+                                              orderbook, cross, stale, recap)
         # 比赛配置多选：选中 N 个配置 → 本轮按 N 个配置各做一轮独立分析（各自落盘一轮对话）
         from prompts.analysis_modes import selected_modes
 

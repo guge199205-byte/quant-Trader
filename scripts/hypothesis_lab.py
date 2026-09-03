@@ -33,6 +33,10 @@ DEFAULT_HYPOTHESES = {
         "name": "动量追高（5日涨>8%后次5日）", "direction": "追高回撤检测",
         "win_rate": None, "avg_ret": None, "n": None, "updated": None,
         "status": "proposed", "note": "价格代理"},
+    "R4_big_drop_volume": {
+        "name": "放量大阴（量>2×均量 且日跌≥3%）", "direction": "次日5日",
+        "win_rate": None, "avg_ret": None, "n": None, "updated": None,
+        "status": "proposed", "note": "价格代理"},
 }
 
 
@@ -93,6 +97,9 @@ def main() -> int:
     # R3 动量追高
     m3 = df["chg5"] > 8
     stats["R3_momentum_chase"] = df.loc[m3, "fwd5"]
+    # R4 放量大阴
+    m4 = cond & (df["volume"] > 2 * df["vol5"]) & (df["chg"] <= -3)
+    stats["R4_big_drop_volume"] = df.loc[m4, "fwd5"]
     # 市场对照
     base_ret = df["fwd5"].dropna()
 

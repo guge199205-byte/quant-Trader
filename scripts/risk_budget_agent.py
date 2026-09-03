@@ -130,6 +130,17 @@ def main() -> int:
                                           "leverage_trim_to")},
            "reasons": reasons,
            "note": "确定性规则内核 v1；状态恢复即自动放松（隔日生效），同日只收紧一次"}
+    # v2：LLM 解释档位含义（数值以确定性为准，解释失败不影响）
+    try:
+        from dsh_agent import run_agent
+
+        task = ("当前风险档=" + lvl["label"] + "，预算="
+                + json.dumps(doc["budget"], ensure_ascii=False) + "，触发因素="
+                + str(reasons or "无")
+                + "。用 2-3 句话给当日三个分账 agent 讲清操作含义：加仓空间、减仓纪律、新动作数量建议。")
+        doc["explain"] = run_agent(task, timeout_s=90, model="glm")[:300]
+    except Exception:  # noqa: BLE001
+        doc["explain"] = ""
     OUT.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
     (DETAIL / f"{today}.json").write_text(json.dumps(doc, ensure_ascii=False, indent=1),
                                           encoding="utf-8")

@@ -1630,8 +1630,16 @@ def main() -> int:
         return 0
     broker = TdxBridgeBroker()
     label = "手动触发" if agents_filter else "每小时定时"
-    return run_analysis(broker, label, dry_run=not do_execute,
-                        agents=agents_filter)
+    rc = run_analysis(broker, label, dry_run=not do_execute,
+                      agents=agents_filter)
+    # 辩论 v2：分歧检测 → arbiter 建议（只记录与提示，不代执行权）
+    try:
+        from debate_arbiter import check_and_arbitrate
+
+        check_and_arbitrate()
+    except Exception:  # noqa: BLE001
+        pass
+    return rc
 
 
 if __name__ == "__main__":

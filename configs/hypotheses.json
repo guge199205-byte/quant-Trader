@@ -5,7 +5,7 @@
   "win_rate": 0.58,
   "avg_ret": 3.215,
   "n": 69,
-  "updated": "2026-09-03",
+  "updated": "2026-09-04",
   "status": "contradicted",
   "note": "价格代理，待事件数据升级",
   "vs_base_pp": 3.4
@@ -16,7 +16,7 @@
   "win_rate": 0.513,
   "avg_ret": 1.654,
   "n": 349,
-  "updated": "2026-09-03",
+  "updated": "2026-09-04",
   "status": "contradicted",
   "note": "价格代理",
   "vs_base_pp": -3.3
@@ -27,9 +27,20 @@
   "win_rate": 0.563,
   "avg_ret": 2.961,
   "n": 3327,
-  "updated": "2026-09-03",
+  "updated": "2026-09-04",
   "status": "proposed",
   "note": "价格代理",
   "vs_base_pp": 1.8
+ },
+ "R4_big_drop_volume": {
+  "name": "放量大阴（量>2×均量 且日跌≥3%）",
+  "direction": "次日5日",
+  "win_rate": 0.4,
+  "avg_ret": -0.736,
+  "n": 35,
+  "updated": "2026-09-04",
+  "status": "verified",
+  "note": "价格代理",
+  "vs_base_pp": -14.6
  }
 }

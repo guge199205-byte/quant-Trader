@@ -179,6 +179,23 @@ def run_review(agent: str, date: str, dry: bool = False) -> int:
         for k in payload:
             if b.get(k) is not None:
                 payload[k] = b[k]
+    # v2：复盘 hypothesis_candidates 自动登记入假设库（状态 proposed 待复测）
+    try:
+        hyp_path = ROOT / "configs" / "hypotheses.json"
+        hyps = json.loads(hyp_path.read_text(encoding="utf-8")) if hyp_path.is_file() else {}
+        changed = False
+        for i, cand in enumerate(payload.get("hypothesis_candidates") or []):
+            txt = str(cand.get("description") or cand if isinstance(cand, str) else cand)[:120]
+            key = f"H_{date}_{i}"
+            if key not in hyps and txt:
+                hyps[key] = {"name": txt, "direction": str(cand.get("direction") or ""),
+                             "win_rate": None, "n": None, "updated": date,
+                             "status": "proposed", "source": "review"}
+                changed = True
+        if changed:
+            hyp_path.write_text(json.dumps(hyps, ensure_ascii=False, indent=1), encoding="utf-8")
+    except (OSError, ValueError, TypeError):
+        pass
     payload["date"] = date
     payload["agent"] = agent
     (out_dir / f"{date}.json").write_text(

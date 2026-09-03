@@ -132,8 +132,11 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
 
   const items: FeedItem[] = useMemo(() => {
     if (isCnLive) {
-      // 实盘口径：真实清仓事件直接成 feed（agent 字段自带）
-      return (cnClosed.data ?? []).map((t) => ({ ...t, agent: t.agent }));
+      // 实盘口径：真实清仓事件直接成 feed（agent 字段自带）；
+      // 按顶部模型筛选收窄（'all' 时 agents=全部模型名，天然全过）
+      return (cnClosed.data ?? [])
+        .filter((t) => agents.length === 0 || agents.includes(t.agent))
+        .map((t) => ({ ...t, agent: t.agent }));
     }
     const out: FeedItem[] = [];
     for (const f of feeds.data ?? []) {
@@ -141,7 +144,7 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
     }
     out.sort((a, b) => (a.exit_date < b.exit_date ? 1 : -1));
     return out;
-  }, [feeds.data, cnClosed.data, isCnLive]);
+  }, [feeds.data, cnClosed.data, isCnLive, agents]);
 
   const hkItems = hkFeed.data ?? [];
   const count = isHk ? hkItems.length : items.length;

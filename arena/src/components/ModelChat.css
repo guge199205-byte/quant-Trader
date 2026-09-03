@@ -77,10 +77,9 @@
   line-height: 1.6;
   color: #333;
   padding: 10px 12px;
-  /* 折叠态摘要加高：两行以上可见，减少折叠卡片挤成一排的压迫感 */
+  /* 摘要完整展示：不设高度上限，超长内容直接撑开卡片，由页面滚动承接
+     （内部小滚动区无可见滚动条，会让人误以为内容被截断） */
   min-height: 3em;
-  max-height: 110px;
-  overflow-y: auto;
 }
 
 /* 分析模式徽标（情境感知等）：模型名右侧，折叠态也可见 */
@@ -141,10 +140,10 @@
   color: #222;
   white-space: pre-wrap;
   word-break: break-word;
-  /* 思考链长文（如盘中持仓分析）可视高度：260px 只够几行就滚动，
-     调高到 480px 让长分析一屏可见，超长仍可滚动 */
-  max-height: 480px;
+  /* 长内容限高 + 可见滚动条：完整内容可滚到，不截断不省略 */
+  max-height: 46vh;
   overflow-y: auto;
+  overscroll-behavior: contain;
   background: #fafafa;
 }
 
@@ -337,7 +336,17 @@
 .mc-decision-mini-side.hold { color: #555; background: #f0f0f0; }
 .mc-decision-mini-code { font-weight: 700; flex: none; }
 .mc-decision-mini-pct { color: #666; flex: none; }
-.mc-decision-mini-reason { color: #444; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 决策理由：完整展示（换行），超高内部滚动 */
+.mc-decision-mini-reason {
+  color: #444;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 6.2em;
+  overflow-y: auto;
+  line-height: 1.55;
+  flex: 1;
+  min-width: 0;
+}
 
 /* 决策迷你卡：两行（动作行 + 退出框架行） */
 .mc-decision-mini { flex-direction: column; align-items: stretch; gap: 2px; }
@@ -348,7 +357,25 @@
   background: #fffbe6;
   padding: 2px 6px;
   border-radius: 3px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 4.6em;
+  overflow-y: auto;
+}
+
+/* 滚动条统一（终端风细条） */
+.mc-code::-webkit-scrollbar,
+.mc-decision-mini-reason::-webkit-scrollbar,
+.mc-decision-mini-exit::-webkit-scrollbar {
+  width: 8px; height: 8px;
+}
+.mc-code::-webkit-scrollbar-thumb,
+.mc-decision-mini-reason::-webkit-scrollbar-thumb,
+.mc-decision-mini-exit::-webkit-scrollbar-thumb {
+  background: #bbb; border-radius: 4px;
+}
+.mc-code::-webkit-scrollbar-track,
+.mc-decision-mini-reason::-webkit-scrollbar-track,
+.mc-decision-mini-exit::-webkit-scrollbar-track {
+  background: #f2f2f2;
 }

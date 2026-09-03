@@ -382,3 +382,43 @@
 .mc-summary::-webkit-scrollbar { width: 8px; }
 .mc-summary::-webkit-scrollbar-thumb { background: #bbb; border-radius: 4px; }
 .mc-code { max-height: 60vh; }
+
+/* 长内容限高 + 展开全文（无嵌套滚动，单一面板滚动） */
+.mc-clamp {
+  -webkit-line-clamp: 12;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.mc-more {
+  margin: 2px 0 8px 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #10a37f;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: 'Courier New', monospace;
+}
+.mc-more:hover { text-decoration: underline; }
+
+/* 长内容限高 + 展开全文（无嵌套滚动，单一面板滚动） */
+.mc-clamp {
+  -webkit-line-clamp: 12;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.mc-more {
+  margin: 2px 0 8px 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #10a37f;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: 'Courier New', monospace;
+}
+.mc-more:hover { text-decoration: underline; }

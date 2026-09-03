@@ -32,6 +32,8 @@ export default function ChatStream({
 }) {
   const [open, setOpen] = useState<Set<number>>(new Set());
   const [sections, setSections] = useState<Record<number, Set<string>>>({});
+  const [exp, setExp] = useState<Record<string, boolean>>({});
+  const expKey = (i: number, k: string) => `${i}-${k}`;
 
   /** 跨行合并成回合：user 开新回合，assistant 并入最近回合。
    *  A 股日志单行含 user+assistant；港股把 user/assistant 拆到不同日志行（各 1 条），
@@ -157,7 +159,22 @@ export default function ChatStream({
                       <span className="mc-caret">{sec.has('prompt') ? '▶' : '▼'}</span>
                       用户提示词
                     </div>
-                    {!sec.has('prompt') && <pre className="mc-code">{renderInline(r.user)}</pre>}
+                    {!sec.has('prompt') && (() => {
+        const txt = r.user;
+        const long = txt.length > 480;
+        const open = !!exp[expKey(i, 'prompt')];
+        return (
+          <>
+            <pre className={`mc-code  ${long && !open ? 'mc-clamp' : ''}`}>{renderInline(txt)}</pre>
+            {long && (
+              <button className="mc-more"
+                onClick={() => setExp((e) => ({ ...e, [expKey(i, 'prompt')]: !open }))}>
+                {open ? '收起' : '展开全文'}
+              </button>
+            )}
+          </>
+        );
+      })()}
                   </div>
                 )}
                 {pa.chain && (
@@ -166,7 +183,22 @@ export default function ChatStream({
                       <span className="mc-caret">{sec.has('chain') ? '▶' : '▼'}</span>
                       分析链路（工具调用）
                     </div>
-                    {!sec.has('chain') && <pre className="mc-code">{renderInline(pa.chain)}</pre>}
+                    {!sec.has('chain') && (() => {
+        const txt = pa.chain;
+        const long = txt.length > 480;
+        const open = !!exp[expKey(i, 'chain')];
+        return (
+          <>
+            <pre className={`mc-code  ${long && !open ? 'mc-clamp' : ''}`}>{renderInline(txt)}</pre>
+            {long && (
+              <button className="mc-more"
+                onClick={() => setExp((e) => ({ ...e, [expKey(i, 'chain')]: !open }))}>
+                {open ? '收起' : '展开全文'}
+              </button>
+            )}
+          </>
+        );
+      })()}
                   </div>
                 )}
                 {pa.decisions.length > 0 && (
@@ -218,7 +250,22 @@ export default function ChatStream({
                       <span className="mc-caret">{sec.has('reason') ? '▶' : '▼'}</span>
                       推理论证
                     </div>
-                    {!sec.has('reason') && <pre className="mc-code mc-thought">{renderInline(pa.reasoning)}</pre>}
+                    {!sec.has('reason') && (() => {
+        const txt = pa.reasoning;
+        const long = txt.length > 480;
+        const open = !!exp[expKey(i, 'reason')];
+        return (
+          <>
+            <pre className={`mc-code mc-thought ${long && !open ? 'mc-clamp' : ''}`}>{renderInline(txt)}</pre>
+            {long && (
+              <button className="mc-more"
+                onClick={() => setExp((e) => ({ ...e, [expKey(i, 'reason')]: !open }))}>
+                {open ? '收起' : '展开全文'}
+              </button>
+            )}
+          </>
+        );
+      })()}
                   </div>
                 )}
               </div>

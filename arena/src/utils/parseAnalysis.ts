@@ -1,7 +1,9 @@
 /** 分析文本四段式解析：总体总结 / 分析链路 / 推理论证 / 交易决策。
- *  v4-flash 输出约定标记【总体总结】【分析链路】【推理论证】【决策】；
- *  其他模型/历史文本无标记时回退启发式（首行=总结、已调用行=链路、
- *  尾部 JSON=决策）。前端按段渲染，决策块渲染为行动卡片。 */
+ *  统一处理两套标记：
+ *    A) 【总体总结】【分析链路】【推理论证】【决策】
+ *    B) ①/②/③/④ + 小节名（flash 实测输出风格）
+ *  无任何标记时回退：摘要=首段，推理=去掉已调用行与决策 JSON 的正文。
+ *  各段互不重叠（摘要不会在推理里重复出现）。 */
 export interface DecItem {
   action: string; // buy / sell / hold / watch
   code?: string;
@@ -81,58 +83,65 @@ function toDecItems(blocks: unknown[]): DecItem[] {
   return items.slice(0, 8);
 }
 
-/** 匹配数字序号段（②分析链路… / ④决策…），【】标记不可用时的回退 */
-function numberedFallback(t: string): { chain: string; decisionsText: string } {
-  const sliceOf = (re: RegExp, endRe: RegExp) => {
-    const tail = (x: string) => x.replace(/[①②③④]\s*$/, '').trim();
-    const m = t.match(re);
-    if (!m || m.index == null) return '';
-    const rest = t.slice(m.index + m[0].length);
-    const e = rest.match(endRe);
-    return tail(e && e.index != null ? rest.slice(0, e.index) : rest);
-  };
-  const chain = sliceOf(/②\s*分析链路/u, /③/);
-  const decisionsText = sliceOf(/④\s*决策/u, /$/u);
-  return { chain: chain || '', decisionsText };
-}
+const clean = (x: string) => x.replace(/^[①②③④]?\s*/, '').replace(/[①②③④]\s*$/, '').trim();
 
 export function parseAnalysis(thought?: string | null): ParsedAnalysis {
-  const t = thought ?? '';
-  let summary = '';
-  let chain = '';
-  let reasoning = t;
-  let decisions: DecItem[] = [];
+  const t = (thought ?? '').trim();
+  const out: ParsedAnalysis = { summary: '', chain: '', reasoning: t, decisions: [] };
+  if (!t) return out;
 
-  const mHead = t.match(/【总体总结】([\s\S]*?)(?=【分析链路】|【推理论证】|【决策】|[①②③④]|$)/);
-  const mChain = t.match(/【分析链路】([\s\S]*?)(?=【推理论证】|【决策】|$)/);
-  const mReason = t.match(/【推理论证】([\s\S]*?)(?=【决策】|$)/);
-  const mDec = t.match(/【决策】([\s\S]*)$/);
+  const idxOf = (re: RegExp) => {
+    const m = t.match(re);
+    return m && m.index != null ? m.index : -1;
+  };
+  const hasBra = /【总体总结】|【分析链路】|【推理论证】|【决策】/.test(t);
+  const i1 = idxOf(/①|【总体总结】/);
+  const i2 = idxOf(/②|【分析链路】/);
+  const i3 = idxOf(/③|【推理论证】/);
+  const i4 = idxOf(/④|【决策】/);
+  const hasNum = [i1, i2, i3, i4].some((i) => i >= 0);
 
-  if (mHead) summary = mHead[1].trim();
-  if (mChain) chain = mChain[1].trim();
-  if (mReason) reasoning = mReason[1].trim();
-  const decText = mDec ? mDec[1] : '';
-
-  if (!mChain && !mDec) {
-    const fb = numberedFallback(t);
-    chain = chain || fb.chain;
+  if (hasNum) {
+    // 编号/【】位置分隔，各段互不重叠
+    const seg = (from: number, to: number) =>
+      from >= 0 ? clean(t.slice(from + 1, to >= 0 ? to : undefined)) : '';
+    out.summary = i1 >= 0 ? seg(i1, i2 >= 0 ? i2 : i3 >= 0 ? i3 : i4) : '';
+    out.chain = seg(i2, i3);
+    const reasonRaw = seg(i3, i4);
+    out.reasoning = reasonRaw || t;
+    const decRaw = i4 >= 0 ? t.slice(i4 + 1) : '';
+    out.decisions = toDecItems(extractJsonBlocks(hasBra ? decRaw : decRaw || t));
+    if (!out.summary && i1 < 0 && i2 > 0) {
+      // 无非标题①直接②开头：②前（如有）即摘要
+      const pre2 = clean(t.slice(0, i2));
+      out.summary = pre2;
+    }
+    out.summary = out.summary || (t.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '');
+    if (!hasBra && !out.chain && i2 >= 0 && i3 > i2) {
+      out.chain = clean(t.slice(i2 + 1, i3));
+    }
+  } else if (hasBra) {
+    // 仅【】标记：按原逻辑
+    const mH = t.match(/【总体总结】([\s\S]*?)(?=【分析链路】|【推理论证】|【决策】|$)/);
+    const mC = t.match(/【分析链路】([\s\S]*?)(?=【推理论证】|【决策】|$)/);
+    const mR = t.match(/【推理论证】([\s\S]*?)(?=【决策】|$)/);
+    const mD = t.match(/【决策】([\s\S]*)$/);
+    if (mH) out.summary = clean(mH[1]);
+    if (mC) out.chain = clean(mC[1]);
+    if (mR) out.reasoning = clean(mR[1]);
+    out.decisions = toDecItems(extractJsonBlocks(mD ? mD[1] : t));
+    if (!mH) {
+      const endM = t.match(/[②③④]|^分析链路|^推理论证|^\s*决策|^【/m);
+      const body = endM && endM.index != null ? t.slice(0, endM.index) : t;
+      out.summary = clean(body);
+    }
+  } else {
+    // 完全无标记：摘要=首段；推理=去掉已调用行与决策 JSON 尾巴全文
+    const firstPar = t.split('\n\n')[0] ?? t;
+    out.summary = clean(firstPar).slice(0, 260);
+    const lines = t.split('\n').filter((l) => !/^\s*已调用/.test(l));
+    out.reasoning = lines.join('\n').trim();
+    out.decisions = toDecItems(extractJsonBlocks(t));
   }
-  decisions = toDecItems(extractJsonBlocks(decText || t));
-  if (!decisions.length && !decText) {
-    // 回退：任何带 action 的 JSON 块
-    decisions = toDecItems(extractJsonBlocks(t));
-  }
-  if (!mReason) {
-    // 无【推理论证】标记时，正文去掉已调用行与决策 JSON 尾巴即为推理
-    const lines = reasoning.split('\n').filter((l) => !/^\s*已调用/.test(l));
-    reasoning = lines.join('\n').trim();
-  }
-  if (!mHead) {
-    // 默认摘要：完整段落，遇 ②③④/小节标题即停（不硬切在编号上）
-    const endM = t.match(/[②③④]|^分析链路|^推理论证|^\s*决策|^【/m);
-    const body = endM && endM.index != null ? t.slice(0, endM.index) : t;
-    const clean = body.replace(/^#{1,6}\s*/, '').replace(/\*\*/g, '').trim();
-    summary = clean.length > 260 ? clean.slice(0, 260) + '…' : clean;
-  }
-  return { summary, chain, reasoning, decisions };
+  return out;
 }

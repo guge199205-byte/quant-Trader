@@ -1399,7 +1399,22 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
         from prompts.analysis_modes import rotated_modes
 
         agent_exec_done = False  # 每 agent 每小时只执行一轮（多模式多轮会叠加买入突破分账额度）
-        # 盘面状态（系统确定性注入，模型不可争辩；5 分钟缓存）
+        # 已验证假设（阶段2：带胜率证据的定性，防agent拿未验证认知当真理）
+    try:
+        hyp = json.loads((ROOT / "configs" / "hypotheses.json").read_text(encoding="utf-8"))
+        lines = []
+        for h in hyp.values():
+            if h.get("status") not in ("verified", "contradicted") or not h.get("n"):
+                continue
+            tag = "✅已验证" if h["status"] == "verified" else "🚫证伪"
+            lines.append(f"- {tag} {h.get('name')}: 次5日胜率 {h['win_rate']:.0%} "
+                         f"(vs 基准差 {h.get('vs_base_pp'):+.1f}pp · n={h['n']} · {h.get('updated','')})"
+                         if h.get("win_rate") else f"- {tag} {h.get('name')}")
+        hyp_lines = ("\n【已验证假设（事件研究，近1年×60样本，对照全样本基准）】\n"
+                     + "\n".join(lines)) if lines else ""
+    except (OSError, ValueError):
+        hyp_lines = ""
+    # 盘面状态（系统确定性注入，模型不可争辩；5 分钟缓存）
         try:
             from market_state import build_market_state
 
@@ -1417,6 +1432,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
             #  纪律文字从未进入 v4-flash 的上下文——2026-09-03 修复）
             labeled_content = (f"【分析配置：{mode['name']}】\n{mode_prompt}\n"
                                + (f"{state_text}\n" if state_text else "")
+                               + (f"{hyp_lines}\n" if hyp_lines else "")
                                + "\n" + user_content)
             usage = None
             try:

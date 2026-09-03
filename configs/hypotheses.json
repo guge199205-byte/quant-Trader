@@ -1,0 +1,35 @@
+{
+ "R1_volume_stall": {
+  "name": "放量滞涨（量>2×5日均量 且日涨0~3%）",
+  "direction": "次日5日偏空",
+  "win_rate": 0.58,
+  "avg_ret": 3.215,
+  "n": 69,
+  "updated": "2026-09-03",
+  "status": "contradicted",
+  "note": "价格代理，待事件数据升级",
+  "vs_base_pp": 3.4
+ },
+ "R2_shrink_pullback": {
+  "name": "缩量回踩（连跌3日 末日量<0.7×均量）",
+  "direction": "次日5日偏多",
+  "win_rate": 0.513,
+  "avg_ret": 1.654,
+  "n": 349,
+  "updated": "2026-09-03",
+  "status": "contradicted",
+  "note": "价格代理",
+  "vs_base_pp": -3.3
+ },
+ "R3_momentum_chase": {
+  "name": "动量追高（5日涨>8%后次5日）",
+  "direction": "追高回撤检测",
+  "win_rate": 0.563,
+  "avg_ret": 2.961,
+  "n": 3327,
+  "updated": "2026-09-03",
+  "status": "proposed",
+  "note": "价格代理",
+  "vs_base_pp": 1.8
+ }
+}

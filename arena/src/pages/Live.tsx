@@ -462,9 +462,14 @@ export default function Live() {
   // 注意用 selectedModel 判断（effectiveModel 会把 all 降级成第一个模型）
   const chatAll = usePolling<{ name: string; lines: LogLine[] }[] | null>(() => {
     if (selectedModel !== 'all' || tab !== 'chat' || !rows.length) return Promise.resolve(null);
-    return Promise.all(
-      rows.map((r) => fetchLogs(r.name, market).catch(() => [] as LogLine[])),
-    ).then((lists) => rows.map((r, i) => ({ name: r.name, lines: lists[i] })));
+    const units = rows.map((r) => ({ name: r.name, pull: () => fetchLogs(r.name, market) }));
+    if (market === 'cn') {
+      // 晚间市场研究 agent 的对话卡（pseudo『研究总控』，数据目录 market-research）
+      units.push({ name: '研究总控', pull: () => fetchLogs('market-research', market) });
+    }
+    return Promise.all(units.map((u) => u.pull().catch(() => [] as LogLine[]))).then(
+      (lists) => units.map((u, i) => ({ name: u.name, lines: lists[i] })),
+    );
   }, [selectedModel, tab, rows, market], 30000);
 
   // ---------- 实盘账户（A股：通达信桥 /live/account；港股：富途 /api/futu/account 直连 OpenD） ----------

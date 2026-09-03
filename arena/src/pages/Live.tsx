@@ -467,6 +467,24 @@ export default function Live() {
   const liveTradesFiltered = liveTradeEvents.filter(
     (e) => selectedModel === 'all' || e.agent === selectedModel,
   );
+  /** 实盘成交按日期分组（今日 → 9/1 …），日期头分组展示历史 */
+  const liveGroups = useMemo(() => {
+    const today = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+    const out: { label: string; rows: typeof liveTradesFiltered }[] = [];
+    for (const e of liveTradesFiltered) {
+      const d = String(e.ts).slice(0, 10);
+      const last = out[out.length - 1];
+      if (last && last.rows[0] && String(last.rows[0].ts).slice(0, 10) === d) {
+        last.rows.push(e);
+      } else {
+        out.push({
+          label: d === today ? `今日实盘成交 · ${d.slice(5)}` : `实盘成交 · ${d.slice(5)}`,
+          rows: [e],
+        });
+      }
+    }
+    return out;
+  }, [liveTradesFiltered]);
   const heldSymbols = useMemo(() => {
     const set = new Set<string>();
     for (const rec of marketPositions.data ?? []) {
@@ -731,40 +749,49 @@ export default function Live() {
     }
     return (
       <>
-        {(market === 'cn' || market === 'hk' || market === 'us') && liveTradesFiltered.length > 0 && (
+        {(market === 'cn' || market === 'hk' || market === 'us') && liveGroups.length > 0 && (
           <>
-            <div className="pos-section-title">
-              今日实盘成交（
-              {market === 'hk' ? '富途' : market === 'us' ? 'IBKR' : '通达信桥'}）
-            </div>
-            {liveTradesFiltered.map((e, i) => {
-              const isSell = String(e.side ?? '').toUpperCase() === 'SELL';
-              // 卖出口径区分：卖后桥仍持有该股 → 减仓；已不持有 → 清仓
-              const heldNow = livePositions.some((p) => p.stock_code === e.code);
-              const sideLabel = !isSell ? '买入' : heldNow ? '减仓' : '清仓';
-              return (
-                <div className="trade-card" key={`live-${e.ts}-${i}`}>
-                  <div className="trade-card-head">
-                    <span className={`trade-side ${isSell ? (heldNow ? 'sell partial' : 'sell') : 'buy'}`}>
-                      {sideLabel}
-                    </span>
-                    <b className="trade-card-symbol">{e.name}</b>
-                    <span className="trade-card-code">{e.code}</span>
-                    <span className="trade-card-date">{e.ts.slice(5, 16)}</span>
-                  </div>
-                  <div className="trade-card-grid">
-                    <span>归属{' '}
-                      <b style={{ color: e.agent ? modelColor(e.agent) : '#000' }}>
-                        {e.agent ?? '总账户'}
-                      </b>
-                    </span>
-                    <span>数量 <b>{e.volume.toLocaleString('en-US')}</b></span>
-                    <span>成交价 <b>{e.price != null ? fmtMoney(e.price, meta.currency) : '—'}</b></span>
-                    <span>成交金额 <b>{fmtMoney((e.price ?? 0) * e.volume, meta.currency)}</b></span>
-                  </div>
+            {liveGroups.map((g) => (
+              <div key={g.label}>
+                <div className="pos-section-title">
+                  {g.label}
+                  {g.rows[0] && (market === 'hk' ? '（富途）' : market === 'us' ? '（IBKR）' : '（通达信桥）')}
                 </div>
-              );
-            })}
+                {g.rows.map((e, i) => {
+                  const isSell = String(e.side ?? '').toUpperCase() === 'SELL';
+                  const isBuy = String(e.side ?? '').toUpperCase() === 'BUY';
+                  // 卖出口径区分：卖后桥仍持有该股 → 减仓；已不持有 → 清仓
+                  const heldNow = livePositions.some((p) => p.stock_code === e.code);
+                  const sideLabel = !isBuy && !isSell ? '成交' : isBuy ? '买入' : heldNow ? '减仓' : '清仓';
+                  return (
+                    <div className="trade-card" key={`live-${e.ts}-${i}`}>
+                      <div className="trade-card-head">
+                        <span
+                          className={`trade-side ${
+                            isBuy ? 'buy' : isSell ? (heldNow ? 'sell partial' : 'sell') : 'info'
+                          }`}
+                        >
+                          {sideLabel}
+                        </span>
+                        <b className="trade-card-symbol">{e.name}</b>
+                        <span className="trade-card-code">{e.code}</span>
+                        <span className="trade-card-date">{e.ts.slice(5, 16)}</span>
+                      </div>
+                      <div className="trade-card-grid">
+                        <span>归属{' '}
+                          <b style={{ color: e.agent ? modelColor(e.agent) : '#000' }}>
+                            {e.agent ?? '总账户'}
+                          </b>
+                        </span>
+                        <span>数量 <b>{e.volume.toLocaleString('en-US')}</b></span>
+                        <span>成交价 <b>{e.price != null ? fmtMoney(e.price, meta.currency) : '—'}</b></span>
+                        <span>成交金额 <b>{fmtMoney((e.price ?? 0) * e.volume, meta.currency)}</b></span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
             <div className="pos-section-title" style={{ marginTop: 10 }}>模拟盘成交</div>
           </>
         )}

@@ -8,8 +8,9 @@ const SECTIONS = [
   { id: '05', title: '赛制与实盘' },
   { id: '06', title: '成本与指标口径' },
   { id: '07', title: '决策透明' },
-  { id: '08', title: '扩展开发' },
-  { id: '09', title: '免责声明' },
+  { id: '08', title: '全天候循环' },
+  { id: '09', title: '扩展开发' },
+  { id: '10', title: '免责声明' },
 ];
 
 /** About 页：系统结构说明（架构/闭环/模块/赛制/指标口径），排版随 Arena 终端风。 */
@@ -20,12 +21,12 @@ export default function About() {
       <div className="about-head">
         <div className="about-title-row">
           <h1>ABOUT <span className="accent">/</span> 关于竞技场</h1>
-          <span className="about-ver">v0.1.0</span>
+          <span className="about-ver">v0.2.0</span>
         </div>
         <div className="about-meta">
           <span className="about-meta-item"><b>市场</b> 美股 · A股 · 港股</span>
-          <span className="about-meta-item"><b>模型</b> DeepSeek V4 Flash / V4 Pro / GLM 5.3 Flash</span>
-          <span className="about-meta-item"><b>数据底座</b> QuantDB 本地仓库（十年）</span>
+          <span className="about-meta-item"><b>模型</b> v4-flash(dsh 工具型) / v4-pro(研究员) / glm(消息面)</span>
+          <span className="about-meta-item"><b>数据底座</b> QuantDB + 通达信桥 + 同花顺 Fuyao</span>
           <span className="about-meta-item"><b>实盘通道</b> 通达信桥（A股）</span>
         </div>
       </div>
@@ -44,9 +45,10 @@ export default function About() {
       <section id="about-01" className="panel about-sec">
         <h2 className="panel-title"><span className="about-sec-num">01</span> 系统总览</h2>
         <p className="about-desc">
-          LLM 智能体自主交易竞技场：多个 AI 模型以独立资金池在美股 / A股 / 港股三市场
-          自主分析、决策、买卖，零人工干预，公平对决。每个 Agent 拥有独立的资金、持仓与记忆，
-          交易全程落盘可回溯。
+          工具型交易智能体体系：三个角色分化的 AI agent（快枪手/研究员/消息面）以
+          真实券商通道（通达信桥）+ 分账子账户全天候自主运行——盘前定档、盘中分析执行、
+          盘后复盘进化、夜间研究选池。每个 agent 拥有独立额度、持仓、记忆与复盘，
+          决策-执行-风控全程落盘可回溯，风控闸门为确定性代码、模型不可绕过。
         </p>
         <div className="about-stats">
           <div className="about-stat">
@@ -121,11 +123,14 @@ dsh Web 3081（agent 会话/工具调用可视化）`}</pre>
           <dt>② LLM 决策</dt>
           <dd>Agent 通过 MCP 工具读行情 / 算指标 / 搜新闻，LLM 自行推理买卖，全程零人工干预</dd>
           <dt>③ 风控校验</dt>
-          <dd>单笔与持仓限额（权益 20%）、日亏熔断（5%）、现金保留、黑名单 —— 三条交易路径单点拦截</dd>
+          <dd>确定性闸门（模型不可绕过）：单票 ≤ 剩余额度 20% / 持仓市值 ≤ 权益×1.5（分钟级强平守护）
+              / T+1 可卖复核 / 涨跌停不接 / 拒单自动延期重放 / 行情停更硬闸；
+              风险预算 meta-agent 每日按波动/回撤/情绪动态定档（平静 1.5× / 谨慎 1.2× / 防守 1.0×）</dd>
           <dt>④ 执行落盘</dt>
           <dd>模拟盘按价格文件 + 滑点重算成交；A股实盘经通达信桥在真实券商通道成交，双边万 3 费率；持仓 / 成交 / 决策日志逐日落盘</dd>
-          <dt>⑤ 收盘复盘</dt>
-          <dd>Agent 把当日经验写入 <code>market_memory.md</code>，下一交易日开盘前读取，策略自我沉淀</dd>
+          <dt>⑤ 收盘复盘 / 自我进化</dt>
+          <dd>15:35 盘后复盘 agent：逐笔归因 → append_memory 教训沉淀 → 明日预案（watch 双条件单）
+              → 新假设登记；次日首轮分析自动注入「昨日复盘要点」；17:00 系统日报、19:30 晚间研究总控选池</dd>
         </dl>
       </section>
 
@@ -231,9 +236,32 @@ dsh Web 3081（agent 会话/工具调用可视化）`}</pre>
         </p>
       </section>
 
-      {/* 08 扩展开发 */}
+      {/* 08 全天候循环 */}
       <section id="about-08" className="panel about-sec">
-        <h2 className="panel-title"><span className="about-sec-num">08</span> 扩展开发</h2>
+        <h2 className="panel-title"><span className="about-sec-num">08</span> 全天候循环</h2>
+        <div className="about-desc" style={{ lineHeight: 2 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <tbody>
+              <tr><td><b>09:10</b></td><td>风险预算定档（波动/回撤/情绪 → 三档闸门参数）</td></tr>
+              <tr><td><b>09:30–15:00</b></td><td>整点分析 ×3 agent（注入：昨日复盘要点/已验证假设/盘面状态/情绪温度）
+                 → JSON 决策 → 确定性闸门 → 桥实盘下单 → watch 分钟哨兵</td></tr>
+              <tr><td><b>15:35</b></td><td>盘后复盘：逐笔归因 → memory 沉淀教训 → 明日预案 → 新假设登记</td></tr>
+              <tr><td><b>17:00</b></td><td>系统运行日报（表现/服务/待办一页纸）</td></tr>
+              <tr><td><b>19:30</b></td><td>晚间研究总控：板块强度 + 明日 20 只候选池 → 明晨选股优先进池</td></tr>
+              <tr><td><b>周日</b></td><td>假设库事件复测：定性 → 带胜率证据回流提示词</td></tr>
+            </tbody>
+          </table>
+          <p style={{ marginTop: 8 }}>
+            自我进化闭环：假设提出→登记→复测→{'{'}胜率·样本{'}'}标签；复盘教训→次日自动注入；
+            分歧自动仲裁；预算按市场状态动态收紧。详见仓库
+            <code> docs/AGENT_ROADMAP.md / PIPELINE_UPGRADE.md / MAINTENANCE_PLAN.md</code>。
+          </p>
+        </div>
+      </section>
+
+      {/* 09 扩展开发 */}
+      <section id="about-09" className="panel about-sec">
+        <h2 className="panel-title"><span className="about-sec-num">09</span> 扩展开发</h2>
         <div className="about-desc" style={{ lineHeight: 2 }}>
           <p><b>新增智能体</b>（三选一，详见仓库 <code>docs/AGENT_GUIDE.md</code>）：</p>
           <ul style={{ paddingLeft: 20, margin: '4px 0' }}>
@@ -249,8 +277,8 @@ dsh Web 3081（agent 会话/工具调用可视化）`}</pre>
       </section>
 
       {/* 09 免责声明 */}
-      <section id="about-09" className="panel about-sec">
-        <h2 className="panel-title"><span className="about-sec-num">09</span> 免责声明</h2>
+      <section id="about-10" className="panel about-sec">
+        <h2 className="panel-title"><span className="about-sec-num">10</span> 免责声明</h2>
         <p className="about-desc dim" style={{ lineHeight: 1.9 }}>
           本竞技场为研究平台。模拟路径：全部交易为历史行情回放，不涉及任何真实资金。
           实盘路径（A股）：经通达信桥在真实券商通道成交，但资金为分账虚拟额度（每 agent ¥10 万），不投入真实资金。

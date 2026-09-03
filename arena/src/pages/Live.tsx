@@ -28,7 +28,7 @@ import {
 import { usePolling } from '../hooks/usePolling';
 import EquityChart, { toBenchLine, toChartLine, HoldingSpan } from '../components/EquityChart';
 import RealAccountPanel from '../components/RealAccountPanel';
-import ModelCard, { modelColor, shortName } from '../components/ModelCard';
+import ModelCard, { logoOf, modelColor, shortName } from '../components/ModelCard';
 import ChatStream from '../components/ChatStream';
 import NewsStream from '../components/NewsStream';
 import CompletedFeed from '../components/CompletedFeed';
@@ -1033,6 +1033,13 @@ export default function Live() {
                 holdings={market === 'cn' && heldSpans.length ? heldSpans : undefined}
                 names={stockNames.data ?? undefined}
                 priceMap={market === 'cn' && holderPriceMap ? holderPriceMap : undefined}
+                endIcons={
+                  market === 'cn'
+                    ? Object.fromEntries(
+                        Object.keys(liveEquity.data?.agents ?? {}).map((a) => [`live-${a}`, logoOf(a)]),
+                      )
+                    : undefined
+                }
                 mode={chartMode}
                 timeRange={chartRange}
                 height="clamp(360px, 44vw, 560px)"

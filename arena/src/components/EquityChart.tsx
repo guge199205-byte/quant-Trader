@@ -68,6 +68,7 @@ export default function EquityChart({
   holdings,
   names,
   priceMap,
+  endIcons,
 }: {
   lines: ChartLine[];
   benchmark?: BenchLine | null;
@@ -84,6 +85,8 @@ export default function EquityChart({
   names?: Record<string, string>;
   /** 股票代码 → 当前价（持仓金额按现价估算并标注） */
   priceMap?: Record<string, number>;
+  /** 末端标签图标：line id → 图标字符（如模型 logo），替换圆点 */
+  endIcons?: Record<string, string>;
 }) {
   const [hover, setHover] = useState<{ x: number; y: number; label: string; id: string; v: number; t: number } | null>(null);
 
@@ -403,7 +406,20 @@ export default function EquityChart({
                   const focusActive = !focus || l.id === focus;
                   return (
                     <Group key={`end-${l.id}`} opacity={hover ? (hover.id === l.id ? 1 : 0.3) : focusActive ? 1 : 0.45}>
-                      <circle cx={x} cy={y} r={5.5} fill={l.color} stroke="#fff" strokeWidth={2} />
+                      {(() => {
+                        const icon = endIcons?.[l.id];
+                        if (icon) {
+                          return (
+                            <g>
+                              <circle cx={x} cy={y} r={9} fill="#fff" stroke={l.color} strokeWidth={1.5} />
+                              <text x={x} y={y} fontSize={11} textAnchor="middle" dominantBaseline="central">
+                                {icon}
+                              </text>
+                            </g>
+                          );
+                        }
+                        return <circle cx={x} cy={y} r={5.5} fill={l.color} stroke="#fff" strokeWidth={2} />;
+                      })()}
                       <text x={lx} y={y - 8} fill={l.color} fontSize={10} fontWeight={700} textAnchor={anchor}
                         fontFamily="'Courier New', monospace">
                         {l.label}
@@ -472,7 +488,7 @@ export default function EquityChart({
                     const extraRows = [...heldRows, ...evtRows].filter(
                       (r, i, arr) => arr.findIndex((x) => x.key === r.key) === i,
                     );
-                    const extraH = extraRows.length ? 28 + extraRows.length * 13 : 0;
+                    const extraH = extraRows.length ? 40 + extraRows.length * 14 : 0;
                     return (
                       <Group>
                         <line x1={hover.x} x2={hover.x} y1={0} y2={ih} stroke="rgba(0,0,0,0.25)" strokeDasharray="2 3" />
@@ -504,12 +520,14 @@ export default function EquityChart({
                         </text>
                         {extraH > 0 && (
                           <g>
-                            <text x={tx + 6} y={ty + 67} fill="#333" fontSize={9} fontWeight={700}
+                            <text x={tx + 8} y={ty + 68} fill="#444" fontSize={9} fontWeight={700}
                               fontFamily="'Courier New', monospace">
                               {agentName ? `${agentName.replace('deepseek-v4-', '')} 当时持仓 / 成交` : '附近成交'}
                             </text>
+                            <line x1={tx + 8} x2={tx + 228} y1={ty + 77} y2={ty + 77}
+                              stroke="#eee" strokeWidth={1} />
                             {extraRows.map((r, i) => (
-                              <text key={r.key} x={tx + 6} y={ty + 67 + 13 * (i + 1)}
+                              <text key={r.key} x={tx + 8} y={ty + 92 + 14 * i}
                                 fontSize={9} fontFamily="'Courier New', monospace"
                                 fill={(r as { color?: string }).color ?? '#555'}>
                                 {r.text}

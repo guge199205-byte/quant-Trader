@@ -1389,12 +1389,10 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                     # 思考过程不再是单次提示词；模型可 per-agent 配（deepseek/glm）
                     from dsh_agent import run_agent
 
-                    task = labeled_content
-                    if agent == "deepseek-v4-flash":
-                        # v4-flash 专属工作法：四段式输出/时间盒/A股情绪认知/退出框架
-                        from prompts.flash_agent_extra import FLASH_AGENT_EXTRA
+                    # 全 agent 工作法注入（按角色分化，见 prompts/agent_extra.py）
+                    from prompts.agent_extra import get_extra
 
-                        task = FLASH_AGENT_EXTRA + "\n\n" + labeled_content
+                    task = get_extra(agent) + "\n\n" + labeled_content
                     content = run_agent(task, timeout_s=420,
                                         model=agent_model_for(agent))
                     # dsh 不返回 token 数 → 按字符量估算（中文 ≈1.8 字符/token），

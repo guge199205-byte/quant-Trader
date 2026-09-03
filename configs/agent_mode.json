@@ -1,1 +1,13 @@
-{"mode": "llm", "dsh_agents": ["deepseek-v4-flash"], "models": {"deepseek-v4-flash": "deepseek"}}
+{
+ "mode": "llm",
+ "dsh_agents": [
+  "deepseek-v4-flash",
+  "deepseek-v4-pro",
+  "glm-5.3-flash"
+ ],
+ "models": {
+  "deepseek-v4-flash": "deepseek",
+  "deepseek-v4-pro": "deepseek",
+  "glm-5.3-flash": "glm"
+ }
+}

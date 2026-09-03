@@ -146,6 +146,61 @@ def build_market_state(broker=None) -> str:
         extra = ""
     text = (f"【盘面状态（系统判定）】时段={session}；{regime}{extra}；"
             f"动作基调={tune}。情绪提示：涨跌停与情绪极端点（一字/天地板）一律不参与，错过就错过。")
+    # 盘中情绪温度（同花顺 Fuyao：涨停池/跌停池/连板天梯）——真实盘中全市场口径
+    def _fuyao_temp() -> str:
+        try:
+            import sys as _sys
+            sk = _os.path.expanduser("~/quant-Trader/dsh/skills/ths-fuyao/scripts")
+            _sys.path.insert(0, sk)
+            from ths_fuyao import get  # noqa: E402
+
+            def count(path):
+                d = get(path, {})
+                if d.get("code") != 0:
+                    return None
+                items = (d.get("data") or {}).get("item")
+                return len(items) if isinstance(items, list) else None
+            zt, dt_, ladder = count("/api/a-share/special-data/limit-up-pool"), None, None
+            dt_ = count("/api/a-share/special-data/limit-down-pool")
+            ld = get("/api/a-share/special-data/limit-up-ladder", {})
+            max_lb = 0
+            if ld.get("code") == 0:
+                items = (ld.get("data") or {}).get("item") or []
+                for it in items:
+                    try:
+                        max_lb = max(max_lb, int(it.get("continue_day") or it.get("days") or 0))
+                    except Exception:  # noqa: BLE001
+                        pass
+            if zt is None:
+                return ""
+            return (f"情绪温度（盘中·同花顺 {now:%H:%M}）：涨停 {zt} · 跌停 {dt_ if dt_ is not None else '—'}"
+                    f" · 最高连板 {max_lb}")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    if 9 * 60 + 15 <= hm <= 15 * 60 + 10 and now.weekday() < 5:
+        ft = _fuyao_temp()
+        if ft:
+            text += "\n" + ft
+    # 数据源新鲜度清单（系统判定，agent 不必再试错发现滞后）
+    import glob as _g
+    import os as _os
+    fresh=[]
+    try:
+        qroot=_os.path.expanduser("~/projects/quantmind/data/quantdb/5_technical_derived/market_sentiment")
+        ds=sorted(int(_os.path.basename(x).split("=")[1]) for x in _g.glob(qroot+"/dt=*"))
+        if ds:
+            d=str(ds[-1]); fresh.append(f"quantdb 情绪库至 {d[4:6]}/{d[6:]}")
+    except Exception: pass
+    try:
+        import pathlib as _p
+        l2f=_p.Path("/home/zbox/quant-Trader/data/l2_factors_live.json")
+        if l2f.is_file():
+            import datetime as _dt
+            age=(datetime.now(BJ).timestamp()-l2f.stat().st_mtime)/60
+            fresh.append(f"L2 采集 {age:.0f} 分钟前")
+    except Exception: pass
+    text += ("\n【数据源新鲜度（系统判定）】" + " · ".join(fresh)) if fresh else ""
     breath = _quantdb_breadth()
     if breath:
         text += "\n" + breath

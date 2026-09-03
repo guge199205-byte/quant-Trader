@@ -186,6 +186,35 @@ if [ -n "$STUCK" ]; then
     fi
 fi
 
+# 2d. 实时行情源降级检测（rt_probe 每5分钟写 logs/rt_status.json）
+RT_DOWN=$(python3 - logs/rt_status.json <<'PY'
+import json, os, sys
+p = sys.argv[1]
+if not os.path.isfile(p):
+    raise SystemExit(0)
+try:
+    d = json.load(open(p, encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(0)
+bad = []
+for k in ("bridge", "fuyao", "aidata"):
+    v = d.get(k) or {}
+    if not v.get("ok"):
+        bad.append(k)
+if bad:
+    print(",".join(bad))
+PY
+)
+if [ -n "$RT_DOWN" ]; then
+    ALERTS="$ALERTS
+🔴 实时行情源降级：${RT_DOWN} 不可用（桥/Fuyao/TdxAiData）——主交易数据以桥为准，Fuyao 为全市场实时备胎，TdxAiData 仅分钟特征"
+    if echo "$RT_DOWN" | grep -q bridge && [ -d /mnt/tdx-shared/bridge-windows ]; then
+        touch /mnt/tdx-shared/bridge-windows/restart_bridge.flag
+        ALERTS="$ALERTS
+🔧 桥掉线 → 已投递重启信号"
+    fi
+fi
+
 # 3. 备份过期检测（>26h 无备份）
 latest_bak=$(ls -t /home/zbox/backups/baymax/baymax-*.tar.gz 2>/dev/null | head -1)
 if [ -z "$latest_bak" ] || [ $((NOW - $(stat -c %Y "$latest_bak" 2>/dev/null || echo 0))) -gt 93600 ]; then

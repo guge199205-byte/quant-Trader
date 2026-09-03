@@ -142,6 +142,50 @@ if [ -n "$FROZEN_VAL" ]; then
     fi
 fi
 
+# 2c. 挂单停滞检测（下单后长时间无回报：盘中在途 >10 分钟 → 告警并重启桥自愈；
+#      委托保留在券商端，重启后由 reconcile 按真实成交/撤单收尾，不会重复下单）
+STUCK=$(python3 - . <<'PY'
+import json, os, time
+from datetime import datetime, timezone, timedelta
+BJ = timezone(timedelta(hours=8))
+now = datetime.now(BJ)
+if now.weekday() >= 5:
+    raise SystemExit(0)
+m = now.hour * 60 + now.minute
+if not ((9 * 60 + 30 <= m < 11 * 60 + 30) or (13 * 60 <= m < 15 * 60)):
+    raise SystemExit(0)
+p = "data/live_pending_orders.json"
+if not os.path.isfile(p):
+    raise SystemExit(0)
+try:
+    pend = json.load(open(p, encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(0)
+n = 0
+for x in (pend if isinstance(pend, list) else []):
+    ts = str(x.get("ts") or "")
+    try:
+        t = datetime.fromisoformat(ts)
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=BJ)
+        if (now - t.astimezone(BJ)).total_seconds() > 600:
+            n += 1
+    except Exception:
+        continue
+if n:
+    print(n)
+PY
+)
+if [ -n "$STUCK" ]; then
+    ALERTS="$ALERTS
+🔴 $STUCK 笔在途委托停滞 >10 分钟（下单可能卡住）——自动重启桥并保持委托，reconcile 收尾"
+    if [ -d /mnt/tdx-shared/bridge-windows ]; then
+        touch /mnt/tdx-shared/bridge-windows/restart_bridge.flag
+        ALERTS="$ALERTS
+🔧 已投递 restart_bridge.flag → 桥自动重启"
+    fi
+fi
+
 # 3. 备份过期检测（>26h 无备份）
 latest_bak=$(ls -t /home/zbox/backups/baymax/baymax-*.tar.gz 2>/dev/null | head -1)
 if [ -z "$latest_bak" ] || [ $((NOW - $(stat -c %Y "$latest_bak" 2>/dev/null || echo 0))) -gt 93600 ]; then

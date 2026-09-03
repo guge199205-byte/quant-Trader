@@ -105,6 +105,7 @@ async def auth_middleware(request, call_next):
         path = request.url.path
         if (
             path.startswith("/api/data")
+            or path.startswith("/api/ops/ui")
             or path == "/"
             or path.startswith("/data/")
             or path.endswith((".html", ".ico"))
@@ -1060,6 +1061,94 @@ def live_analyze_status(limit: int = Query(10, ge=1, le=50)):
             except json.JSONDecodeError:
                 continue
     except OSError:
+        pass
+    rows.sort(key=lambda r: r.get("ts", ""), reverse=True)
+    return {"success": True, "data": rows[:limit]}
+
+
+_OPS_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>BayMax Ops</title>
+<style>body{font-family:ui-monospace,Menlo,monospace;max-width:480px;margin:24px auto;padding:0 14px}
+button{display:block;width:100%;margin:8px 0;padding:14px;font-size:16px;font-weight:700;border:2px solid #000;background:#fff;cursor:pointer}
+button:active{background:#10a37f;color:#fff}.ok{color:#0d8a6b;font-size:12px}</style></head><body>
+<h2>BayMax Ops <span style="font-size:12px;color:#888">远程重启</span></h2>
+<div id="st" class="ok"></div>
+<button onclick="go('bridge')">🪟 重启通达信桥（Windows，30s 内）</button>
+<button onclick="go('api')">🐍 重启 API (8091)</button>
+<button onclick="go('dsh')">🤖 重启 dsh agent (8093/3081)</button>
+<button onclick="go('mcp-cn')">📡 重启 MCP-CN (8200-8204)</button>
+<button onclick="go('ui')">🎨 重启前端 (8092)</button>
+<script>
+const tok = new URL(location.href).searchParams.get('t') || '';
+async function go(target){const st=document.getElementById('st');st.textContent='提交中…';
+const r=await fetch('/api/ops',{method:'POST',headers:{'Content-Type':'application/json','X-API-Token':tok},
+body:JSON.stringify({type: target==='bridge'?'bridge':'restart',target})});
+const j=await r.json();st.textContent=j.success?('已排队：'+(j.data?.id||'')):('失败：'+(j.error||''));}
+</script></body></html>"""
+
+
+@app.get("/api/ops/ui")
+def ops_ui():
+    from fastapi.responses import Response
+
+    return Response(_OPS_HTML, media_type="text/html")
+
+
+@app.get("/api/ops/health")
+def ops_health():
+    out = {}
+    try:
+        st = json.loads((Path(__file__).resolve().parents[1] / "logs" / "service_status.json")
+                        .read_text(encoding="utf-8"))
+        for k, v in st.items():
+            out[f"svc_{k}"] = v
+    except (OSError, ValueError):
+        pass
+    try:
+        import requests
+
+        r = requests.get("http://192.168.31.13:8550/api/v1/health", timeout=4)
+        out["bridge"] = "ok" if r.status_code == 200 else f"http {r.status_code}"
+    except Exception as e:  # noqa: BLE001
+        out["bridge"] = f"down ({e})"
+    return {"success": True, "data": out}
+
+
+@app.post("/api/ops")
+def ops_submit(payload: dict):
+    """{type: "restart"|"bridge", target: "api|dsh|mcp-us|mcp-cn|mcp-hk|ui"}"""
+    typ = (payload or {}).get("type", "restart")
+    target = (payload or {}).get("target", "")
+    if typ == "restart" and target not in ("api", "dsh", "mcp-us", "mcp-cn",
+                                           "mcp-hk", "ui"):
+        return {"success": False, "error": "无效 target"}
+    path = Path(__file__).resolve().parents[1] / "logs" / "ops_cmds.jsonl"
+    import time as _time
+
+    cmd = {"id": f"ops-{int(_time.time())}", "type": typ, "target": target,
+           "ts": datetime.now().isoformat(timespec="seconds"), "status": "pending"}
+    import fcntl
+
+    with path.open("a", encoding="utf-8") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        fh.write(json.dumps(cmd, ensure_ascii=False) + "\n")
+        fcntl.flock(fh, fcntl.LOCK_UN)
+    try:
+        os.chmod(path, 0o666)  # 宿主 ops_worker(zbox) 可读可写
+    except OSError:
+        pass
+    return {"success": True, "data": cmd}
+
+
+@app.get("/api/ops")
+def ops_status(limit: int = Query(5, ge=1, le=30)):
+    rows = []
+    try:
+        for l in (Path(__file__).resolve().parents[1] / "logs" / "ops_cmds.jsonl") \
+                .read_text(encoding="utf-8").splitlines():
+            if l.strip():
+                rows.append(json.loads(l))
+    except (OSError, ValueError):
         pass
     rows.sort(key=lambda r: r.get("ts", ""), reverse=True)
     return {"success": True, "data": rows[:limit]}

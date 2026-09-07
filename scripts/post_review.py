@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "prompts"))
 
 from prompts.review_workbook import build_review_prompt  # noqa: E402
+from trading_cal import is_trading_day, why_not  # noqa: E402
 
 
 def now_cn() -> datetime:
@@ -105,6 +106,30 @@ def collect_facts(agent: str, date: str) -> str:
         else:
             lines.append("【当前持仓】空仓")
     except (OSError, ValueError):
+        pass
+    # 当前条件位（让复盘能自审止损/止盈的放宽与收紧）
+    try:
+        _w = (json.loads((ROOT / "data" / "live_watch.json").read_text(encoding="utf-8"))
+              .get(agent) or [])
+        if _w:
+            lines.append("【当前条件位】")
+            lines += [f"- {x.get('code')} 止损{x.get('stop_loss')}/止盈{x.get('take_profit')}"
+                      f"/触发减{x.get('pct', 1.0):.0%}" for x in _w]
+    except (OSError, ValueError):
+        pass
+    # 持仓事件雷达：解禁/质押/回购风险标注（数据缺失时静默跳过）
+    try:
+        from event_radar import tag_events
+        from live_ledger import load_ledger
+
+        _held = sorted({code for rec in (load_ledger().get("agents") or {}).values()
+                        for code in (rec.get("positions") or {})})
+        _tags = tag_events(_held)
+        _ev = [f"{c}: {'；'.join(v)}" for c, v in _tags.items() if v]
+        if _ev:
+            lines.append("【持仓事件雷达】")
+            lines += [f"- {x}" for x in _ev]
+    except Exception:  # noqa: BLE001
         pass
     return "\n".join(lines)
 
@@ -373,6 +398,10 @@ def main() -> int:
     ap.add_argument("--date", default="")
     ap.add_argument("--dry", action="store_true", help="只打印任务不执行")
     args = ap.parse_args()
+    # 交易日历闸门：法定节假日休市日无交易可复盘，跳过（显式 --date 手动补跑不受限）
+    if not args.date and not is_trading_day(now_cn().date()):
+        print(f"⏭️ {now_cn():%F %T} 非交易日（{why_not(now_cn().date())}），跳过盘后复盘")
+        return 0
     date = args.date or (now_cn() - timedelta(days=0)).strftime("%Y-%m-%d")
     if args.agent:
         agents = [args.agent]

@@ -50,28 +50,23 @@ from live_ledger import (  # noqa: E402
     AGENT_QUOTA,
     agent_remaining,
     agent_used,
+    agent_virtual_cash,
     find_holder,
     load_ledger,
     record_buy,
     record_sell,
     save_ledger,
 )
+from live_fills import add_pending, reconcile, wait_fill  # noqa: E402
+
+# 杠杆硬约束（与 live_hourly_analysis 同口径）
+LEVERAGE_MAX = 1.5
 
 CN_TZ = ZoneInfo("Asia/Shanghai")
 PICKS_JSON = ROOT / ".." / "projects" / "quantmind" / "data" / "reports" / "stock_picks"
 PER_STOCK_PCT = 0.2   # 单票买入 ≤ 剩余额度 20%
 BUY_LIMIT_UP = 9.9    # 涨停不追
 SELL_LIMIT_DOWN = -9.9  # 跌停不接
-
-
-def intraday_exec_enabled() -> bool:
-    """自动执行开关：configs/intraday_exec.json {"enabled": true}。
-    外部调度（cron/面板）不传 --execute 时，开关开启则同样自动执行。"""
-    try:
-        cfg = json.loads((ROOT / "configs" / "intraday_exec.json").read_text(encoding="utf-8"))
-        return bool(cfg.get("enabled"))
-    except (OSError, json.JSONDecodeError):
-        return False
 
 
 # ---------- 候选池 ----------
@@ -242,16 +237,18 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=20, help="候选池上限（默认 20）")
     args = ap.parse_args()
 
-    # 配置开关：外部调度不传 --execute 时也可自动执行（configs/intraday_exec.json）
-    args.execute = args.execute or intraday_exec_enabled()
-
     mode = "🔴 实盘执行" if args.execute else "🟡 DRY-RUN 决策演练（不下单）"
     print(f"{mode}  {now_cn():%F %T}")
     if not args.execute:
         print("ℹ️  LLM 决策会真实调用（看模型判断质量），仅不下单")
 
     broker = TdxBridgeBroker()
-    acct = broker._account_query()
+    try:
+        acct = broker._account_query()
+    except Exception as exc:  # noqa: BLE001
+        # 桥不可达（主机离线/网络切换）：本轮调仓跳过，不崩溃
+        print(f"❌ 桥账户查询失败，本轮调仓跳过: {exc}")
+        return 1
     asset = float((acct.get("asset") or {}).get("asset") or 0)
     cash = float((acct.get("asset") or {}).get("cash") or 0)
     positions = [p for p in (acct.get("positions") or [])
@@ -344,7 +341,11 @@ def main() -> int:
             ok += 1
             continue
 
-        # 执行：先卖后买
+        # 执行：先卖后买（先补记在途成交，再下新单）
+        try:
+            reconcile(broker)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️ 成交回报 reconcile 失败: {exc}")
         from agent_tools.datasources import tdx_aidata
 
         try:
@@ -363,13 +364,28 @@ def main() -> int:
             try:
                 result = broker.sell(None, None, code, vol, price=round(price * 0.99, 2))
                 print(f"  ✅ [{agent}] 卖出 {code} 已受理: {result}")
-                # 分账记账：卖出扣减名下持仓、释放额度、虚拟现金加回（与买入对称）
-                ledger = record_sell(ledger, agent, code, vol,
-                                     round(price * 0.99, 2), now_cn().isoformat())
-                save_ledger(ledger)
-                log_line({"ts": now_cn().isoformat(), "mode": "execute", "agent": agent,
-                          "code": code, "volume": vol, "price": round(price * 0.99, 2),
-                          "result": result})
+                fill = wait_fill(broker, result.get("order_id", ""))
+                if fill and int(fill.get("filled_volume") or 0) > 0:
+                    fv = int(fill["filled_volume"])
+                    fp = float(fill.get("filled_price") or round(price * 0.99, 2))
+                    ledger = load_ledger()
+                    cost_p = float((((ledger.get("agents") or {}).get(agent) or {})
+                                    .get("positions") or {}).get(code, {}).get("cost_price") or 0)
+                    ledger = record_sell(ledger, agent, code, fv, fp,
+                                         now_cn().isoformat())
+                    save_ledger(ledger)
+                    log_line({"ts": now_cn().isoformat(), "mode": "execute",
+                              "agent": agent, "code": code, "side": "sell",
+                              "volume": fv, "price": fp, "cost_price": cost_p,
+                              "fill": {"order_id": fill.get("order_id"),
+                                       "filled_price": fp, "filled_volume": fv}})
+                else:
+                    add_pending(result.get("order_id"), agent, code, "sell", vol,
+                                round(price * 0.99, 2), now_cn().isoformat())
+                    log_line({"ts": now_cn().isoformat(), "mode": "execute",
+                              "agent": agent, "code": code, "side": "sell",
+                              "volume": vol, "price": round(price * 0.99, 2),
+                              "pending": True, "result": result})
             except Exception as exc:  # noqa: BLE001
                 print(f"  ❌ [{agent}] 卖出 {code} 失败: {exc}")
                 log_line({"ts": now_cn().isoformat(), "mode": "execute", "agent": agent,
@@ -386,20 +402,48 @@ def main() -> int:
             if not o["ok"]:
                 print(f"  ⏭️ [{agent}] 买入 {code}: {o['reason']}")
                 continue
+            # 分账额度红线：子 agent 买入不能超自己 ¥10 万虚拟子账户的现金
+            # （remaining 是额度口径、cash 是桥总账户真实现金，都拦不住已实现
+            #   亏损造成的透支——虚拟现金才是子账户真正买得起的钱）
+            vcash = agent_virtual_cash(ledger, agent)
+            if o["cost"] > vcash:
+                print(f"  ⏭️ [{agent}] 买入 {code}: 子账户虚拟现金不足 "
+                      f"¥{o['cost']:,.0f} > ¥{vcash:,.0f}（分账额度不透支，跳过）")
+                continue
+            # 杠杆硬约束：加仓后持仓成本 ≤ 权益×1.5（现金为负时才可能超）
+            pos_cost = agent_used(ledger, agent)
+            equity = vcash + pos_cost
+            if equity > 0 and (pos_cost + o["cost"]) > LEVERAGE_MAX * equity:
+                print(f"  ⏭️ [{agent}] 买入 {code}: 加仓后杠杆超 {LEVERAGE_MAX}×权益"
+                      f"（{pos_cost + o['cost']:,.0f} > {LEVERAGE_MAX * equity:,.0f}），跳过")
+                continue
             if o["cost"] > cash:
-                print(f"  ⏭️ [{agent}] 买入 {code}: 账户现金不足 ¥{o['cost']:,.0f} < ¥{cash:,.0f}")
+                print(f"  ⏭️ [{agent}] 买入 {code}: 账户现金不足 ¥{o['cost']:,.0f} > ¥{cash:,.0f}")
                 continue
             cash -= o["cost"]
             try:
                 result = broker.buy(None, None, code, o["volume"], price=o["limit_price"])
                 print(f"  ✅ [{agent}] 买入 {code} {o['volume']}股 "
                       f"限价 ¥{o['limit_price']:.2f} 已受理: {result}")
-                ledger = record_buy(ledger, agent, code, o["volume"], o["price"],
-                                    now_cn().isoformat())
-                save_ledger(ledger)
-                log_line({"ts": now_cn().isoformat(), "mode": "execute", "agent": agent,
-                          "code": code, "volume": o["volume"], "price": o["price"],
-                          "result": result})
+                fill = wait_fill(broker, result.get("order_id", ""))
+                if fill and int(fill.get("filled_volume") or 0) > 0:
+                    fv = int(fill["filled_volume"])
+                    fp = float(fill.get("filled_price") or o["price"])
+                    ledger = record_buy(load_ledger(), agent, code, fv, fp,
+                                        now_cn().isoformat())
+                    save_ledger(ledger)
+                    log_line({"ts": now_cn().isoformat(), "mode": "execute",
+                              "agent": agent, "code": code, "side": "buy",
+                              "volume": fv, "price": fp,
+                              "fill": {"order_id": fill.get("order_id"),
+                                       "filled_price": fp, "filled_volume": fv}})
+                else:
+                    add_pending(result.get("order_id"), agent, code, "buy",
+                                o["volume"], o["price"], now_cn().isoformat())
+                    log_line({"ts": now_cn().isoformat(), "mode": "execute",
+                              "agent": agent, "code": code, "side": "buy",
+                              "volume": o["volume"], "price": o["price"],
+                              "pending": True, "result": result})
             except Exception as exc:  # noqa: BLE001
                 print(f"  ❌ [{agent}] 买入 {code} 失败: {exc}")
                 log_line({"ts": now_cn().isoformat(), "mode": "execute", "agent": agent,

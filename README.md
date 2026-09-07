@@ -146,6 +146,10 @@ python3 scripts/sync_from_quantmind.py                          # 生产:从量�
 - **AI 部署 runbook**(前置检查/验证/故障排查):[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 - **宿主 cron 探活自愈**(防交易中断):`scripts/status-probe.sh` + `auto-heal.sh` + `alert.sh`(见 DEPLOYMENT.md 第 7 节)
 - **A股实盘盘中调度**:`scripts/live_hourly_analysis.py`(cron 9:30 开盘 + 每小时 + 波动触发)
+- **交易日历闸门**(法定节假日/休市日全线不分析):`scripts/trading_cal.py`,清单在
+  `configs/trading_days.json`(含当年未来假日,quantdb 每日同步只到昨天够不到"今天")。
+  盘中分析/净值采样/预算/复盘/晚间研究/日报/手动分析 worker 与 API 均已接入;
+  跨年(2027+)先跑 `scripts/refresh_trading_cal.py --write` 刷新清单
 
 ## ⚠️ 常见问题
 

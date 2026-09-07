@@ -149,6 +149,7 @@ def build_market_state(broker=None) -> str:
     # 盘中情绪温度（同花顺 Fuyao：涨停池/跌停池/连板天梯）——真实盘中全市场口径
     def _fuyao_temp() -> str:
         try:
+            import os as _os
             import sys as _sys
             sk = _os.path.expanduser("~/quant-Trader/dsh/skills/ths-fuyao/scripts")
             _sys.path.insert(0, sk)
@@ -200,7 +201,22 @@ def build_market_state(broker=None) -> str:
             age=(datetime.now(BJ).timestamp()-l2f.stat().st_mtime)/60
             fresh.append(f"L2 采集 {age:.0f} 分钟前")
     except Exception: pass
+    # quantdb 日K 最新分区（agent 工具层数据源可能滞后，以此为准绳防误判新鲜度）
+    try:
+        for qroot in (_os.path.expanduser("~/projects/quantmind/data/quantdb/1_kline_data/daily_backward"),
+                      "/data/quantdb/1_kline_data/daily_backward"):
+            ds=sorted(_g.glob(qroot+"/dt=*"))
+            if ds:
+                d=_os.path.basename(ds[-1]).split("=")[1]
+                fresh.append(f"quantdb 日K至 {d[4:6]}/{d[6:]}")
+                break
+    except Exception: pass
     text += ("\n【数据源新鲜度（系统判定）】" + " · ".join(fresh)) if fresh else ""
+    try:
+        from ashare_rules import rules_brief
+        text += "\n【板块交易规则（系统注入，照此执行勿再求证）】" + rules_brief()
+    except Exception:
+        pass
     breath = _quantdb_breadth()
     if breath:
         text += "\n" + breath

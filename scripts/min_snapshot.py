@@ -15,6 +15,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
+
+from trading_cal import is_trading_day  # noqa: E402
+
 BJ = None
 
 
@@ -29,7 +32,7 @@ def _bj() -> str:
 
 def in_window() -> bool:
     n = _bj()
-    if n.weekday() >= 5:
+    if not is_trading_day(n.date()):
         return False
     m = n.hour * 60 + n.minute
     return (9 * 60 + 30 <= m < 11 * 60 + 30) or (13 * 60 <= m < 15 * 60)

@@ -81,8 +81,8 @@ def latest_klines(broker, code: str) -> list:
     return broker.get_klines(code, interval="daily")[-5:]
 
 
-def compute_order(bars: list, cash: float, pct: float) -> dict:
-    """由 K 线计算下单参数：现价/涨跌幅/单量/限价。"""
+def compute_order(bars: list, cash: float, pct: float, code: str = "") -> dict:
+    """由 K 线计算下单参数：现价/涨跌幅/单量/限价（板块口径涨跌停+买入量合规化）。"""
     if len(bars) < 2:
         return {"ok": False, "reason": "K线不足"}
     last, prev = bars[-1], bars[-2]
@@ -97,15 +97,22 @@ def compute_order(bars: list, cash: float, pct: float) -> dict:
     if not math.isfinite(price) or not math.isfinite(prev_close) or not price or not prev_close:
         return {"ok": False, "reason": "无有效价格"}
     chg = (price - prev_close) / prev_close * 100
-    # 涨停/跌停/停牌过滤（±9.9% 视为涨停价附近；停牌=无最新 bar 或成交量为 0）
-    if chg >= 9.9:
+    # 涨停/跌停/停牌过滤（板块口径 ±10%/±20%/±30%；停牌=无最新 bar 或成交量为 0）
+    from ashare_rules import at_limit_up, at_limit_down, round_buy_qty
+
+    if at_limit_up(code, chg):
         return {"ok": False, "reason": f"涨停（{chg:+.1f}%），不追"}
-    if chg <= -9.9:
+    if at_limit_down(code, chg):
         return {"ok": False, "reason": f"跌停（{chg:+.1f}%），不接"}
     if not last.get("volume"):
         return {"ok": False, "reason": "停牌或无成交"}
     budget = cash * pct
-    raw_vol = int(budget / price / 100) * 100  # 100 股整数倍
+    raw_vol = round_buy_qty(code, int(budget / price))
+    if raw_vol <= 0:
+        return {"ok": False, "reason": "买入量不足最小申报单位"}
+    if raw_vol * price > budget * 1.02:
+        return {"ok": False,
+                "reason": f"资金不足以达到最小申报量 {raw_vol} 股（科创板/最低手数）"}
     if raw_vol < 100:
         return {"ok": False, "reason": "资金不足 1 手"}
     return {
@@ -336,7 +343,7 @@ def main() -> None:
             continue
         bars = bars_map.get(code) or []
         try:
-            o = compute_order(bars, remaining, args.per_stock_pct)
+            o = compute_order(bars, remaining, args.per_stock_pct, code)
         except Exception as e:
             print(f"⚠️  [{agent}] {code} {name} 行情失败: {e}")
             log_line({"ts": now_cn().isoformat(), "code": code, "name": name,

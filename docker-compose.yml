@@ -26,6 +26,13 @@ services:
     container_name: baymax-mcp-us
     working_dir: /app/agent_tools
     command: python start_mcp_services.py
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./configs:/app/configs
+      # agent 工具读 quantdb 日K：此前容器内无此目录，工具回退到陈旧本地源
+      # （glm/flash 曾误报"日线仅更新至 08-28"，实际 quantdb 到 09/03）
+      - ../projects/quantmind/data/quantdb:/data/quantdb:ro
     environment:
       MATH_HTTP_PORT: "8100"
       SEARCH_HTTP_PORT: "8101"
@@ -42,6 +49,11 @@ services:
     container_name: baymax-mcp-cn
     working_dir: /app/agent_tools
     command: python start_mcp_services.py
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./configs:/app/configs
+      - ../projects/quantmind/data/quantdb:/data/quantdb:ro
     environment:
       MATH_HTTP_PORT: "8200"
       SEARCH_HTTP_PORT: "8201"
@@ -57,6 +69,11 @@ services:
     container_name: baymax-mcp-hk
     working_dir: /app/agent_tools
     command: python start_mcp_services.py
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./configs:/app/configs
+      - ../projects/quantmind/data/quantdb:/data/quantdb:ro
     environment:
       MATH_HTTP_PORT: "8300"
       SEARCH_HTTP_PORT: "8301"
@@ -160,6 +177,10 @@ services:
     command: dsh --profile web --patch /app/dsh/baymax.cordis.yml --port 3081 --no-open --trusted-host ${DSH_HOST:-192.168.31.68}:3081 --trusted-host ${DSH_HOST:-192.168.31.68}:8093 --trusted-host localhost:8093 --trusted-host 127.0.0.1:8093
     volumes:
       - ./dsh:/app/dsh
+      # dsh agent 执行量化技能：工具/配置/事件缓存只读挂载 → docker cp 进 quantmind 执行
+      - ./scripts:/app/quant-scripts:ro
+      - ./configs:/app/quant-configs:ro
+      - ./data/events:/app/quant-events:ro
       # 交易技能（quantdb 分析/复盘/推荐/新闻情绪/券商 OpenAPI 等 12 个，
       # 来自 quantmind/skills 的规范副本；dsh 用户级技能根目录 = ~/.dsh/skills）
       - ./dsh/skills:/root/.dsh/skills
@@ -260,9 +281,11 @@ services:
       TWS_2FA: ${IBKR_TWS_2FA:-device}
       TWOFA_TIMEOUT_ACTION: restart
       IB_GATEWAY_READ_ONLY: "true"
+      # 设置目录独立挂载（不能盖 Jts 整目录——jars 在镜像里）
+      TWS_SETTINGS_PATH: /home/ibgateway/settings
     ports:
       - "4001:4001"
       - "4002:4002"
       - "5900:5900"
     volumes:
-      - ./data/ibgateway-jts:/home/ibgateway/Jts
+      - ./data/ibgateway-jts:/home/ibgateway/settings

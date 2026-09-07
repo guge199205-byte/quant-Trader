@@ -53,10 +53,38 @@ SIDE_RANK = {"BUY": 3, "ADD": 2, "HOLD": 1, "SELL": 0, "REDUCE": 0}
 
 
 def load_picks(picks_file: Path) -> list[dict]:
-    """picks.json → [{code, name, industry, side, score, fusion, rank}]"""
+    """picks.json → [{code, name, industry, side, score, fusion, rank}]
+
+    兼容两种写入方结构：
+    1. quantmind postmarket：{candidates:[{symbol,name,industry,side,score,fusion,rank}]}
+    2. baymax night_pool_agent：{picks:[{code,name,side,score,events,reason}]}
+       （2026-09-06 起两者可能互为"最新"——周日晚/长假末夜研究会刷新 agent_picks，
+        格式不兼容会让周一 09:35 读到空池直接终止）
+    """
     data = json.loads(picks_file.read_text(encoding="utf-8"))
     out = []
-    for c in data.get("candidates") or []:
+    cands = data.get("candidates")
+    if cands is None and data.get("picks") is not None:
+        # night_pool 结构：code 已带后缀，score 为晚间研究复合分（与 quantmind 0~1 不同量纲，
+        # 但 select 只做文件内排序；events/reason 透传给池行备注）
+        for i, c in enumerate(data["picks"], 1):
+            code = normalize_stock_code(c.get("code", ""))
+            if not code:
+                continue
+            out.append({
+                "code": code,
+                "name": c.get("name", ""),
+                "industry": c.get("industry", ""),
+                "side": str(c.get("side", "HOLD")).upper(),
+                "score": float(c.get("score") or 0),
+                "fusion": float(c["fusion"]) if c.get("fusion") is not None else None,
+                "rank": i,
+                "remark": "；".join(list(filter(None, (
+                    str(c.get("events") or ""), str(c.get("reason") or "")))))[:140],
+                "source": f"picks:{picks_file.name}",
+            })
+        return out
+    for c in cands or []:
         code = normalize_stock_code(c.get("symbol", ""))
         if not code:
             continue
@@ -68,6 +96,7 @@ def load_picks(picks_file: Path) -> list[dict]:
             "score": float(c.get("score") or 0),
             "fusion": float(c.get("fusion") or 0),
             "rank": c.get("rank"),
+            "remark": str(c.get("reason") or "")[:140] if c.get("reason") else "",
             "source": f"picks:{picks_file.name}",
         })
     return out

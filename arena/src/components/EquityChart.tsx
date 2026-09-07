@@ -25,6 +25,9 @@ export interface ChartLine {
   dashSegs?: [number, number][];
   /** 绝对金额线：不参与 pct 归一化，走右侧独立刻度（如分账合计 ¥30 万量级） */
   abs?: boolean;
+  /** 断口：这些时间点起是"跨非交易日"后的第一个采样点，线在此断开不与前点相连
+   *  （周末/法定节假日不画线；数据点仍在，tooltip 可见） */
+  gapStarts?: Set<number>;
 }
 
 /** 悬停补充信息（可选）：当时持仓 + 附近成交（时序事实，随鼠标滑动查看） */
@@ -49,6 +52,8 @@ export interface BenchLine {  id: string;
   label: string;
   color: string;
   points: { t: number; v: number }[]; // v 为指数点位
+  /** 断口（跨非交易日后的第一个点），同 ChartLine.gapStarts */
+  gapStarts?: Set<number>;
 }
 
 const margin = { top: 16, right: 16, bottom: 34, left: 62 };
@@ -337,6 +342,8 @@ export default function EquityChart({
                       <Group opacity={hover ? (hl ? 1 : 0.35) : focus ? 0.55 : 0.9}>
                         <Area
                           data={display.bench.points}
+                          defined={(p: { t: number; v: number }) =>
+                            !display.bench?.gapStarts?.has(p.t)}
                           x={(p: { t: number; v: number }) => xScale(idxOf(p.t)) ?? 0}
                           y0={() => yScale(baseV) ?? 0}
                           y1={(p: { t: number; v: number }) => yScale(p.v) ?? 0}
@@ -345,6 +352,8 @@ export default function EquityChart({
                         />
                         <LinePath
                           data={display.bench.points}
+                          defined={(p: { t: number; v: number }) =>
+                            !display.bench?.gapStarts?.has(p.t)}
                           x={(p) => xScale(idxOf(p.t)) ?? 0}
                           y={(p) => yScale(p.v) ?? 0}
                           stroke={display.bench.color}
@@ -367,6 +376,7 @@ export default function EquityChart({
                       <Group key={l.id} opacity={hover ? (hl ? 1 : 0.35) : focusActive ? 1 : 0.45}>
                         <Area
                           data={l.points}
+                          defined={(p: { t: number; v: number }) => !l.gapStarts?.has(p.t)}
                           x={(p: { t: number; v: number }) => xScale(idxOf(p.t)) ?? 0}
                           y0={() => yOf(l, baseV) ?? 0}
                           y1={(p: { t: number; v: number }) => yOf(l, p.v) ?? 0}
@@ -384,6 +394,7 @@ export default function EquityChart({
                               <LinePath
                                 key={`${l.id}-${k}`}
                                 data={segPts}
+                                defined={(p: { t: number; v: number }) => !l.gapStarts?.has(p.t)}
                                 x={(p) => xScale(idxOf(p.t)) ?? 0}
                                 y={(p) => yOf(l, p.v) ?? 0}
                                 stroke={l.color}
@@ -641,18 +652,27 @@ const legendChip = (active: boolean, color: string): React.CSSProperties => ({
   color: active ? '#fff' : '#555', fontSize: 11, cursor: 'pointer',
 });
 
+/** 相邻采样点自然日差 ≥2 = 中间隔了非交易日（周末/法定节假日）→ 线在此断开 */
+const dayFloor = (t: number) => Math.floor(t / 86400000);
+
+const gapStartsOf = (pts: { t: number }[]): Set<number> => {
+  const s = new Set<number>();
+  for (let i = 1; i < pts.length; i++) {
+    if (dayFloor(pts[i].t) - dayFloor(pts[i - 1].t) >= 2) s.add(pts[i].t);
+  }
+  return s;
+};
+
 /** equity 序列 → 图表线（绝对净值，归一化在组件内完成） */
 export const toChartLine = (
   id: string,
   label: string,
   color: string,
   points: EquityPoint[],
-): ChartLine => ({
-  id,
-  label,
-  color,
-  points: points.map((p) => ({ t: dayjs(p.date).valueOf(), v: p.equity })),
-});
+): ChartLine => {
+  const pts = points.map((p) => ({ t: dayjs(p.date).valueOf(), v: p.equity }));
+  return { id, label, color, points: pts, gapStarts: gapStartsOf(pts) };
+};
 
 /** dashSegs（[from,to] 含两端）→ 实/虚渲染窗口 [start,end) 列表（升序、首尾补齐）。
  *  用于「空仓段虚线、持仓段实线」：窗口按分段边界切开，虚线区间标 dashed。 */
@@ -681,10 +701,12 @@ export const toBenchLine = (
   points: { time: string; close: number }[],
 ): BenchLine | null => {
   if (!points.length) return null;
+  const pts = points.map((p) => ({ t: dayjs(p.time).valueOf(), v: p.close }));
   return {
     id: `bench-${label}`,
     label,
     color,
-    points: points.map((p) => ({ t: dayjs(p.time).valueOf(), v: p.close })),
+    points: pts,
+    gapStarts: gapStartsOf(pts),
   };
 };

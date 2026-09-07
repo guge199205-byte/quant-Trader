@@ -81,6 +81,20 @@ def add_pending(order_id, agent: str, code: str, side: str, volume: int,
 
 # ---------- 成交查询 ----------
 
+def is_star_market(code: str) -> bool:
+    """科创板（688/689 开头）。"""
+    from ashare_rules import is_star_market as _is_star
+
+    return _is_star(code)
+
+
+def round_sell_qty(code: str, raw: int, avail: int) -> int:
+    """卖出量合规化——单一口径在 ashare_rules（板块手数/碎股一次性卖出规则）。"""
+    from ashare_rules import round_sell_qty as _round
+
+    return _round(code, raw, avail)
+
+
 def wait_fill(broker, order_id, timeout_s: int = 30, interval: int = 3) -> dict | None:
     """下单后轮询桥当日委托匹配 order_id；返回有成交或有终态的回报，超时返回 None。"""
     if not order_id:

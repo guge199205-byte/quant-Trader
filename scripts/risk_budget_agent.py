@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from trading_cal import is_trading_day, why_not  # noqa: E402
+
 OUT = ROOT / "configs" / "risk_budget.json"
 DETAIL = ROOT / "logs" / "budget"
 STATE = ROOT / "logs" / "budget" / "state.json"
@@ -109,6 +111,12 @@ def decide_level(vol: float | None, dd: float | None,
 
 
 def main() -> int:
+    from zoneinfo import ZoneInfo
+
+    bj = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    if not is_trading_day(bj):
+        print(f"⏭️ {bj} 非交易日（{why_not(bj)}），跳过风险预算定档（沿用上一交易日档位）")
+        return 0
     vol = _index_vol()
     dd = _equity_drawdown()
     zt, ladder = _sentiment()

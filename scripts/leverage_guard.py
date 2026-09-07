@@ -24,12 +24,13 @@ from live_ledger import (agent_virtual_cash, find_holder,  # noqa: E402
                          load_ledger)
 from live_hourly_analysis import (LEVERAGE_MAX, SELL_LIMIT_DOWN,  # noqa: E402
                                   in_trading_window, now_cn)
-from live_fills import add_pending  # noqa: E402
+from live_fills import add_pending, load_pending, round_sell_qty  # noqa: E402
+from ashare_rules import at_limit_down  # noqa: E402
 
 
 def main() -> int:
     now = now_cn()
-    if now.weekday() >= 5 or not in_trading_window(now):
+    if not in_trading_window(now):  # 日历感知（含法定节假日休市）
         return 0
 
     from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
@@ -87,9 +88,9 @@ def main() -> int:
             print(f"[{now:%F %T}] ⚠️ {agent} 杠杆 {value / equity:.2f}× 超限 "
                   f"但 {code} 无行情，暂停该腿")
             continue
-        want = int(-(-exceed // price // 100) * 100)  # ceil 到 100 股
+        raw_want = -(-exceed // price)  # 补齐缺口所需股数（向上取整到股）
         avail = available.get(code, 0)
-        want = min(want, avail, int(p["volume"]))
+        want = round_sell_qty(code, raw_want, min(avail, int(p["volume"])))
         if want <= 0:
             print(f"[{now:%F %T}] ⏭️ {agent} 杠杆 {value / equity:.2f}× 超限，"
                   f"但 {code} 无可卖量，保留待 T+1 解锁")
@@ -103,10 +104,19 @@ def main() -> int:
                     / float(klines[-2].get("close") or 0) * 100
         except Exception:  # noqa: BLE001
             pass
-        if day_chg <= SELL_LIMIT_DOWN:
+        if at_limit_down(code, day_chg):
             print(f"[{now:%F %T}] ⏭️ {agent} {code} 跌停（{day_chg:+.2f}%），强平暂缓")
             continue
         limit = round(price * 0.98, 2)
+        # 在途去重：账本要等 reconcile 才更新，无去重会每分钟叠加卖单造成超卖
+        # （2026-09-04 目标 200 股实际叠加到 400 股）
+        inflight = [p for p in load_pending()
+                    if p.get("agent") == agent and p.get("code") == code
+                    and p.get("side") == "sell"]
+        if inflight:
+            print(f"[{now:%F %T}] ⏭️ {agent} {code} 已有在途卖单 {len(inflight)} 笔，"
+                  f"守护本轮跳过（防叠加超卖）")
+            continue
         try:
             result = broker.sell(None, None, code, want, price=limit)
             print(f"[{now:%F %T}] 🔴 强平守护 {agent} 卖 {code} {want}股 "

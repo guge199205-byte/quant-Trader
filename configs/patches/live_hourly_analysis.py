@@ -44,6 +44,9 @@ LEVERAGE_MAX = 1.5       # 杠杆硬约束：持仓市值 ≤ 权益(现金+市�
 LEVERAGE_TRIM_TO = 1.3   # 强制减仓目标：降到 1.3×
 MAX_NEW_BUYS = 3         # 空仓 agent 单轮建仓上限（每只 ≤ 20% 剩余额度）
 FILL_POLL_TIMEOUT_S = 30 # 下单后等成交回报的轮询超时（限价单通常秒成）
+REVERSAL_COOLDOWN_MIN = 45  # 反摆锤硬闸门：同 agent 同 code 上一轮 sell 本轮 buy（或反向）
+                            # 且间隔 < 该分钟数 → 拦截执行（提示词一致性之外的强制约束，
+                            # 防止波动触发与整点分析来回割肉；WATCH/HOLD 不参与）
 
 # ---- 实时盘口（桥五档，弱 L2 信号）----
 OB_IMB_STRONG = 0.30     # 五档失衡 ≥ ±30% → 强买/强卖信号
@@ -873,6 +876,49 @@ def parse_intraday_decision(text: str) -> list | None:
     return None
 
 
+def reversal_blocked(agent: str, decisions: list, now=None) -> list:
+    """反摆锤硬闸门：同 agent 同 code 相对上一轮方向反转（sell↔buy）且间隔在冷却窗内
+    → 从执行列表剔除（返回未拦截的决策）。hold/watch 不参与。
+
+    依据 agent_last_decisions.json（最近一轮该 agent 的决策 + ts）。
+    若上一轮动作与本轮相反且时间差 < REVERSAL_COOLDOWN_MIN 分钟 → 拦截并打印原因。
+    返回过滤后的 decisions（不修改原列表）。
+    """
+    if not decisions:
+        return decisions
+    now = now or now_cn()
+    last = (load_last_decisions().get(agent) or {}).get("decisions") or []
+    if not last:
+        return decisions
+    # 上轮每个 code 的买卖方向（只关心 sell/buy；watch 视为 sell 的挂单条件，不硬拦反向买入）
+    prev_dir: dict = {}
+    for d in last:
+        act = str(d.get("action") or "").lower()
+        if act in ("sell", "buy"):
+            prev_dir[str(d.get("code") or "")] = act
+    if not prev_dir:
+        return decisions
+    last_ts = (load_last_decisions().get(agent) or {}).get("ts")
+    try:
+        prev_dt = datetime.fromisoformat(last_ts) if last_ts else None
+    except ValueError:
+        prev_dt = None
+    if prev_dt is None or (now - prev_dt).total_seconds() > REVERSAL_COOLDOWN_MIN * 60:
+        return decisions  # 超冷却窗或时间不可判 → 放行
+
+    out = []
+    for d in decisions:
+        act = str(d.get("action") or "").lower()
+        code = str(d.get("code") or "")
+        if act in ("sell", "buy") and code in prev_dir and prev_dir[code] != act:
+            print(f"  ⛔ [{agent}] {code}: 反摆锤拦截——上轮 {prev_dir[code].upper()} 本轮 "
+                  f"{act.upper()}，距上轮 {(now - prev_dt).total_seconds() / 60:.0f} 分钟 "
+                  f"< {REVERSAL_COOLDOWN_MIN} 分钟冷却窗，跳过执行")
+            continue  # 剔除该反向决策
+        out.append(d)
+    return out
+
+
 def execute_intraday_decision(broker, agent: str, decisions: list,
                               holdings: list, cash: float, dry_run: bool = True,
                               pool_codes: set | None = None) -> list:
@@ -1138,7 +1184,12 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
         reconcile(broker)
     except Exception as exc:  # noqa: BLE001
         print(f"  ⚠️ 成交回报 reconcile 失败: {exc}")
-    acct = broker._account_query()
+    try:
+        acct = broker._account_query()
+    except Exception as exc:  # noqa: BLE001
+        # 桥不可达（主机离线/网络切换）：本轮跳过，不崩溃（等桥恢复后自动继续）
+        print(f"[{now:%F %T}] ⚠️ 桥账户查询失败，本轮分析跳过: {exc}")
+        return 1
     asset = float((acct.get("asset") or {}).get("asset") or 0)
     cash = float((acct.get("asset") or {}).get("cash") or 0)
     # 净值记录：每次分析一条（空仓也记，曲线不中断）
@@ -1246,6 +1297,11 @@ def run_analysis(broker, reason: str, dry_run: bool = True) -> int:
             decisions = parse_intraday_decision(content)
             if not decisions:
                 continue  # 该 mode 无结构化决策，不执行
+            # 反摆锤：相对「上一轮」决策先过滤反向动作（必须在 save 之前，
+            # 否则读到的是本轮自己）；过滤后为空 = 全部被拦截
+            decisions = reversal_blocked(agent, decisions, now)
+            if not decisions:
+                continue  # 全部反向动作被冷却拦截，本轮无执行
             save_last_decisions(agent, decisions, now.isoformat())
             if agent_exec_done:
                 continue
@@ -1334,7 +1390,12 @@ def main() -> int:
             print(f"[{now:%F %T}] 非采样时段（9:25-15:10 工作日），跳过")
             return 0
         broker = TdxBridgeBroker()
-        acct = broker._account_query()
+        try:
+            acct = broker._account_query()
+        except Exception as exc:  # noqa: BLE001
+            # 桥不可达：轻量采样也跳过（与 leverage_guard 同策略），不崩溃
+            print(f"[{now:%F %T}] ⚠️ 净值采样失败（桥不可达），跳过: {exc}")
+            return 1
         asset = float((acct.get("asset") or {}).get("asset") or 0)
         cash = float((acct.get("asset") or {}).get("cash") or 0)
         record_equity(broker, asset, cash)

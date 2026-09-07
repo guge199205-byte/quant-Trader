@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from trading_cal import is_trading_day, why_not  # noqa: E402
+
 
 def now_cn() -> str:
     from zoneinfo import ZoneInfo
@@ -111,6 +113,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default="")
     a = ap.parse_args()
+    if not a.date:
+        from zoneinfo import ZoneInfo
+
+        bj = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        if not is_trading_day(bj):
+            print(f"⏭️ {bj} 非交易日（{why_not(bj)}），跳过系统运行日报（休市无运行数据）")
+            return 0
     facts = collect(date=a.date or None)
     today = facts["date"]
     facts_json = json.dumps(facts, ensure_ascii=False)

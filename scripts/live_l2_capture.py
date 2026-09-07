@@ -34,6 +34,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "agent_tools"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from trading_cal import is_trading_day, why_not  # noqa: E402
+
 FACTORS_FILE = ROOT / "data" / "l2_factors_live.json"
 STATE_FILE = ROOT / "data" / "l2_state.json"
 STATUS_FILE = ROOT / "data" / "l2_status.json"
@@ -88,8 +90,8 @@ def now_cn() -> datetime:
 
 
 def in_window(now: datetime) -> bool:
-    """A股交易时段（北京）：9:30-11:30 / 13:00-15:00 工作日。"""
-    if now.weekday() >= 5:
+    """A股交易时段（北京）：9:30-11:30 / 13:00-15:00 交易日（日历感知，节假日休市不采集）。"""
+    if not is_trading_day(now.date()):
         return False
     hm = now.hour * 100 + now.minute
     return 930 <= hm <= 1130 or 1300 <= hm <= 1500

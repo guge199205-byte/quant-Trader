@@ -215,6 +215,23 @@ if [ -n "$RT_DOWN" ]; then
     fi
 fi
 
+# 2c. 因子库新鲜度：alpha_library 分区滞后日K ≥5 自然日 → 提醒重跑
+#     （alpha_library_factors.py 为手动批处理，quantdb 日K 每日同步会领先它）
+if [ $((NOW % 1800)) -lt 300 ]; then   # ~每 30 分钟检查一次，防刷屏
+    KL_DT=$(ls /home/zbox/projects/quantmind/data/quantdb/1_kline_data/daily_backward 2>/dev/null \
+        | grep -oE '[0-9]{8}' | sort | tail -1)
+    AL_DT=$(ls /home/zbox/projects/quantmind/data/quantdb/6_ml_datasets/alpha_library 2>/dev/null \
+        | grep -oE 'dt=[0-9]{8}' | grep -oE '[0-9]{8}' | sort | tail -1)
+    if [ -n "$KL_DT" ] && [ -n "$AL_DT" ]; then
+        LAG=$(( ( $(date -d "${KL_DT:0:4}-${KL_DT:4:2}-${KL_DT:6:2}" +%s) \
+                - $(date -d "${AL_DT:0:4}-${AL_DT:4:2}-${AL_DT:6:2}" +%s) ) / 86400 ))
+        if [ "$LAG" -ge 5 ] && [ "$(date +%u)" -le 5 ]; then
+            ALERTS="$ALERTS
+🟡 因子库 alpha_library 滞后日K ${LAG} 天（${AL_DT} vs ${KL_DT}）——重跑 alpha_library_factors.py 增量刷新"
+        fi
+    fi
+fi
+
 # 3. 备份过期检测（>26h 无备份）
 latest_bak=$(ls -t /home/zbox/backups/baymax/baymax-*.tar.gz 2>/dev/null | head -1)
 if [ -z "$latest_bak" ] || [ $((NOW - $(stat -c %Y "$latest_bak" 2>/dev/null || echo 0))) -gt 93600 ]; then

@@ -25,14 +25,28 @@ from live_ledger import (clear_deferred, load_deferred, load_ledger,  # noqa: E4
                          save_ledger)
 from live_hourly_analysis import (SELL_LIMIT_DOWN, in_trading_window,  # noqa: E402
                                   now_cn)
-from live_fills import add_pending  # noqa: E402
+from live_fills import add_pending, round_sell_qty  # noqa: E402
+from ashare_rules import at_limit_down, after_hours_eligible, after_hours_window  # noqa: E402
 
 MAX_DEFER_HOURS = 24
 
 
+def _after_hours_enabled() -> bool:
+    """盘后固定价格交易执行开关：configs/intraday_exec.json {"after_hours": true}（缺省开）。"""
+    import json
+
+    try:
+        cfg = json.loads((ROOT / "configs" / "intraday_exec.json").read_text(encoding="utf-8"))
+        return bool(cfg.get("after_hours", True))
+    except (OSError, ValueError):
+        return True
+
+
 def main() -> int:
     now = now_cn()
-    if now.weekday() >= 5 or not in_trading_window(now):
+    # 盘后固定价格交易窗口（科创板/创业板 15:05-15:30，收盘价撮合）也可重放卖出延期单
+    ah = after_hours_window(now) and _after_hours_enabled()
+    if not in_trading_window(now) and not ah:
         return 0  # 非盘中静默（cron 每分钟跑）
 
     from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
@@ -77,6 +91,15 @@ def main() -> int:
         if vol > av:
             print(f"[{now:%F %T}] ⏭️ {agent} 卖 {code}: 需 {vol} > 可卖 {av}，缩量重放")
             vol = av
+        if ah and not after_hours_eligible(code):
+            final.append(d)  # 主板等无盘后定价，条件保留至次日盘中
+            continue
+        legal = round_sell_qty(code, vol, av)
+        if legal <= 0:
+            print(f"[{now:%F %T}] ⏭️ {agent} 卖 {code}: {vol} 股非合法申报量（板块手数），保留延期")
+            final.append(d)
+            continue
+        vol = legal
         try:
             klines = broker.get_klines(code, interval="daily")[-3:]
             price = float(klines[-1].get("close") or 0)
@@ -91,14 +114,14 @@ def main() -> int:
             print(f"[{now:%F %T}] ⏭️ {agent} 卖 {code}: 行情不可用，保留延期")
             final.append(d)
             continue
-        if day_chg <= SELL_LIMIT_DOWN:
+        if at_limit_down(code, day_chg):
             print(f"[{now:%F %T}] ⏭️ {agent} 卖 {code}: 跌停（{day_chg:+.2f}%），保留延期")
             final.append(d)
             continue
-        limit = round(price * 0.99, 2)
+        limit = price if ah else round(price * 0.99, 2)  # 盘后=收盘价撮合
         try:
             result = broker.sell(None, None, code, vol, price=limit)
-            print(f"[{now:%F %T}] ✅ 重放 {agent} 卖 {code} {vol}股 "
+            print(f"[{now:%F %T}] ✅ {'盘后重放' if ah else '重放'} {agent} 卖 {code} {vol}股 "
                   f"限价 {limit}: {result}")
             add_pending(result.get("order_id"), agent, code, "sell", vol,
                         limit, now.isoformat())

@@ -302,7 +302,7 @@ export default function Live() {
   const [completedCount, setCompletedCount] = useState(0);
 
   // 总控聚合（三市场一次拉取）
-  const overview = usePolling(() => fetchOverview(), [], 30000);
+  const overview = usePolling(() => fetchOverview(), [], 30000, 0);
   const rows: OverviewRow[] = useMemo(
     () => overview.data?.markets[market] ?? [],
     [overview.data, market],
@@ -312,7 +312,7 @@ export default function Live() {
   // 基准指数（US=等权 NDX100 / CN=SSE50 / HK 暂无）
   const bench = usePolling(() => fetchBenchmark(market), [market], 300000);
   // 当日实时指数（顶部行情条）：CN 桥日K 6 指数 / US NDX100 基准 / HK 空
-  const indices = usePolling(() => fetchIndices(market), [market], 30000);
+  const indices = usePolling(() => fetchIndices(market), [market], 30000, 4000);
 
   // 当前市场全部 agent 净值序列
   const perfs = usePolling(
@@ -325,12 +325,12 @@ export default function Live() {
   );
 
   // 实盘账户净值（A股：每分钟采样，前端 20s 轮询尽量实时）
-  const liveEquity = usePolling(() => fetchLiveEquity(), [], 20000);
+  const liveEquity = usePolling(() => fetchLiveEquity(), [], 60000, 15000);
   // 实盘 LLM 分析 token 累计（30s 刷新，模型卡显示）
-  const tokenUsage = usePolling(() => fetchTokenUsage(), [], 30000);
+  const tokenUsage = usePolling(() => fetchTokenUsage(), [], 30000, 8000);
   // 实盘账本/成交（上移：空仓段反推在 lines memo 里要用）
-  const liveLedger = usePolling(() => fetchLiveLedger(), [], 30000);
-  const liveTrades = usePolling(() => fetchLiveTradesFor(market), [market], 15000);
+  const liveLedger = usePolling(() => fetchLiveLedger(), [], 30000, 12000);
+  const liveTrades = usePolling(() => fetchLiveTradesFor(market), [market], 30000, 7000);
 
   const lines = useMemo(() => {
     const eq = liveEquity.data;
@@ -477,7 +477,7 @@ export default function Live() {
   }, [selectedModel, tab, rows, market], 30000);
 
   // ---------- 实盘账户（A股：通达信桥 /live/account；港股：富途 /api/futu/account 直连 OpenD） ----------
-  const liveAcct = usePolling(() => fetchLiveAccountFor(market), [market], 15000);
+  const liveAcct = usePolling(() => fetchLiveAccountFor(market), [market], 30000, 3000);
   const livePositions = (liveAcct.data?.positions ?? []).filter(
     (p) => Number(p.total_volume) > 0,
   );
@@ -497,7 +497,7 @@ export default function Live() {
   // （hook 上移：空仓虚线判定在 lines memo 里要用）
 
   // ---------- 滚动价格条（当前市场全部 agent 持仓股票最新价） ----------
-  const prices = usePolling(() => fetchPrices(market), [market], 30000);
+  const prices = usePolling(() => fetchPrices(market), [market], 30000, 16000);
   const stockNames = usePolling(() => fetchStockNames(market), [market], 600000);
   const marketPositions = usePolling(
     () =>

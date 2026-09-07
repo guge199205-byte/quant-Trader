@@ -663,6 +663,19 @@ const gapStartsOf = (pts: { t: number }[]): Set<number> => {
   return s;
 };
 
+/** 等距时间序列降采样（分钟净值 5k 点 → ≤900 点/线，SVG 渲染上限；保留首尾）。
+ *  卡顿治理（2026-09-07）：4944 点 × N agent 线每 20s 全量重绘是主渲染瓶颈之一。 */
+export const MAX_CHART_POINTS = 900;
+
+export const downsample = <T,>(pts: T[], n: number = MAX_CHART_POINTS): T[] => {
+  if (pts.length <= n) return pts;
+  const step = (pts.length - 1) / (n - 1);
+  const out: T[] = [];
+  for (let i = 0; i < n - 1; i++) out.push(pts[Math.min(pts.length - 1, Math.round(i * step))]);
+  out.push(pts[pts.length - 1]);
+  return out;
+};
+
 /** equity 序列 → 图表线（绝对净值，归一化在组件内完成） */
 export const toChartLine = (
   id: string,
@@ -671,7 +684,8 @@ export const toChartLine = (
   points: EquityPoint[],
 ): ChartLine => {
   const pts = points.map((p) => ({ t: dayjs(p.date).valueOf(), v: p.equity }));
-  return { id, label, color, points: pts, gapStarts: gapStartsOf(pts) };
+  const gaps = gapStartsOf(pts);            // 断点基于全量序列判断（抽稀后相邻距会失真）
+  return { id, label, color, points: downsample(pts), gapStarts: gaps };
 };
 
 /** dashSegs（[from,to] 含两端）→ 实/虚渲染窗口 [start,end) 列表（升序、首尾补齐）。
@@ -702,11 +716,12 @@ export const toBenchLine = (
 ): BenchLine | null => {
   if (!points.length) return null;
   const pts = points.map((p) => ({ t: dayjs(p.time).valueOf(), v: p.close }));
+  const gaps = gapStartsOf(pts);
   return {
     id: `bench-${label}`,
     label,
     color,
-    points: pts,
-    gapStarts: gapStartsOf(pts),
+    points: downsample(pts),
+    gapStarts: gaps,
   };
 };

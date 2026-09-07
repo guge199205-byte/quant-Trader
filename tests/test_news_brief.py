@@ -1,0 +1,232 @@
+"""新闻 Agent 管线纯逻辑单测：窗口/游标、源分层、聚类去重、JSON 容错解析、
+brief 渲染/字段、watch codes 合并。
+
+运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_news_brief.py -q
+"""
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
+import news_brief as N  # noqa: E402
+
+
+def test_parse_llm_json_fence_and_prose():
+    txt = '好的，分析如下：\n```json\n{"bias": 0.3, "ok": true}\n```\n完'
+    assert N.parse_llm_json(txt) == {"bias": 0.3, "ok": True}
+    assert N.parse_llm_json('直接 {"a":1} 结束') == {"a": 1}
+    assert N.parse_llm_json("不是 json") is None
+    assert N.parse_llm_json("") is None
+
+
+def test_tier_classify_and_exclude():
+    # S/A/B 层源进管线；排除源（社会桶/crypto）不进
+    assert N.source_tier("财联社 - 电报 - 看盘") == "S"
+    assert N.source_tier("7x24小时快讯") == "A"
+    assert N.source_tier("路透社最新报道") == "B"
+    assert N.source_tier("World - Latest - Google News") == "X"
+    assert N.source_tier("Crypto Briefing") == "X"
+    assert N.source_tier("新浪财经－国内滚动") == "X"
+    assert N.source_tier("某新源") == "B"  # 未知源保守放 B（正文级标签会兜底）
+
+
+def test_pick_relevant_uses_enrichment_and_title():
+    a_fin = {"title": "某公司涨停", "source_name": "财联社 - 电报 - 看盘",
+             "enrichment": {"tickers": ["600519.SH"], "event_tags": ["涨停"]}}
+    a_social = {"title": "某地发生泥石流", "source_name": "财联社 - 电报 - 看盘",
+                "enrichment": {}}
+    a_noise_src_but_tagged = {"title": "道路救援现场", "source_name": "新浪财经－国内滚动",
+                              "enrichment": {"tickers": ["600519.SH"]}}
+    assert N.pick_relevant(a_fin)
+    assert not N.pick_relevant(a_social)
+    # 排除源：即使带公司标签也要求标题财经词佐证（防路况/社会新闻误伤）
+    assert not N.pick_relevant(a_noise_src_but_tagged)
+
+
+def test_holdings_relevant_split():
+    arts = [
+        {"title": "贵州茅台：拟回购股份", "source_name": "财联社 - 电报 - 看盘",
+         "enrichment": {"tickers": ["600519.SH"], "event_tags": ["回购"]}},
+        {"title": "英伟达大涨", "source_name": "路透社最新报道",
+         "enrichment": {"tickers": ["NVDA"], "event_tags": []}},
+        {"title": "某地泥石流", "source_name": "新浪财经－国内滚动",
+         "enrichment": {"tickers": []}},
+    ]
+    watch = {"600519.SH", "688183.SH"}
+    h, other = N.split_holdings_related(arts, watch)
+    assert [a["title"] for a in h] == ["贵州茅台：拟回购股份"]
+    assert len(other) == 2
+
+
+def test_dedup_event_verb():
+    arts = [
+        {"title": "康欣新材被立案调查", "source_name": "7x24小时快讯",
+         "enrichment": {"tickers": ["600076.SH"]}},
+        {"title": "康欣新材：涉嫌信披违规被立案", "source_name": "格隆汇快讯-7x24小时市场快讯-财经市场热点",
+         "enrichment": {"tickers": ["600076.SH"]}},
+        {"title": "康欣新材：关于回购股份的公告", "source_name": "财联社 - 电报 - 看盘",
+         "enrichment": {"tickers": ["600076.SH"]}},
+        {"title": "半导体板块异动拉升", "source_name": "7x24小时快讯", "enrichment": {}},
+    ]
+    out = N.dedup_articles(arts)
+    # 立案×2 合并为 1；回购保留；无 ticker 板块条独立保留
+    assert len(out) == 3
+
+
+def test_incr_window_semantics():
+    # 游标语义：窗口 = (last_end, now]，兜底最长 MAX_WINDOW_HOURS
+    last = "2026-09-07T10:00:00+08:00"
+    w = N.window_for(last, "2026-09-07T10:55:00+08:00")
+    assert w[0] == last and w[1] == "2026-09-07T10:55:00+08:00"
+    # 跨天兜底收缩：上次 3 天前 → 只取最近 N 小时
+    old = "2026-09-04T15:00:00+08:00"
+    now = "2026-09-07T09:25:00+08:00"
+    w = N.window_for(old, now)
+    assert w[1] == now
+    assert (__import__("datetime").datetime.fromisoformat(w[0])
+            - __import__("datetime").datetime.fromisoformat(now)).total_seconds() < 0
+    # 无游标（首次）→ 同样兜底窗口
+    w2 = N.window_for("", now)
+    assert w2[1] == now and w2[0] != ""
+
+
+def test_window_never_future():
+    assert N.window_for("", "2026-09-07T09:25:00+08:00")[1] == "2026-09-07T09:25:00+08:00"
+
+
+def test_brief_to_text_renders_key_sections():
+    brief = {
+        "ts": "2026-09-07T10:55:00+08:00",
+        "window": {"start": "2026-09-07T10:00:00+08:00", "end": "2026-09-07T10:55:00+08:00"},
+        "macro": {"bias": -0.3, "view": "中性偏空", "drivers": [{"item": "美联储鹰派"}], "risks": []},
+        "themes": [{"name": "半导体国产化", "logic": "大基金三期", "strength": 2}],
+        "watch_list": [],
+        "open_risks": ["汇率波动"],
+        "holdings": [{"code": "600519.SH", "name": "贵州茅台", "verdict": "中性",
+                      "impact": 0, "event_type": "回购公告", "source": "财联社", "note": ""}],
+        "market_notes": "",
+        "confidence": 0.8,
+        "refs": [],
+    }
+    t = N.brief_to_text(brief)
+    assert "新闻分子" in t and "半导体国产化" in t and "600519.SH" in t
+    assert "美联储鹰派" in t and "汇率波动" in t
+
+
+def test_empty_window_short_circuit_text():
+    assert N.empty_window_markup("2026-09-07T10:55:00+08:00") != ""
+
+
+def test_watch_codes_merge_and_fallback(tmp_path):
+    codes = N.merge_watch_codes(
+        positions=[{"stock_code": "600309.SH", "total_volume": "100"}],
+        pool=[{"code": "688183.SH"}], pool_codes=None)
+    assert "600309.SH" in codes and "688183.SH" in codes
+
+
+def test_parse_gate_lines_clean_and_salvage():
+    clean = "12 macro 降准\n33 micro 涨停\n7 holdings 回购"
+    d = N.parse_gate_lines(clean)
+    assert d["related"] == [{"i": 12, "dir": "macro"},
+                            {"i": 33, "dir": "micro"},
+                            {"i": 7, "dir": "holdings"}]
+    # 模型写散文时若出现 `序号 方向` 相邻形态也可救捞
+    prose = ("逐条判断：12 macro 降准类；33 micro 涨停类保留，其余不列。")
+    d2 = N.parse_gate_lines(prose)
+    assert d2 and {x["i"] for x in d2["related"]} == {12, 33}
+    assert N.parse_gate_lines("全是废话没有序号") is None
+    assert N.parse_gate_lines("") is None
+
+
+def test_parse_pipe_macro():
+    txt = ("V | 中性偏多，政策托底 | 0.2\n"
+           "D | 3000亿特别国债 | 利好金融权重\n"
+           "R | 中东地缘 | 2\n"
+           "C | 0.7\n"
+           "（散文噪声行忽略）")
+    d = N.parse_pipe_lines(txt, "macro")
+    assert d["view"].startswith("中性偏多") and d["bias"] == 0.2
+    assert d["drivers"][0]["item"] == "3000亿特别国债"
+    assert d["risks"][0]["severity"] == 2 and d["confidence"] == 0.7
+
+
+def test_parse_pipe_micro_and_holdings():
+    mt = ("T | 存储芯片 | 涨价 | 2 | 三星涨价\n"
+          "E | 688123.SH,688416.SH | 聚辰股份 | 涨停 | 0.8 | 板块带动\n"
+          "O | 高低切\nC | 0.6")
+    d = N.parse_pipe_lines(mt, "micro")
+    assert d["themes"][0]["name"] == "存储芯片" and d["themes"][0]["strength"] == 2
+    assert d["events"][0]["tickers"] == ["688123.SH", "688416.SH"]
+    assert d["events"][0]["sentiment"] == 0.8 and d["rotation"] == "高低切"
+
+    ht = ("H | 600309.SH | 万华化学 | 利好 | 1 | 日内 | 涨价 | MDI挂牌价上调 | 财联社 | 直接逻辑\n"
+          "X | 600309.SH | 油价联动\nA | 挂条件\nC | 0.8")
+    d = N.parse_pipe_lines(ht, "holdings")
+    assert d["per_stock"][0]["code"] == "600309.SH" and d["per_stock"][0]["impact"] == 1
+    assert d["per_stock"][0]["verdict"] == "利好"
+    assert d["cross_risks"][0]["code"] == "600309.SH"
+    assert d["action_hints"] == ["挂条件"]
+
+
+def test_parse_pipe_rejects_garbage():
+    assert N.parse_pipe_lines("全是散文没有格式", "macro") is None
+    assert N.parse_pipe_lines("", "micro") is None
+
+
+def test_parse_pipe_chief():
+    txt = ("T | 存储芯片 | 涨价周期\n"
+           "W | 688123.SH | 聚辰股份 | 板块带动 | 放量突破\n"
+           "R | 中东地缘反复\n"
+           "H | 600309.SH | 万华化学 | 中性 | 0 | 短期 | 油价 | 油价波动 | 财联社 |\n"
+           "N | 可深挖存储链涨价持续性\nE | 结构性行情\nC | 0.7")
+    d = N.parse_pipe_lines(txt, "chief")
+    assert d["themes"][0]["name"] == "存储芯片"
+    assert d["watch_list"][0]["code"] == "688123.SH" and d["watch_list"][0]["trigger"] == "放量突破"
+    assert d["open_risks"] == ["中东地缘反复"]
+    assert d["holdings"][0]["verdict"] == "中性" and d["holdings"][0]["impact"] == 0
+    assert d["market_notes"].startswith("可深挖") and d["confidence"] == 0.7
+
+
+# ---------- 晚间复盘（news_review） ----------
+
+import news_review as R  # noqa: E402
+
+
+def test_review_classify():
+    assert R.classify("利好", 1, 2.5) == "hit"
+    assert R.classify("利好", 1, -2.0) == "reverse"
+    assert R.classify("利空", -1, -3.0) == "hit"
+    assert R.classify("利空", -1, 3.0) == "reverse"
+    assert R.classify("利好", 1, 0.5) == "flat"      # ±1% 内=无反应
+    assert R.classify("利好", 1, None) == "nodata"
+
+
+def test_review_collect_rows_dedup_and_skip_neutral():
+    briefs = [{"holdings": [
+        {"code": "600309.SH", "verdict": "利好", "impact": 1, "event_type": "涨价"},
+        {"code": "600309.SH", "verdict": "利好", "impact": 2, "event_type": "涨价"},  # 同键取强
+        {"code": "688183.SH", "verdict": "中性", "impact": 0, "event_type": "x"},     # 跳过
+    ]}]
+    rows = R.collect_rows(briefs)
+    assert len(rows) == 1 and rows[0]["impact"] == 2
+
+
+def test_review_update_lessons_tmp(tmp_path):
+    rows = [{"code": "600309.SH", "verdict": "利好", "impact": 1,
+             "event_type": "涨价", "source": "财联社"}]
+    lessons = R.update_lessons(rows, {"600309.SH": 3.2}, path=tmp_path / "lessons.json")
+    assert lessons["by_event_type"]["涨价"]["hit"] == 1
+    assert lessons["by_source"]["财联社"]["hit"] == 1
+    # 累计合并
+    R.update_lessons(rows, {"600309.SH": -3.0}, path=tmp_path / "lessons.json")
+    lessons2 = R.update_lessons([], {}, path=tmp_path / "lessons.json")
+    assert lessons2["by_event_type"]["涨价"]["hit"] == 1
+    assert lessons2["by_event_type"]["涨价"]["reverse"] == 1
+
+
+def test_review_lessons_text_threshold():
+    t = R.lessons_text({"by_event_type": {"涨价": {"hit": 3, "reverse": 1, "flat": 0},
+                                          "小样本": {"hit": 1, "reverse": 0, "flat": 0}}})
+    assert "涨价" in t and "小样本" not in t

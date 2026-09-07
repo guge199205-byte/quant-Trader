@@ -48,9 +48,39 @@ def save(rows: list) -> None:
 
 def main() -> int:
     rows = load()
-    pend = [r for r in rows if r.get("status") == "pending"]
-    if not pend:
+    pend_all = [r for r in rows if r.get("status") == "pending"]
+    # 新闻管线任务不受交易日闸门限制（只读新闻/行情，不下单，手动随时可触发）
+    pend = [r for r in pend_all if r.get("type", "analysis") != "news"]
+    news_pend = [r for r in pend_all if r.get("type") == "news"]
+    if not pend and not news_pend:
         return 0
+
+    # 交易日历闸门：法定节假日休市不分析——任务保持 pending，下个交易日自动补跑。
+    # 有遗留任务时每分钟会进这里，打印做每日一次节流防刷屏。
+    bj_today = datetime.now(BJ).date()
+    if bj_today.weekday() < 5:
+        try:
+            from trading_cal import is_trading_day, why_not
+
+            if not is_trading_day(bj_today):
+                day_key = _now()[:10]
+                note = ROOT / "logs" / ".worker_holiday_note"
+                try:
+                    seen = note.read_text(encoding="utf-8").strip() == day_key
+                except OSError:
+                    seen = False
+                if not seen:
+                    try:
+                        note.write_text(day_key, encoding="utf-8")
+                    except OSError:
+                        pass
+                    print(f"[{_now()}] {why_not(bj_today)}，{len(pend)} 个分析任务保持 "
+                          f"pending（下个交易日补跑）")
+                    pend = []  # 休市：交易分析延后；新闻任务照跑
+                if not pend and not news_pend:
+                    return 0
+        except Exception:  # noqa: BLE001  日历不可用 → 维持原行为
+            pass
 
     try:
         lock = LOCK.open("a")
@@ -63,18 +93,21 @@ def main() -> int:
 
         now = datetime.now(BJ)
         in_window = in_trading_window(now)
-        for r in pend:
-            agents = r.get("agents") or "all"
-            names = "" if agents == "all" else ",".join(agents)
+        for r in (news_pend + pend):
+            if r.get("type") == "news":
+                cmd = [sys.executable, str(ROOT / "scripts" / "news_brief.py")]
+            else:
+                agents = r.get("agents") or "all"
+                names = "" if agents == "all" else ",".join(agents)
+                cmd = [sys.executable, str(ROOT / "scripts" / "live_hourly_analysis.py")]
+                if names:
+                    cmd += ["--agents", names]
+                if not in_window:
+                    cmd.append("--force")  # 盘外：只出决策不下单
             r["status"] = "running"
             r["start_ts"] = _now()
             save(rows)
 
-            cmd = [sys.executable, str(ROOT / "scripts" / "live_hourly_analysis.py")]
-            if names:
-                cmd += ["--agents", names]
-            if not in_window:
-                cmd.append("--force")  # 盘外：只出决策不下单
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True,
                                       timeout=TIMEOUT_S)

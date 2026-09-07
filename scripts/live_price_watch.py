@@ -36,6 +36,10 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "agent_tools"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from trading_cal import is_trading_day, why_not  # noqa: E402
+from live_fills import round_sell_qty  # noqa: E402
+from ashare_rules import at_limit_down, after_hours_eligible, board_of, after_hours_window  # noqa: E402
+
 WATCH_FILE = ROOT / "data" / "live_watch.json"
 LOG_DIR = ROOT / "logs"
 SELL_LIMIT_DOWN = -9.9   # 跌停不接（与 live_hourly_analysis 同口径）
@@ -66,8 +70,8 @@ def now_cn() -> datetime:
 
 
 def in_window(now: datetime) -> bool:
-    """A股交易时段（北京）：9:30-11:30 / 13:00-15:00 工作日。"""
-    if now.weekday() >= 5:
+    """A股交易时段（北京）：9:30-11:30 / 13:00-15:00 交易日（日历感知，节假日休市不动作）。"""
+    if not is_trading_day(now.date()):
         return False
     hm = now.hour * 100 + now.minute
     return 930 <= hm <= 1130 or 1300 <= hm <= 1500
@@ -107,6 +111,7 @@ def save_watch_rules(agent: str, decisions: list) -> int:
             "code": code,
             "stop_loss": d.get("stop_loss"),
             "take_profit": d.get("take_profit"),
+            "move_stop": d.get("move_stop"),
             "pct": min(max(float(d.get("pct") or 1.0), 0.0), 1.0),
             "reason": str(d.get("reason") or ""),
             "created_ts": now_cn().isoformat(),
@@ -146,11 +151,10 @@ def _log_line(rec: dict) -> None:
 
 
 def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
-                  trig: str, avail, dry_run: bool = False) -> bool:
+                  trig: str, avail, dry_run: bool = False,
+                  after_hours: bool = False) -> bool:
     """条件位触发 → 卖出（与盘中执行同一套闸门）。
     返回 True=规则已消费（已执行/作废），False=保留规则下次再守。"""
-    from live_ledger import load_ledger, record_sell, save_ledger
-
     code = rule["code"]
     if avail is None:
         print(f"  🗑️ [{agent}] {code}: 已不在持仓中，条件位作废")
@@ -159,15 +163,17 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
         _notify_skip(rule, f"⏭️ [{agent}] {code}: 可卖量 0（T+1 当日买入），条件位保留待明日")
         return False
     chg = (price - prev) / prev * 100
-    if chg <= SELL_LIMIT_DOWN:
+    if at_limit_down(code, chg):
         _notify_skip(rule, f"⏭️ [{agent}] {code}: 跌停（{chg:+.2f}%）卖不出，条件位保留")
         return False
-    vol = int(avail * min(max(rule.get("pct", 1.0), 0.0), 1.0) / 100) * 100
+    raw_qty = int(avail * min(max(rule.get("pct", 1.0), 0.0), 1.0))
+    vol = round_sell_qty(code, raw_qty, avail)
     if vol <= 0:
         print(f"  🗑️ [{agent}] {code}: 可卖量 {avail} 股按 {rule.get('pct', 1.0):.0%}"
-              f"不足 1 手，条件位作废")
+              f"无合法可卖量（板块手数口径），条件位作废")
         return True
-    limit = round(price * 0.99, 2)  # 限价卖：现价 -1%
+    # 盘后固定价格交易以收盘价撮合 → 申报价=收盘价；盘中限价卖=现价-1%
+    limit = price if after_hours else round(price * 0.99, 2)
     label = "跌破止损" if trig == "stop_loss" else "达到止盈"
     if dry_run:
         print(f"  🟡 DRY-RUN 卖出 {code} {vol}/{avail} 股 限价 ¥{limit:.2f}（{label}）")
@@ -181,11 +187,19 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
                    "trigger": rule.get(trig), "error": str(exc)})
         return False  # 下次重试
     print(f"  ✅ [{agent}] 卖出 {code} {vol} 股 限价 ¥{limit:.2f} 已受理: {result}")
-    ledger = record_sell(load_ledger(), agent, code, vol, limit, now_cn().isoformat())
-    save_ledger(ledger)
+    if vol != raw_qty:
+        print(f"  ⚖️ [{agent}] {code}: 意图 {raw_qty} 股 → 手数合规实际 {vol} 股"
+              f"（{board_of(code)} 口径）")
+    # 成交记账走 pending/reconcile 通道：按真实成交价回填 + fill_confirm 进交易流水
+    # （2026-09-04 复盘：此前直接按限价记账，fill 回报缺失、审计/复盘漏掉哨兵成交）
+    from live_fills import add_pending
+
+    add_pending(result.get("order_id"), agent, code, "sell", vol, limit,
+                now_cn().isoformat())
     _log_line({"ts": now_cn().isoformat(), "mode": f"watch_{trig}", "agent": agent,
-               "code": code, "volume": vol, "price": limit, "trigger": rule.get(trig),
-               "pct": rule.get("pct"), "reason": rule.get("reason"), "result": result})
+               "code": code, "volume": vol, "intent_volume": raw_qty, "price": limit,
+               "trigger": rule.get(trig), "pct": rule.get("pct"),
+               "reason": rule.get("reason"), "result": result})
     return True
 
 
@@ -198,7 +212,7 @@ def _notify_skip(rule: dict, msg: str) -> None:
     print(f"  {msg}")
 
 
-def run_watch(broker, dry_run: bool = False) -> int:
+def run_watch(broker, dry_run: bool = False, after_hours: bool = False) -> int:
     """轮询全部条件位，返回本轮触发笔数。"""
     from live_fills import reconcile
 
@@ -215,7 +229,11 @@ def run_watch(broker, dry_run: bool = False) -> int:
     rules = load_watch()
     if not rules:
         return 0
-    positions = broker._account_query().get("positions") or []
+    try:
+        positions = broker._account_query().get("positions") or []
+    except Exception as exc:  # noqa: BLE001  桥重启窗口/断线：本轮放弃，下分钟再守
+        print(f"  ⚠️ 账户查询失败，本轮哨兵跳过（{str(exc)[:80]}）")
+        return 0
     avail_map = {p.get("stock_code"): int(p.get("available_volume") or 0)
                  for p in positions}
     fired = 0
@@ -227,6 +245,21 @@ def run_watch(broker, dry_run: bool = False) -> int:
                 _notify_skip(r, f"⚠️ [{agent}] {r['code']} 行情获取失败，条件位保留")
                 kept.append(r)
                 time.sleep(POLL_SLEEP_SEC)
+                continue
+            # move_stop：价格触及后止损一次性上移到该价（只上不下，跟踪保护）
+            ms = r.get("move_stop")
+            if ms:
+                try:
+                    ms = float(ms)
+                except (TypeError, ValueError):
+                    ms = None
+            if ms and price >= ms and (r.get("stop_loss") or 0) < ms:
+                print(f"  🔒 [{agent}] {r['code']} 触及 move_stop ¥{ms:.2f}，"
+                      f"止损上移 ¥{r.get('stop_loss') or 0:.2f} → ¥{ms:.2f}")
+                r["stop_loss"] = ms
+                r.pop("move_stop", None)
+            if after_hours and not after_hours_eligible(r["code"]):
+                kept.append(r)  # 主板等无盘后定价的标的，条件位保留至次日盘中
                 continue
             trig = None
             if r.get("stop_loss") and price <= r["stop_loss"]:
@@ -241,7 +274,8 @@ def run_watch(broker, dry_run: bool = False) -> int:
             print(f"  🎯 [{agent}] {r['code']} 现价 ¥{price:.2f} {label}位 "
                   f"¥{r[trig]:.2f}（减仓 {r.get('pct', 1.0):.0%}）: {r.get('reason', '')}")
             if _execute_sell(broker, agent, r, price, prev, trig,
-                             avail_map.get(r["code"]), dry_run=dry_run):
+                             avail_map.get(r["code"]), dry_run=dry_run,
+                             after_hours=after_hours):
                 fired += 1  # 触发并已消费
             else:
                 kept.append(r)
@@ -279,7 +313,12 @@ def main() -> int:
         return 0
 
     now = now_cn()
-    if not args.force and not in_window(now):
+    from live_hourly_analysis import after_hours_exec_enabled
+
+    # 盘后固定价格交易窗口（科创板/创业板 15:05-15:30）：哨兵继续值守，
+    # 触发的卖出以收盘价撮合（仅支持盘后定价的板块标的）
+    ah = (not args.force) and after_hours_exec_enabled() and after_hours_window(now)
+    if not args.force and not in_window(now) and not ah:
         return 0  # 非交易时段静默退出（cron 每分钟跑，不刷屏）
     if not load_watch():
         return 0  # 无条件位，零开销退出（连桥都不碰）
@@ -287,7 +326,7 @@ def main() -> int:
     from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
 
     broker = TdxBridgeBroker()
-    fired = run_watch(broker, dry_run=args.dry_run)
+    fired = run_watch(broker, dry_run=args.dry_run, after_hours=ah)
     if fired:
         print(f"[{now:%F %T}] ⚠️ 条件位触发 {fired} 笔")
     return 0

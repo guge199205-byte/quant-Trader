@@ -24,6 +24,7 @@ import {
   fetchStockNames,
   fetchTrades,
   marketMeta,
+  triggerNewsAnalysis,
 } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
 import EquityChart, { toBenchLine, toChartLine, HoldingSpan } from '../components/EquityChart';
@@ -31,6 +32,7 @@ import RealAccountPanel from '../components/RealAccountPanel';
 import ModelCard, { modelColor, shortName } from '../components/ModelCard';
 import ChatStream from '../components/ChatStream';
 import NewsStream from '../components/NewsStream';
+import NewsAgentChat, { NEWS_AGENTS } from '../components/NewsAgentChat';
 import CompletedFeed from '../components/CompletedFeed';
 import CompConfigPanel from '../components/CompConfigPanel';
 import { MarketSwitcher } from '../components/Navbar';
@@ -277,6 +279,8 @@ export default function Live() {
   const [chartRange, setChartRange] = useState<TimeRange>('all');
   const [chartMode, setChartMode] = useState<'pct' | 'dollar'>('pct');
   const [selectedModel, setSelectedModel] = useState<string>('all');
+  const [newsAgent, setNewsAgent] = useState<string>('all');
+  const [newsMsg, setNewsMsg] = useState<string>('');
   // 「立即分析」手动触发状态（对话 tab 筛选栏按钮）
   const [analyzeState, setAnalyzeState] = useState<'idle' | 'busy' | 'sent' | 'error'>('idle');
   const [analyzeMsg, setAnalyzeMsg] = useState('');
@@ -465,7 +469,7 @@ export default function Live() {
     const units = rows.map((r) => ({ name: r.name, pull: () => fetchLogs(r.name, market) }));
     if (market === 'cn') {
       // 晚间市场研究 agent 的对话卡（pseudo『研究总控』，数据目录 market-research）
-      units.push({ name: '研究总控', pull: () => fetchLogs('market-research', market) });
+      units.push({ name: '市场研究', pull: () => fetchLogs('market-research', market) });
     }
     return Promise.all(units.map((u) => u.pull().catch(() => [] as LogLine[]))).then(
       (lists) => units.map((u, i) => ({ name: u.name, lines: lists[i] })),
@@ -565,16 +569,7 @@ export default function Live() {
     }
     return [...set];
   }, [marketPositions.data]);
-  /** 新闻 tab 关注列表 = 实盘分账持仓 + 模拟盘持仓（A股代码格式与 quantmind enrichment 一致） */
-  const newsTickers = useMemo(() => {
-    const set = new Set<string>(heldSymbols);
-    for (const rec of Object.values(liveLedger.data?.agents ?? {})) {
-      for (const p of rec.positions ?? []) set.add(p.code);
-    }
-    // 实盘持仓代码（A股通达信 / 港股富途）也纳入新闻关注
-    for (const p of livePositions) set.add(p.stock_code);
-    return [...set];
-  }, [heldSymbols, liveLedger.data, livePositions]);
+  // newsTickers 已随新闻文章流下线移除（新闻 tab 现为 agent 对话）
   // 港股新闻关键词：富途无 HK 标签文章库，改用持仓短名（腾讯控股→腾讯）全文搜；
   // 无持仓则用「港股」泛搜恒生/港交所等。A股走 tickers 不用 keyword。
   const hkNewsKeyword = useMemo(() => {
@@ -813,7 +808,7 @@ export default function Live() {
       const agents =
         selectedModel === 'all'
           ? chatAll.data
-          : [{ name: effectiveModel, lines: logs.data ?? [] }];
+          : [{ name: selectedModel === 'market-research' ? '市场研究' : effectiveModel, lines: logs.data ?? [] }];
       if (!agents) return <div className="empty-state">加载对话…</div>;
       return (
         <ChatStream
@@ -825,9 +820,12 @@ export default function Live() {
     }
 
     if (tab === 'news') {
+      // A股：新闻 agent 对话（管线 scripts/news_brief.py，与「模型对话」同款渲染）；
+      // 港股无新闻 agent 管线 → 保留原文关键词新闻流
+      if (market === 'cn') return <NewsAgentChat agent={newsAgent} />;
       return (
         <NewsStream
-          tickers={market === 'cn' ? newsTickers : []}
+          tickers={[]}
           hours={12}
           limit={30}
           keyword={hkNewsKeyword}
@@ -1121,9 +1119,15 @@ export default function Live() {
                 onChange={(e) => setSelectedModel(e.target.value)}
               >
                 <option value="all">全部模型</option>
-                {rows.map((r) => (
-                  <option key={r.name} value={r.name}>{r.name}</option>
-                ))}
+                {rows
+                  // market-research 由下方硬编码中文条目承担（目录名是英文，避免双条目）
+                  .filter((r) => r.name !== 'market-research')
+                  .map((r) => (
+                    <option key={r.name} value={r.name}>{r.name}</option>
+                  ))}
+                {market === 'cn' && (
+                  <option key="market-research" value="market-research">市场研究（研究总控）</option>
+                )}
               </select>
               {tab === 'chat' && (
                 <>
@@ -1140,13 +1144,36 @@ export default function Live() {
               )}
               </>
             ) : tab === 'news' ? (
-              <span className="filter-static">
-                {market === 'cn'
-                  ? `${newsTickers.length} 只持仓`
-                  : market === 'hk'
-                    ? `关键词「${hkNewsKeyword}」`
-                    : '仅 A/H 股'}
-              </span>
+              market === 'cn' ? (
+                <>
+                  <select
+                    className="filter-select"
+                    value={newsAgent}
+                    onChange={(e) => setNewsAgent(e.target.value)}
+                  >
+                    <option value="all">全部新闻</option>
+                    {NEWS_AGENTS.map((a) => (
+                      <option key={a.id} value={a.id}>{a.cn}</option>
+                    ))}
+                  </select>
+                  <button
+                    className={`analyze-trigger ${newsMsg.includes('已触发') ? 'busy' : ''}`}
+                    disabled={newsMsg.includes('已触发')}
+                    onClick={() => {
+                      setNewsMsg('已触发新闻分析，约 3-5 分钟内完成');
+                      triggerNewsAnalysis()
+                        .then(() => setTimeout(() => setNewsMsg(''), 8000))
+                        .catch(() => setNewsMsg('触发失败：后端不可达'));
+                    }}
+                    title="手动跑一轮新闻 agent 管线（增量窗口；只读新闻与行情，不下单）"
+                  >
+                    ⚡ 立即分析
+                  </button>
+                  {newsMsg && <span className="analyze-msg">{newsMsg}</span>}
+                </>
+              ) : (
+                <span className="filter-static">关键词「{hkNewsKeyword}」</span>
+              )
             ) : (
               <span className="filter-static">全部模型</span>
             )}

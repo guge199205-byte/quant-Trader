@@ -508,6 +508,10 @@ export interface AnalysisJob {
 export const triggerLiveAnalysis = (agents: 'all' | string[]) =>
   unwrap<AnalysisJob>(api.post('/live/analyze', { agents }));
 
+/** 手动触发一轮新闻 agent 管线（增量窗口；worker 每分钟消费，约 3-5 分钟完成） */
+export const triggerNewsAnalysis = () =>
+  unwrap<AnalysisJob>(api.post('/news/analyze'));
+
 /** 最近手动分析任务状态（按钮回显） */
 export const fetchAnalysisJobs = (limit = 5) =>
   unwrap<AnalysisJob[]>(api.get('/live/analyze', { params: { limit } }));

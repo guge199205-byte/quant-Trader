@@ -57,7 +57,8 @@ from live_ledger import (  # noqa: E402
     record_sell,
     save_ledger,
 )
-from live_fills import add_pending, reconcile, wait_fill  # noqa: E402
+from live_fills import add_pending, reconcile, wait_fill, round_sell_qty  # noqa: E402
+from ashare_rules import at_limit_down, board_of  # noqa: E402
 
 # 杠杆硬约束（与 live_hourly_analysis 同口径）
 LEVERAGE_MAX = 1.5
@@ -96,15 +97,17 @@ def load_pool(top: int = 20) -> tuple[list, dict]:
 
 def pool_rows(pool: list) -> list[str]:
     """候选池 → markdown 表格行（select_from_reports --json 字段：
-    code/name/industry/side/score/fusion/rank）。"""
+    rank/code/name/industry/score/fusion/remark）。
+    side 标签（历史遗留，写侧恒为 HOLD 占位）不再展示——买卖判断由模型按
+    分数+大盘+板块+新闻分子综合给出，不看标签。"""
     rows = []
     for p in pool:
         fusion = p.get("fusion")
         fus = f"{fusion:.3f}" if isinstance(fusion, (int, float)) else "—"
         rows.append(
             f"| {p.get('rank', '—')} | {p.get('code', '')} | {p.get('name', '')} "
-            f"| {p.get('industry', '')} | {p.get('score', 0):.3f} | {p.get('side', 'HOLD')} "
-            f"| {fus} |")
+            f"| {p.get('industry', '')} | {p.get('score', 0):.3f} "
+            f"| {fus} | {p.get('remark', '')} |")
     return rows
 
 
@@ -172,20 +175,24 @@ def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
         lines.append(
             f"| {h['code']} | {h['name']} | {h['volume']} | {h['cost']} | {h['price']} "
             f"| {h['pnl_pct']:+.2f}% | {h['day_chg']:+.2f}% | {h['avail']} |")
-    lines += ["", "【今日大盘方向】（盘后 6 维模型打分产出）：",
-              f"{direction.get('direction', '—')}（总分 {direction.get('total_score', '—')}/11）", ""]
+    lines += ["", "【今日大盘方向】（最新研究产出）：",
+              f"{direction.get('direction', '—')}"
+              f"{'（总分 ' + str(direction.get('total_score')) + '/11）' if direction.get('total_score') is not None else ''}",
+              ""]
     if pool_rows:
-        lines += ["【候选池】（盘后 6 维打分：L2 40% + 融合 25% + L1 15% + 持仓 10% + 板块 5% + 新闻 5%）",
+        lines += ["【候选池】（最新研究池：总分/融合分/备注；池内没有方向标签——"
+                  "买卖由你按 分数+大盘+板块+新闻分子 综合判断，HOLD/BUY 侧标签一律不作为依据）",
                   "",
-                  "| 排名 | 代码 | 名称 | 行业 | 总分 | 信号 | 关键 | 备注 |",
-                  "|------|------|------|------|------|------|------|------|"]
+                  "| 排名 | 代码 | 名称 | 行业 | 总分 | 融合分 | 备注 |",
+                  "|------|------|------|------|------|--------|------|"]
         lines += pool_rows
     lines += [
         "",
         "【决策规则】",
         "1. 逐只现有持仓判断：hold（继续持有）/ sell（减仓或清仓换股）。"
         "如果现有持股趋势/基本面仍优于候选池，可以全部 hold 不换股。",
-        "2. 需要买入时从候选池选：优先分数高、行业顺大盘方向的。",
+        "2. 需要买入时从候选池选：优先分数高、行业顺大盘方向的；"
+        "允许换仓（同轮先 sell 再 buy），以信号分数+板块主线+新闻分子综合权衡，不必拘泥原有持仓。",
         "3. sell 的 pct = 卖出可卖量的比例（0~1）；buy 的 pct = 使用剩余额度的比例（每票 ≤0.2）。",
         "4. T+1：可卖量 0 的持仓不能卖。",
         "5. 输出**严格 JSON**（不要 markdown 代码块、不要额外文字），格式：",
@@ -237,6 +244,13 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=20, help="候选池上限（默认 20）")
     args = ap.parse_args()
 
+    # 交易日历闸门：法定节假日休市不分析（cron 1-5 覆盖不到法定假日）
+    from trading_cal import is_trading_day, why_not
+
+    if not is_trading_day(now_cn().date()):
+        print(f"⏭️ {now_cn():%F %T} 非交易日（{why_not(now_cn().date())}），跳过模型自主调仓")
+        return 0
+
     mode = "🔴 实盘执行" if args.execute else "🟡 DRY-RUN 决策演练（不下单）"
     print(f"{mode}  {now_cn():%F %T}")
     if not args.execute:
@@ -246,6 +260,10 @@ def main() -> int:
     acct = broker._account_query()
     asset = float((acct.get("asset") or {}).get("asset") or 0)
     cash = float((acct.get("asset") or {}).get("cash") or 0)
+    if asset <= 0:
+        # 桥断线/假活护栏：空数据喂给 LLM 只会产出空决策（2026-09-04 09:35 白烧 3 轮）
+        print(f"⏭️ 桥返回资产 {asset}（断线/无效），跳过本轮调仓，不调 LLM")
+        return 0
     positions = [p for p in (acct.get("positions") or [])
                  if float(p.get("total_volume") or 0) > 0]
     holdings = holding_rows(broker, positions)
@@ -275,9 +293,12 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"❌ [{agent}] LLM 调用失败: {exc}")
         decisions = parse_decision(content)
-        if not decisions:
+        if decisions is None:
             print(f"⚠️ [{agent}] 决策解析失败，跳过（LLM 原文前 200 字）："
                   f"{content[:200]!r}")
+            continue
+        if not decisions:
+            print(f"⏭️ [{agent}] 空决策（合法 no-op，本轮不动）")
             continue
         # 决策展示 + 校验
         sells, buys, summary = [], [], [f"（模型自主调仓决策，{now_cn():%F %T}）"]
@@ -295,11 +316,15 @@ def main() -> int:
                 if avail <= 0:
                     print(f"  ⏭️ [{agent}] 卖出 {code}: T+1 不可卖（可卖量 0），跳过")
                     continue
-                vol = int(avail * min(max(d["pct"], 0), 1) / 100) * 100
+                raw_vol = int(avail * min(max(d["pct"], 0), 1))
+                vol = round_sell_qty(code, raw_vol, avail)
                 if vol <= 0:
-                    print(f"  ⏭️ [{agent}] 卖出 {code}: 比例 {d['pct']} 不足 1 手，跳过")
+                    print(f"  ⏭️ [{agent}] 卖出 {code}: 比例 {d['pct']} 无合法可卖量，跳过")
                     continue
-                if h["day_chg"] is not None and h["day_chg"] <= SELL_LIMIT_DOWN:
+                if vol != raw_vol:
+                    print(f"  ⚖️ [{agent}] 卖出 {code}: 意图 {raw_vol} 股 → 手数合规实际 {vol} 股"
+                          f"（{board_of(code)} 口径）")
+                if at_limit_down(code, h['day_chg'], h.get('name')):
                     print(f"  ⏭️ [{agent}] 卖出 {code}: 跌停（{h['day_chg']:+.2f}%），不接")
                     continue
                 sells.append((code, vol, d["reason"]))
@@ -398,7 +423,7 @@ def main() -> int:
         for code, pct, _ in buys:
             remaining = agent_remaining(ledger, agent)
             bars = bars_map.get(code) or broker.get_klines(code, interval="daily")[-5:]
-            o = compute_order(bars, remaining, pct)
+            o = compute_order(bars, remaining, pct, code)
             if not o["ok"]:
                 print(f"  ⏭️ [{agent}] 买入 {code}: {o['reason']}")
                 continue

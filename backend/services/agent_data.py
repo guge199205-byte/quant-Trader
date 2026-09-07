@@ -27,6 +27,9 @@ def list_agents(config: dict, market: str = "us") -> List[Dict[str, Any]]:
     for folder in sorted(agent_dir.iterdir()):
         if not folder.is_dir():
             continue
+        # 服务型 agent（新闻管线/晚间复盘）不进模型列表——只在新闻 tab 展示
+        if folder.name.startswith("news-"):
+            continue
         position_file = folder / "position" / "position.jsonl"
         log_dir = folder / "log"
         info = {

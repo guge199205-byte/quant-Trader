@@ -1031,6 +1031,23 @@ def live_analyze(payload: dict):
         if not names:
             return {"success": False,
                     "error": f"无有效分账 agent（enabled: {sorted(enabled)}）"}
+    # 交易日历闸门：法定节假日休市 → 不生成分析任务（周五至周日记录式手动分析不受限）
+    try:
+        import sys as _sys
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo
+
+        _api_root = Path(__file__).resolve().parents[1]
+        if str(_api_root / "scripts") not in _sys.path:
+            _sys.path.insert(0, str(_api_root / "scripts"))
+        from trading_cal import is_trading_day, why_not
+
+        bj = _dt.now(ZoneInfo("Asia/Shanghai")).date()
+        if bj.weekday() < 5 and not is_trading_day(bj):
+            return {"success": False,
+                    "error": f"非交易日（{why_not(bj)}），智能体休市不分析——请交易日再发起"}
+    except Exception:  # noqa: BLE001  日历不可用 → 维持原行为
+        pass
     path = Path(__file__).resolve().parents[1] / "logs" / "analysis_jobs.jsonl"
     path.parent.mkdir(exist_ok=True)
     import time as _time
@@ -1047,9 +1064,29 @@ def live_analyze(payload: dict):
     return {"success": True, "data": job}
 
 
+@app.post("/api/news/analyze")
+def news_analyze():
+    """手动触发一轮新闻 agent 管线（增量窗口）：worker 每分钟消费。
+    新闻分析只读行情与新闻，不下单，任何时刻可跑（不受交易日闸门限制）。"""
+    path = Path(__file__).resolve().parents[1] / "logs" / "analysis_jobs.jsonl"
+    path.parent.mkdir(exist_ok=True)
+    import time as _time
+
+    job = {"id": f"job-{int(_time.time())}",
+           "ts": datetime.now().isoformat(timespec="seconds"),
+           "type": "news", "agents": "news", "status": "pending", "note": ""}
+    import fcntl
+
+    with path.open("a", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(job, ensure_ascii=False) + "\n")
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return {"success": True, "data": job}
+
+
 @app.get("/api/live/analyze")
-def live_analyze_status(limit: int = Query(10, ge=1, le=50)):
-    """最近手动分析任务状态（按钮回显用）。"""
+def live_analyze_status(limit: int = Query(10, ge=1, le=50), type: str = Query("")):
+    """最近手动分析任务状态（按钮回显用）。type=news 过滤新闻管线任务。"""
     path = Path(__file__).resolve().parents[1] / "logs" / "analysis_jobs.jsonl"
     rows = []
     try:
@@ -1062,6 +1099,10 @@ def live_analyze_status(limit: int = Query(10, ge=1, le=50)):
                 continue
     except OSError:
         pass
+    if type:
+        rows = [r for r in rows if r.get("type") == type]
+    else:
+        rows = [r for r in rows if r.get("type", "analysis") != "news"]  # 旧按钮回显不含新闻任务
     rows.sort(key=lambda r: r.get("ts", ""), reverse=True)
     return {"success": True, "data": rows[:limit]}
 

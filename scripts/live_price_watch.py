@@ -212,6 +212,13 @@ def _notify_skip(rule: dict, msg: str) -> None:
     print(f"  {msg}")
 
 
+def in_close_auction(now) -> bool:
+    """收盘集合竞价（北京 14:57-15:00）不触发实单：竞价撮合规则不同，
+    哨兵限价单语义失效；条件保留至盘后定价窗口或明日盘中。"""
+    hm = now.hour * 60 + now.minute
+    return 14 * 60 + 57 <= hm < 15 * 60
+
+
 def run_watch(broker, dry_run: bool = False, after_hours: bool = False) -> int:
     """轮询全部条件位，返回本轮触发笔数。"""
     from live_fills import reconcile
@@ -273,6 +280,11 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False) -> int:
             label = "跌破止损" if trig == "stop_loss" else "达到止盈"
             print(f"  🎯 [{agent}] {r['code']} 现价 ¥{price:.2f} {label}位 "
                   f"¥{r[trig]:.2f}（减仓 {r.get('pct', 1.0):.0%}）: {r.get('reason', '')}")
+            if in_close_auction(now):
+                print(f"  ⏭️ [{agent}] {r['code']} 收盘集合竞价时段（14:57-15:00），"
+                      f"不触发实单，条件保留")
+                kept.append(r)
+                continue
             if _execute_sell(broker, agent, r, price, prev, trig,
                              avail_map.get(r["code"]), dry_run=dry_run,
                              after_hours=after_hours):

@@ -260,6 +260,32 @@ def self_minute_feats(code: str) -> dict:
     return out
 
 
+L2_FRESH_MIN = 30  # L2 因子新鲜度：超出即视为陈旧丢弃（残留旧池票 ts 停在数天前）
+
+
+def l2_fresh_filter(rows: dict, now: datetime) -> dict:
+    """L2 因子新鲜度过滤：ts 距今 >L2_FRESH_MIN 分钟的丢弃（旧池票残留 ts
+    停在数天前，直接进提示词会被当"新鲜微观结构"误用）。"""
+    out: dict = {}
+    for code, row in (rows or {}).items():
+        try:
+            ts = datetime.fromisoformat(str((row or {}).get("ts") or ""))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=CN_TZ)
+            if (now - ts).total_seconds() <= L2_FRESH_MIN * 60:
+                out[code] = row
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+def l2_prune_stale(factors: dict, codes: list) -> dict:
+    """采集器落盘前清理：只保留当前 watchlist 的因子（旧池票残留在文件里
+    会让下游误以为它们仍有实时微观结构数据）。"""
+    keep = set(codes or [])
+    return {c: v for c, v in (factors or {}).items() if c in keep}
+
+
 def load_l2_factors(codes: list[str]) -> dict:
     """L2 因子：优先 BayMax 自有采集（data/l2_factors_live.json，live_l2_capture.py
     每 5 分钟一轮），无数据时回退 quantmind API（8092 反代注入 token）。
@@ -271,6 +297,7 @@ def load_l2_factors(codes: list[str]) -> dict:
 
         own = load_factors()
         if own:
+            own = l2_fresh_filter(own, now_cn())
             return {c: own[c] for c in codes if c in own}
     except Exception:  # noqa: BLE001
         pass

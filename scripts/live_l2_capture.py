@@ -511,6 +511,16 @@ def run_pass(broker, dry_debug: bool = False) -> int:
                 codes.append(code)
     except Exception:  # noqa: BLE001
         pass
+    # 盘中异动关注（新闻管线产物：micro 事件/主编 watch 的代码）→ 临时入 L2 轮询
+    try:
+        from news_brief import load_intraday_watch
+
+        iw_codes = load_intraday_watch()
+        for c in iw_codes:
+            if c not in codes:
+                codes.append(c)
+    except Exception:  # noqa: BLE001
+        pass
     codes = codes[:MAX_WATCHLIST]
     if not codes:
         return 0
@@ -562,6 +572,11 @@ def run_pass(broker, dry_debug: bool = False) -> int:
         fetch_market_context(broker, pos_codes)
     except Exception as exc:  # noqa: BLE001
         print(f"  ⚠️ 大盘/板块上下文失败: {exc}")
+    # 落盘前清理：只保留当前 watchlist（旧池票残留会让下游误当新鲜微观结构）
+    from live_hourly_analysis import l2_prune_stale
+
+    factors = l2_prune_stale(factors, codes)
+    state = {c: v for c, v in state.items() if c in set(codes)}
     _atomic_write(STATE_FILE, state)
     _atomic_write(FACTORS_FILE, factors)
     _atomic_write(STATUS_FILE, {

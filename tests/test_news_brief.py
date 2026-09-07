@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import news_brief as N  # noqa: E402
+import live_hourly_analysis as L  # noqa: E402
 
 
 def test_parse_llm_json_fence_and_prose():
@@ -230,3 +231,48 @@ def test_review_lessons_text_threshold():
     t = R.lessons_text({"by_event_type": {"涨价": {"hit": 3, "reverse": 1, "flat": 0},
                                           "小样本": {"hit": 1, "reverse": 0, "flat": 0}}})
     assert "涨价" in t and "小样本" not in t
+
+
+# ---------- 生产级优化：L2 新鲜度/清理、盘中异动关注、竞价防护 ----------
+
+def test_l2_fresh_filter():
+    from datetime import datetime as _dt
+    now = _dt.fromisoformat("2026-09-07T14:00:00+08:00")
+    rows = {
+        "600309.SH": {"ts": "2026-09-07T13:58:00+08:00", "factors": {"x": 1}},   # 新
+        "688183.SH": {"ts": "2026-09-07T10:00:00+08:00", "factors": {"x": 2}},   # 4h 旧
+        "000039.SZ": {"ts": "2026-09-03T15:00:00+08:00", "factors": {"x": 3}},   # 4天 旧
+        "603976.SH": {"ts": "", "factors": {}},                                   # 坏 ts
+    }
+    fresh = L.l2_fresh_filter(rows, now)
+    assert set(fresh) == {"600309.SH"}
+
+
+def test_l2_prune_stale():
+    factors = {"600309.SH": {"ts": "t"}, "300308.SZ": {"ts": "t2"}, "605369.SH": {}}
+    out = L.l2_prune_stale(factors, ["600309.SH", "688183.SH"])
+    assert set(out) == {"600309.SH"}
+
+
+def test_intraday_watch_merge_and_cooldown(tmp_path, monkeypatch):
+    import news_brief as NB
+    monkeypatch.setattr(NB, "INTRA_WATCH_FILE", tmp_path / "iw.json")
+    micro = {"events": [
+        {"tickers": ["688123.SH"], "name": "聚辰股份", "event_type": "涨停异动"},
+        {"tickers": ["300308.SZ"], "name": "中际旭创", "event_type": "主力净流入"},
+    ]}
+    watch = [{"code": "600309.SH", "name": "万华化学", "trigger": "油价异动"}]
+    NB.update_intraday_watch(micro, watch)
+    d = NB.update_intraday_watch({"events": []}, [])
+    codes = {x["code"] for x in d["items"]}
+    assert {"688123.SH", "300308.SZ", "600309.SH"} <= codes
+    assert all("why" in x for x in d["items"])
+
+
+def test_price_watch_auction_guard():
+    from live_price_watch import in_close_auction
+    from datetime import datetime as _dt
+    # 收盘集合竞价 14:57-15:00 不触发实单
+    assert in_close_auction(_dt.fromisoformat("2026-09-07T14:58:30+08:00"))
+    assert not in_close_auction(_dt.fromisoformat("2026-09-07T14:50:00+08:00"))
+    assert not in_close_auction(_dt.fromisoformat("2026-09-07T15:01:00+08:00"))

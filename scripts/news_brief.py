@@ -52,6 +52,9 @@ BRIEF_FILE = ROOT / "data" / "news_brief" / "latest.json"
 HISTORY_FILE = ROOT / "data" / "news_brief" / "history.jsonl"
 WATCH_FILE = ROOT / "data" / "news_brief" / "watch_codes.json"
 LESSONS_FILE = ROOT / "data" / "news_brief" / "lessons.json"  # 晚间复盘经验（news_review 维护）
+INTRA_WATCH_FILE = ROOT / "data" / "news_brief" / "intraday_watch.json"  # 盘中异动关注（L2 轮询消费）
+INTRA_WATCH_TTL_MIN = 60   # 异动关注冷却：60 分钟后过期
+INTRA_WATCH_MAX = 20       # 上限（新优先）
 
 # signature = 落盘目录名（data/agent_data_astock/{sig}/log/... → 前端直接复用）
 GATE, MACRO, MICRO, HOLD, CHIEF = ("news-gate", "news-macro", "news-micro",
@@ -642,6 +645,64 @@ def _seg_compact(stage: str, d: dict | None) -> str:
     return "\n".join(out)
 
 
+def update_intraday_watch(micro: dict | None, watch_list: list | None,
+                          path: Path | None = None) -> dict:
+    """盘中异动关注（用户口径：池外异动股也要有 L2/微观结构关注，视野别是闭集）：
+    来源 = 板块个股情报段的事件 tickers + 主编 watch_list。冷却 60 分钟、上限 20、
+    新优先；live_l2_capture 轮询时合并。"""
+    out_path = path or INTRA_WATCH_FILE
+    now = datetime.now(CN_TZ)
+    items: dict = {}
+    try:
+        old = _list_of_dicts(json.loads(out_path.read_text(encoding="utf-8")).get("items"))
+        for it in old:
+            if it.get("code") and it.get("ts"):
+                items[str(it["code"])] = it
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    def _add(code: str, why: str) -> None:
+        code = str(code or "").strip()
+        if not code:
+            return
+        items[code] = {"code": code, "ts": now.isoformat(timespec="seconds"),
+                       "why": str(why or "")[:60]}
+
+    for e in _list_of_dicts((micro or {}).get("events")):
+        for code in (e.get("tickers") or []):
+            _add(code, f"{e.get('name')} {e.get('event_type')}")
+    for w in _list_of_dicts(watch_list or []):
+        _add(w.get("code"), f"主编盯:{w.get('trigger') or w.get('logic')}")
+
+    # 冷却淘汰
+    cutoff = now.timestamp() - INTRA_WATCH_TTL_MIN * 60
+    kept = []
+    for it in items.values():
+        ts = _iso(it.get("ts"))
+        if ts and ts.timestamp() >= cutoff:
+            kept.append(it)
+    kept.sort(key=lambda x: x["ts"], reverse=True)
+    kept = kept[:INTRA_WATCH_MAX]
+    out = {"ts": now.isoformat(timespec="seconds"), "items": kept}
+    _atomic_write(out_path, out)
+    return out
+
+
+def load_intraday_watch() -> list:
+    """供 L2 采集合并的异动代码列表（过期条目忽略）。"""
+    try:
+        d = json.loads(INTRA_WATCH_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    cutoff = datetime.now(CN_TZ).timestamp() - INTRA_WATCH_TTL_MIN * 60
+    out = []
+    for it in _list_of_dicts(d.get("items")):
+        ts = _iso(it.get("ts"))
+        if ts and ts.timestamp() >= cutoff and it.get("code"):
+            out.append(str(it["code"]))
+    return out[:INTRA_WATCH_MAX]
+
+
 def load_lessons_text(top: int = 4) -> str:
     """晚间复盘经验（信号有效性统计）→ 各段提示词先验注入。缺失返回空。"""
     try:
@@ -937,6 +998,9 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
             }
             brief["text"] = brief_to_text(brief)
             save_brief(brief)
+            # 盘中异动关注（micro 事件 + 主编 watch）→ L2 轮询合并，视野不闭集
+            iw = update_intraday_watch(results.get(MICRO), brief.get("watch_list"))
+            print(f"✓ 盘中异动关注 {len(iw['items'])} 只 → {INTRA_WATCH_FILE.name}")
             print(f"✓ 主编分子已落盘 → {BRIEF_FILE}（confidence={brief['confidence']:.2f}）")
             print(brief["text"])
 

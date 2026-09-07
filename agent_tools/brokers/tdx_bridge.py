@@ -16,6 +16,8 @@
   TDX_ACCOUNT_TYPE=stock
 
 安全：实盘下单必须过风控（见 docs/ARCHITECTURE_UPGRADE.md §4）。
+断线保险：桥 IP 变动（DHCP）导致连接失败时，幂等请求自动触发局网 /24
+健康扫描（bridge_discovery）换址重试一次；下单/撤单不自动重试（防重复）。
 桥状态码：0=REJECTED 1=SUBMITTED 2=PARTIAL_FILL 3=FILLED 4=PARTIAL_CANCELLED 5=CANCELLED
 """
 
@@ -56,6 +58,7 @@ class TdxBridgeBroker(Broker):
                       or os.getenv("TDX_BRIDGE_TOKEN", ""))
         self.account = self.config.get("account") or os.getenv("TDX_ACCOUNT", "")
         self.account_type = self.config.get("account_type") or os.getenv("TDX_ACCOUNT_TYPE", "tdx")
+        self._disc_tried = False  # 断线自动发现每实例至多一次（防同进程重复扫网）
         if not self.bridge_url:
             raise BrokerError("TDX 桥未配置：请设置 TDX_BRIDGE_URL（.env）")
 
@@ -67,18 +70,59 @@ class TdxBridgeBroker(Broker):
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
 
+    def _post(self, path: str, payload: Dict[str, Any], timeout: float,
+              idempotent: bool = True) -> Dict[str, Any]:
+        """统一 POST + 断线自动发现重试（多重保险，见 bridge_discovery）。
+
+        幂等读首次传输层失败（连接/超时）→ 触发桥 IP 自动发现（局网 /24 扫
+        8550 健康端点）→ 换址重试一次；非幂等（下单/撤单）绝不自动重试——
+        超时≠失败，重复下单不可接受。应用层错误（HTTP 4xx/5xx）不触发发现
+        （URL 本身是通的，服务端问题另查）。"""
+        import requests
+
+        try:
+            resp = requests.post(f"{self.bridge_url}{path}", json=payload,
+                                 headers=self._headers(), timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.HTTPError:
+            raise
+        except requests.RequestException as exc:
+            if not idempotent:
+                raise
+            found = self._discover_or_none()
+            if found and found != self.bridge_url:
+                self.bridge_url = found
+                try:
+                    resp = requests.post(f"{self.bridge_url}{path}", json=payload,
+                                         headers=self._headers(), timeout=timeout)
+                    resp.raise_for_status()
+                    return resp.json()
+                except requests.RequestException:
+                    pass  # 换址仍失败 → 抛原始异常（贴近故障起点）
+            raise
+
+    def _discover_or_none(self) -> Optional[str]:
+        """桥失联时自动发现：env/覆盖快探 → 局网扫描（有跨进程冷却），
+        命中即全链路收敛（写 config/tdx_bridge.json）。失败返回 None。"""
+        if self._disc_tried:
+            return None
+        self._disc_tried = True
+        try:
+            from agent_tools.brokers.bridge_discovery import resolve_bridge
+
+            env_url = (os.getenv("TDX_BRIDGE_URL") or "").rstrip("/")
+            return resolve_bridge(env_url=env_url, current_url=self.bridge_url) or None
+        except Exception:  # noqa: BLE001 发现失败不掩盖原始连接错误
+            return None
+
     def tdx_call(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """通用透传：POST /api/v1/tdx/call（桥白名单方法，返回 result 解包）。
 
         用于盘中五档等数据：get_market_snapshot 返回 Buyp/Buyv/Sellp/Sellv 各 5 档。
         """
-        import requests
-
-        resp = requests.post(f"{self.bridge_url}/api/v1/tdx/call",
-                             json={"method": method, "params": params or {}},
-                             headers=self._headers(), timeout=8)
-        resp.raise_for_status()
-        data = resp.json()
+        data = self._post("/api/v1/tdx/call",
+                          {"method": method, "params": params or {}}, 8)
         result = data.get("result") if isinstance(data, dict) else None
         return result if isinstance(result, dict) else {}
 
@@ -117,10 +161,7 @@ class TdxBridgeBroker(Broker):
             }],
         }
         try:
-            resp = requests.post(f"{self.bridge_url}/api/v1/plans/execute",
-                                 json=payload, headers=self._headers(), timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._post("/api/v1/plans/execute", payload, 15, idempotent=False)
         except requests.RequestException as exc:
             raise BrokerError(f"TDX 桥下单失败: {exc}") from exc
         orders = data.get("orders") or []
@@ -140,12 +181,9 @@ class TdxBridgeBroker(Broker):
         import requests
 
         try:
-            resp = requests.post(f"{self.bridge_url}/api/v1/account/query",
-                                 json={"account": self.account,
-                                       "account_type": self.account_type},
-                                 headers=self._headers(), timeout=15)
-            resp.raise_for_status()
-            return resp.json()
+            return self._post("/api/v1/account/query",
+                              {"account": self.account,
+                               "account_type": self.account_type}, 15)
         except requests.RequestException as exc:
             raise BrokerError(f"TDX 桥账户查询失败: {exc}") from exc
 
@@ -169,30 +207,25 @@ class TdxBridgeBroker(Broker):
         import requests
 
         try:
-            resp = requests.post(f"{self.bridge_url}/api/v1/orders/query",
-                                 json={"account": self.account,
-                                       "account_type": self.account_type,
-                                       "stock_code": stock_code,
-                                       "cancelable_only": cancelable_only},
-                                 headers=self._headers(), timeout=15)
-            resp.raise_for_status()
-            return (resp.json() or {}).get("orders") or []
+            data = self._post("/api/v1/orders/query",
+                              {"account": self.account,
+                               "account_type": self.account_type,
+                               "stock_code": stock_code,
+                               "cancelable_only": cancelable_only}, 15)
+            return (data or {}).get("orders") or []
         except requests.RequestException as exc:
             raise BrokerError(f"TDX 桥委托查询失败: {exc}") from exc
 
     def cancel_order(self, stock_code: str, order_id: str) -> Dict[str, Any]:
-        """撤单（当日可撤委托）"""
+        """撤单（当日可撤委托）——非幂等：超时≠成功，不自动重试。"""
         import requests
 
         try:
-            resp = requests.post(f"{self.bridge_url}/api/v1/orders/cancel",
-                                 json={"account": self.account,
-                                       "account_type": self.account_type,
-                                       "stock_code": stock_code,
-                                       "order_id": order_id},
-                                 headers=self._headers(), timeout=15)
-            resp.raise_for_status()
-            return resp.json()
+            return self._post("/api/v1/orders/cancel",
+                              {"account": self.account,
+                               "account_type": self.account_type,
+                               "stock_code": stock_code,
+                               "order_id": order_id}, 15, idempotent=False)
         except requests.RequestException as exc:
             raise BrokerError(f"TDX 桥撤单失败: {exc}") from exc
 
@@ -227,11 +260,8 @@ class TdxBridgeBroker(Broker):
             "count": 250,
         }
         try:
-            resp = requests.post(f"{self.bridge_url}/api/v1/tdx/call",
-                                 json={"method": "get_market_data", "params": params},
-                                 headers=self._headers(), timeout=20)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._post("/api/v1/tdx/call",
+                              {"method": "get_market_data", "params": params}, 20)
         except requests.RequestException as exc:
             raise BrokerError(f"TDX 桥请求失败: {exc}") from exc
         if not data.get("success", True):

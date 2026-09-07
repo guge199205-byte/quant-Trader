@@ -14,31 +14,60 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "logs" / "rt_status.json"
 
 
-def probe_bridge() -> dict:
+def _bridge_urls() -> list:
+    """候选桥地址：运行时覆盖（config/tdx_bridge.json，broker 断线自动发现
+    会写这里）优先，其次 .env 声明地址——IP 变动自愈后看板不误报 DOWN。"""
+    import os
+
+    out: list = []
     try:
-        import os
+        ov = json.loads((ROOT / "config" / "tdx_bridge.json").read_text(encoding="utf-8"))
+        u = str(ov.get("bridge_url") or "").rstrip("/")
+        if u:
+            out.append(u)
+    except (OSError, json.JSONDecodeError):
+        pass
+    env = {}
+    for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
+        if line.startswith("TDX_BRIDGE_"):
+            k, _, v = line.partition("=")
+            env[k] = v.strip().strip('"')
+    u = str(env.get("TDX_BRIDGE_URL", "")).rstrip("/") or "http://192.168.31.13:8550"
+    if u not in out:
+        out.append(u)
+    return out
 
-        env = {}
-        for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
-            if line.startswith("TDX_BRIDGE_"):
-                k, _, v = line.partition("=")
-                env[k] = v.strip().strip('"')
-        import urllib.request
 
-        req = urllib.request.Request(
-            env.get("TDX_BRIDGE_URL", "http://192.168.31.13:8550") + "/api/v1/tdx/call",
-            data=json.dumps({"method": "get_market_snapshot",
-                             "params": {"stock_code": "600519.SH"}}).encode(),
-            headers={"Content-Type": "application/json",
-                     "Authorization": "Bearer " + env.get("TDX_BRIDGE_TOKEN", "")},
-            method="POST")
-        with urllib.request.urlopen(req, timeout=5) as r:
-            d = json.loads(r.read().decode())
-        res = d.get("result") or {}
-        now = float(res.get("Now") or 0)
-        return {"ok": now > 0, "now": now, "ts": datetime.now().isoformat(timespec="seconds")}
-    except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": str(e)[:120]}
+def probe_bridge() -> dict:
+    import os
+
+    env = {}
+    for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
+        if line.startswith("TDX_BRIDGE_"):
+            k, _, v = line.partition("=")
+            env[k] = v.strip().strip('"')
+    token = env.get("TDX_BRIDGE_TOKEN", "")
+    import urllib.request
+
+    for url in _bridge_urls():
+        try:
+            req = urllib.request.Request(
+                url + "/api/v1/tdx/call",
+                data=json.dumps({"method": "get_market_snapshot",
+                                 "params": {"stock_code": "600519.SH"}}).encode(),
+                headers={"Content-Type": "application/json",
+                         "Authorization": "Bearer " + token},
+                method="POST")
+            with urllib.request.urlopen(req, timeout=5) as r:
+                d = json.loads(r.read().decode())
+            res = d.get("result") or {}
+            now = float(res.get("Now") or 0)
+            if now > 0:
+                return {"ok": True, "now": now, "via": url,
+                        "ts": datetime.now().isoformat(timespec="seconds")}
+        except Exception as e:  # noqa: BLE001 单地址失败继续探下一候选
+            last_err = str(e)[:120]
+    return {"ok": False, "error": last_err}
 
 
 def probe_fuyao() -> dict:

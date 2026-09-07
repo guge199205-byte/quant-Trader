@@ -371,7 +371,8 @@ def load_factors() -> dict:
 def fetch_market_context(broker, holdings_codes: list) -> dict:
     """大盘指数 + 持仓股所属板块（行业优先）+ 板块指数当日涨跌。
     全部经桥透传；单只失败跳过。→ data/market_snapshot.json（盘中分析提示词消费）。"""
-    ctx: dict = {"ts": now_cn().isoformat(timespec="seconds"), "indices": {}, "sectors": {}}
+    ctx: dict = {"ts": now_cn().isoformat(timespec="seconds"), "indices": {}, "sectors": {},
+                 "position_sectors": {}}  # 持仓→板块映射（波动触发器板块联动检测用）
     for code, name in INDEX_CODES:
         try:
             s = parse_snapshot(broker.tdx_call("get_market_snapshot", {"stock_code": code}))
@@ -384,7 +385,7 @@ def fetch_market_context(broker, holdings_codes: list) -> dict:
             pass
     # 个股所属板块：行业板块优先（get_relation 返回 行业/地区/概念 混合，取前两类）
     sector_by_code: dict = {}
-    for code in holdings_codes[:5]:
+    for code in holdings_codes[:MAX_WATCHLIST]:
         try:
             rel = broker.tdx_call("get_relation", {"stock_code": code})
             rows = rel.get("Value") or (rel if isinstance(rel, list) else [])
@@ -401,6 +402,8 @@ def fetch_market_context(broker, holdings_codes: list) -> dict:
     for code, rels in sector_by_code.items():
         for rel in rels:
             bcode = rel.get("code")
+            if bcode:
+                ctx["position_sectors"][code] = bcode  # 持仓→板块（供触发器）
             if not bcode or bcode in seen or len(seen) >= MAX_SECTOR_CALLS:
                 continue
             seen.add(bcode)

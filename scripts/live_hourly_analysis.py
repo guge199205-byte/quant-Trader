@@ -41,6 +41,11 @@ RECOVERY_DOWN_MIN = 10          # 断线恢复补跑: 错失 ≥10 个"应采样
                                 # "上一分钟恰好记到 asset≤0"，硬断线崩溃留旧正值 →
                                 # 短中断恢复后傻等到下一整点）
 TRIGGER_SAME_DIR_COOLDOWN_MIN = 60  # 波动触发同向冷却: 同标的同向 60 分钟内不重复分析
+# ---- 方案 C v2 触发源（2026-09-07）：板块联动 / L2 资金流 / 新闻持仓信号 ----
+TRIGGER_SECTOR_PP = 3.0     # 持仓所属板块涨跌较上次分析变化 ≥3pp → 唤醒
+TRIGGER_SECTOR_ABS = 5.0    # 或板块绝对涨跌 ≥5%（强势/弱势确认）
+TRIGGER_INOUT_DELTA = 0.3   # 持仓内外盘失衡较上次分析变化 ≥0.3（-1..1 尺度）→ 唤醒
+TRIGGER_NEWS_IMPACT = 1.0   # 新闻管线持仓信号新出现 |impact|≥1 → 唤醒
 
 # ---- 盘中执行参数（分析建议 → 实际买卖）----
 # 与 live_llm_trade.py 保持同一套闸门口径：
@@ -1113,6 +1118,77 @@ def _try_lock() -> bool:
     return True
 
 
+def sector_triggers(ctx: dict, last_sector_chg: dict, codes: list) -> list:
+    """板块联动触发：持仓所属板块较上次分析变化 ≥3pp 或绝对 ≥5%。
+    ctx = market_snapshot.json（indices/sectors/position_sectors）。纯函数可测。"""
+    out = []
+    pos_sec = (ctx or {}).get("position_sectors") or {}
+    sectors = (ctx or {}).get("sectors") or {}
+    for code in codes or []:
+        bcode = pos_sec.get(code)
+        if not bcode:
+            continue
+        sec = sectors.get(bcode) or {}
+        chg = sec.get("chg_pct")
+        if chg is None:
+            continue
+        prev = (last_sector_chg or {}).get(bcode)
+        name = sec.get("name") or bcode
+        if prev is not None and abs(chg - prev) >= TRIGGER_SECTOR_PP:
+            out.append((code, "up" if chg > prev else "down",
+                        f"板块联动：{name} {prev:+.1f}%→{chg:+.1f}%"))
+        elif abs(chg) >= TRIGGER_SECTOR_ABS:
+            out.append((code, "up" if chg > 0 else "down",
+                        f"板块绝对涨跌：{name} {chg:+.1f}%"))
+    return out
+
+
+def l2_triggers(factors: dict, last_inout: dict, codes: list) -> list:
+    """L2 资金流触发：持仓内外盘失衡较上次分析变化 ≥0.3（-1..1）。纯函数可测。"""
+    out = []
+    for code in codes or []:
+        row = (factors or {}).get(code) or {}
+        inout = ((row.get("factors") or {}).get("inout"))
+        if inout is None:
+            continue
+        try:
+            inout = float(inout)
+        except (TypeError, ValueError):
+            continue
+        prev = (last_inout or {}).get(code)
+        if prev is None:
+            continue
+        try:
+            prev = float(prev)
+        except (TypeError, ValueError):
+            continue
+        if abs(inout - prev) >= TRIGGER_INOUT_DELTA:
+            out.append((code, "up" if inout > prev else "down",
+                        f"资金流突变：内外盘失衡 {prev:+.2f}→{inout:+.2f}"))
+    return out
+
+
+def news_triggers(brief: dict, last_news_key: str) -> tuple:
+    """新闻持仓信号触发：新分子中出现 |impact|≥TRIGGER_NEWS_IMPACT 的逐票结论。
+    返回 (triggers, new_key)；brief 为空/无新内容返回 ([], last_news_key)。纯函数可测。"""
+    ts = str((brief or {}).get("ts") or "")
+    if not ts or ts == (last_news_key or ""):
+        return [], (last_news_key or "")
+    from news_brief import _list_of_dicts  # 局部导入防环
+
+    out = []
+    for h in _list_of_dicts((brief or {}).get("holdings")):
+        try:
+            impact = float(h.get("impact") or 0)
+        except (TypeError, ValueError):
+            continue
+        if abs(impact) >= TRIGGER_NEWS_IMPACT:
+            out.append((str(h.get("code") or ""), "up" if impact > 0 else "down",
+                        f"新闻信号：{h.get('name')}({h.get('code')}) {h.get('verdict')} "
+                        f"impact{impact:+.0f} · {h.get('event_type')}"))
+    return out, ts
+
+
 def check_volatility(broker, positions: list) -> str | None:
     """波动触发检测（方案 C）：
       - 任一持仓盈亏% 较上次分析变化 ≥3pp（浮盈转亏/加速亏损都算）
@@ -1144,6 +1220,34 @@ def check_volatility(broker, positions: list) -> str | None:
             if (prev_day is None or abs(prev_day) < TRIGGER_DAY_CHG) and abs(r["day_chg"]) >= TRIGGER_DAY_CHG:
                 triggers.append((r["code"], "down" if r["day_chg"] < 0 else "up",
                                  f"{r['name']}({r['code']}) 今日涨跌 {r['day_chg']:+.2f}%"))
+    # —— 方案 C v2：板块联动 / L2 资金流 / 新闻持仓信号（各自独立降级，失败不阻塞）——
+    codes = [r["code"] for r in rows]
+    try:
+        ctx = load_market_context()
+        triggers += sector_triggers(ctx, state.get("last_sector_chg") or {}, codes)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from live_l2_capture import load_factors
+
+        triggers += l2_triggers(load_factors(), state.get("last_inout") or {}, codes)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from news_brief import BRIEF_FILE
+
+        brief = {}
+        try:
+            brief = json.loads(BRIEF_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            brief = {}
+        news_hits, new_key = news_triggers(brief, state.get("last_news_key") or "")
+        if news_hits:
+            # 立即记账（防同一分子反复唤醒）；merge 保存保留其他键
+            save_state({**load_state(), "last_news_key": new_key})
+        triggers += news_hits
+    except Exception:  # noqa: BLE001
+        pass
     if not triggers:
         return None
 
@@ -1680,11 +1784,34 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
           continue
     # 更新波动基线（全部持仓，跨 agent 汇总）；merge 旧键——仲裁/其他写入方
     # 可能带 last_good_sample_ts 等采样键，整体替换会丢掉断线恢复判据
+    # v2 触发源基线：分析完成时的板块涨跌 / 内外盘失衡（下次 check_volatility 的比对基准）
+    last_sector_chg, last_inout = {}, {}
+    try:
+        ctx = load_market_context()
+        pos_sec = ctx.get("position_sectors") or {}
+        for code, bcode in pos_sec.items():
+            sec = (ctx.get("sectors") or {}).get(bcode) or {}
+            if sec.get("chg_pct") is not None:
+                last_sector_chg[bcode] = sec["chg_pct"]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from live_l2_capture import load_factors as _load_factors
+
+        _facs = _load_factors() or {}
+        for r in rows:
+            inout = ((_facs.get(r["code"]) or {}).get("factors") or {}).get("inout")
+            if inout is not None:
+                last_inout[r["code"]] = inout
+    except Exception:  # noqa: BLE001
+        pass
     save_state({**load_state(),
                 "last_ts": now.isoformat(),
                 "last_reason": reason,
                 "last_pnl": {r["code"]: r["pnl_pct"] for r in rows},
-                "last_day": {r["code"]: r["day_chg"] for r in rows if r["day_chg"] is not None}})
+                "last_day": {r["code"]: r["day_chg"] for r in rows if r["day_chg"] is not None},
+                "last_sector_chg": last_sector_chg,
+                "last_inout": last_inout})
     return 0 if ok else 1
 
 

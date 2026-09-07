@@ -48,8 +48,6 @@ TRIGGER_SAME_DIR_COOLDOWN_MIN = 60  # 波动触发同向冷却: 同标的同向 
 #   buy:  只买候选池内标的、涨停不追、单票 ≤ 剩余额度 20%、
 #         子账户虚拟现金不透支（分账额度红线）、账户现金兜底
 PER_STOCK_PCT = 0.2      # 单票买入 ≤ 剩余额度 20%
-BUY_LIMIT_UP = 9.9       # 涨停不追
-SELL_LIMIT_DOWN = -9.9   # 跌停不接
 LEVERAGE_MAX = 1.5       # 杠杆硬约束：持仓市值 ≤ 权益(现金+市值)×1.5，超限强制减仓
 LEVERAGE_TRIM_TO = 1.3   # 强制减仓目标：降到 1.3×
 MAX_NEW_BUYS = 3         # 空仓 agent 单轮建仓上限（每只 ≤ 20% 剩余额度）

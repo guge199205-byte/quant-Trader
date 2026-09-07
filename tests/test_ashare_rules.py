@@ -1,0 +1,75 @@
+"""ashare_rules 单测：2026 新规口径（ST 主板带宽沿革/盘后定价扩展/申报量/提示词）。
+
+运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_ashare_rules.py -q
+"""
+import sys
+from datetime import date, datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
+import ashare_rules as R  # noqa: E402
+
+
+def test_board_of():
+    assert R.board_of("600309.SH") == "main"
+    assert R.board_of("688183.SH") == "star"
+    assert R.board_of("300750.SZ") == "chinext"
+    assert R.board_of("832000.BJ") == "bse"
+
+
+def test_price_limit_st_main_widened_2026():
+    # 沪深《交易规则》2026-04-24 修订、2026-07-06 实施：主板 ST ±5% → ±10%
+    assert R.price_limit_pct("600309.SH", "万华化学", date(2026, 6, 30)) == 10.0
+    assert R.price_limit_pct("000001.SZ", "ST某某", date(2026, 6, 30)) == 5.0
+    assert R.price_limit_pct("000001.SZ", "*ST某某", date(2026, 7, 6)) == 10.0
+    assert R.price_limit_pct("600000.SH", "ST某某", date(2026, 9, 7)) == 10.0
+    # 创业板/科创板/北交所风险警示带宽不变
+    assert R.price_limit_pct("300001.SZ", "ST某某", date(2026, 6, 1)) == 20.0
+    assert R.price_limit_pct("688001.SH", "ST某某", date(2026, 6, 1)) == 20.0
+    assert R.price_limit_pct("832000.BJ", "ST某某", date(2026, 6, 1)) == 30.0
+
+
+def test_price_limit_st_lookup_fallback():
+    # name 缺省 → 静态名称表兜底（表里没有的按非 ST）
+    pct = R.price_limit_pct("600309.SH", None, date(2026, 9, 7))
+    assert pct == 10.0
+
+
+def test_limit_price_rounding():
+    assert R.limit_price(100.0, 10.0, "up") == 110.0
+    assert R.limit_price(10.03, 10.0, "down") == 9.03  # HALF_UP 到分
+    assert R.limit_price(0, 10.0, "up") is None
+
+
+def test_at_limit_tolerances():
+    assert R.at_limit_down("600309.SH", -9.95, "万华化学")
+    assert not R.at_limit_down("600309.SH", -9.0, "万华化学")
+    assert R.at_limit_up("300750.SZ", 19.95, "宁德时代")
+
+
+def test_after_hours_eligible_all_a_2026():
+    # 2026-07-06 起盘后固定价格交易扩展至全部 A股（北交所除外）
+    assert R.after_hours_eligible("600309.SH")
+    assert R.after_hours_eligible("000001.SZ")
+    assert R.after_hours_eligible("688183.SH")
+    assert R.after_hours_eligible("300750.SZ")
+    assert not R.after_hours_eligible("832000.BJ")
+    assert R.after_hours_window(datetime(2026, 9, 7, 15, 20))
+    assert not R.after_hours_window(datetime(2026, 9, 7, 15, 31))
+
+
+def test_round_qty():
+    assert R.round_sell_qty("688183.SH", 150, 600) == 200  # 不足起报量抬到 200（剩余非碎股不全清）
+    assert R.round_sell_qty("688183.SH", 150, 220) == 220  # 卖后剩 20 股碎股 → 一次性全清
+    assert R.round_sell_qty("600309.SH", 250, 600) == 200  # 主板 100 股整数倍
+    assert R.round_buy_qty("688183.SH", 150) == 200        # 科创板起报 200
+    assert R.round_buy_qty("600309.SH", 150) == 100
+
+
+def test_rules_brief_mentions_2026_rules():
+    brief = R.rules_brief()
+    assert "ST/*ST 2026-07-06 起同步放宽至±10%" in brief
+    assert "扩展至全部A股" in brief
+    assert "≤20万股" in brief  # 北交所风警股限额（待实施，提示词先知）

@@ -66,7 +66,6 @@ LEVERAGE_MAX = 1.5
 CN_TZ = ZoneInfo("Asia/Shanghai")
 PICKS_JSON = ROOT / ".." / "projects" / "quantmind" / "data" / "reports" / "stock_picks"
 PER_STOCK_PCT = 0.2   # 单票买入 ≤ 剩余额度 20%
-BUY_LIMIT_UP = 9.9    # 涨停不追
 SELL_LIMIT_DOWN = -9.9  # 跌停不接
 
 

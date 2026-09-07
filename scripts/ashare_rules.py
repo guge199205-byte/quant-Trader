@@ -44,15 +44,28 @@ def is_star_market(code: str) -> bool:
 _ST_MAIN_BOARD_WIDENED = date(2026, 7, 6)
 
 
+def _guess_st(code: str) -> bool:
+    """显式 name 缺省时从静态名称表兜底识别 ST（查表失败按非 ST，纯规则模块不做 IO 重试）。"""
+    try:
+        from tools.stock_names import CN_STOCK_NAMES
+
+        return "ST" in str(CN_STOCK_NAMES.get(code) or "").upper()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def price_limit_pct(code: str, name: str | None = None, d: date | None = None) -> float:
     """涨跌停幅度（%），按板块+ST+日期解析：
-    主板 ±10（ST：2026-07-06 前 ±5，之后 ±10）；创业板/科创板 ±20；北交所 ±30。"""
+    主板 ±10（ST：2026-07-06 前 ±5，之后 ±10，沪深交易所《交易规则》2026 修订）；
+    创业板/科创板 ±20（含风险警示）；北交所 ±30（含风险警示）。
+    name=None 时用静态名称表兜底识别 ST。"""
     b = board_of(code)
     if b == "star" or b == "chinext":
         return 20.0
     if b == "bse":
         return 30.0
-    if name and "ST" in str(name).upper():
+    is_st = ("ST" in str(name).upper()) if name is not None else _guess_st(code)
+    if is_st:
         eff = d or date.today()
         return 5.0 if eff < _ST_MAIN_BOARD_WIDENED else 10.0
     return 10.0
@@ -136,10 +149,13 @@ def after_hours_eligible(code: str) -> bool:
 
 
 def rules_brief() -> str:
-    """注入提示词的一行速览（给 agent 的规则常识，勿再逐条向工具求证）。"""
-    return ("板块交易规则：主板涨跌停±10%（ST±5%）、创业板/科创板±20%、北交所±30%；"
-            "买入100股整数倍（科创板最低200股、可1股递增）；卖出同口径且碎股一次性卖出；"
-            "2026-07-06 起全部 A 股 15:05-15:30 盘后固定价格交易（收盘价撮合）。")
+    """注入提示词的一行速览（给 agent 的规则常识，勿再逐条向工具求证）。
+    口径 = 沪深交易所《交易规则》2026-04-24 修订（2026-07-06 实施）。"""
+    return ("板块交易规则：主板涨跌停±10%（ST/*ST 2026-07-06 起同步放宽至±10%）、"
+            "创业板/科创板±20%、北交所±30%；买入100股整数倍（科创板最低200股、可1股递增）；"
+            "卖出同口径且碎股一次性卖出；2026-07-06 起盘后固定价格交易扩展至全部A股"
+            "（15:05-15:30 收盘价撮合）；创业板引入做市商；北交所将推盘后定价并对风险警示股"
+            "实行当日累计买入≤20万股（实施时间以交易所通知为准）。")
 
 
 if __name__ == "__main__":

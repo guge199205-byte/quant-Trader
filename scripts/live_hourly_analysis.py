@@ -99,8 +99,8 @@ INTRA_DAY_SCHEMA = (
 
 
 from live_prompt_context import (build_gap_note, build_trade_recap,  # noqa: E402
-                             load_hypotheses_summary, load_review_recap,
-                             parse_intraday_decision)
+                             load_decision_scorecard, load_hypotheses_summary,
+                             load_review_recap, parse_intraday_decision)
 
 
 def _load_dotenv() -> None:
@@ -569,7 +569,8 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
                        cross_refs: str | None = None,
                        stale: bool = False,
                        recap: str | None = None,
-                       review: str | None = None) -> str:
+                       review: str | None = None,
+                       pool: list | None = None) -> str:
     lines = [
         f"现在是北京时间 {now_cn():%F %T}（A股{('盘中' if in_trading_window(now_cn()) else '盘前/盘后')}）。"
         f"你是 {agent}（实盘分账账户，初始额度 ¥10 万）。你名下虚拟资产 ¥{asset:,.0f}、"
@@ -612,6 +613,14 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
         "买卖/换仓依据 = 信号分数 + 大盘盘面 + 板块主线 + 新闻分子综合判断，"
         "任何 HOLD/BUY 侧标签一律不作为依据。",
     ]
+    # 候选池实时行情（非持仓）：换仓/新开仓的定价依据。此前持仓 agent 既拿不到
+    # 池内价格、闸门也不放行非持仓买入 → "允许换仓"实际无法执行（2026-09-08 修复）
+    if pool:
+        from live_prompt_context import build_pool_quote_block
+
+        qb = build_pool_quote_block(pool)
+        if qb:
+            lines += ["", "以下为候选池（**不是你的持仓**）——新开仓/换仓只能从池内选：", qb]
     # 上一轮建议（记忆一致性：防整点之间决策反复横跳）
     if last_decisions:
         lines += ["", "【上一轮你的建议（已按此执行或挂单）】", ""]
@@ -800,6 +809,12 @@ def build_flat_content(pool: list, direction: dict, cash: float, agent: str,
         lines.append(f"（其余 {len(pool) - 8} 只与今日此前轮次一致，按评分降序：{rest}）")
     else:
         lines += pool_rows(pool)
+    # 池内实时价（桥口径）：无价 → 模型无法定价 → 只能空转/挂 watch（哨兵不执行买单）
+    from live_prompt_context import build_pool_quote_block
+
+    qb = build_pool_quote_block(pool)
+    if qb:
+        lines += ["", qb]
     if direction:
         lines += ["", f"大盘方向：{direction}", ""]
     ctx = load_market_context()
@@ -1305,6 +1320,41 @@ def check_volatility(broker, positions: list) -> str | None:
     return "；".join(kept[:5]) + ("…" if len(kept) > 5 else "")
 
 
+def daily_buy_codes(agent: str, day: str | None = None,
+                    path: Path | None = None) -> set:
+    """当日该 agent 已成交买入的代码集合（成交回报/定格记录）。
+
+    风险预算口径是「**全天**新开仓 ≤ max_new_buys 只」，而闸门此前只按单轮计数，
+    整点轮每小时都能再开一批——日级上限补上这个缺口（2026-09-08）。
+    """
+    day = day or now_cn().strftime("%Y-%m-%d")
+    path = path or (ROOT / "logs" / f"live_trade_{day.replace('-', '')}.jsonl")
+    out: set = set()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if r.get("error") or r.get("agent") != agent:
+            continue
+        if str(r.get("side") or "").lower() != "buy":
+            continue
+        code = str(r.get("code") or "")
+        if not code:
+            continue
+        if r.get("mode") == "fill_confirm":
+            vol = int(r.get("volume") or 0)
+        else:
+            vol = int((r.get("fill") or {}).get("filled_volume") or 0)
+        if vol > 0:
+            out.add(code)
+    return out
+
+
 def execute_intraday_decision(broker, agent: str, decisions: list,
                               holdings: list, cash: float, dry_run: bool = True,
                               pool_codes: set | None = None) -> list:
@@ -1313,10 +1363,12 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
     与 live_llm_trade.py 同一套安全闸门：
       - sell: 只卖可卖量（T+1 当日买入跳过）、跌停不接、100 股整数倍、
               已有在途卖单不再重复下
-      - buy:  持仓 agent 仅加仓已有标的；空仓 agent 可从候选池建仓（pool_codes，
-              单轮 ≤ MAX_NEW_BUYS 只）、涨停不追、单票 ≤ 剩余额度 20%、
-              子账户虚拟现金不透支（分账额度红线）、加仓后杠杆 ≤ LEVERAGE_MAX×权益、
-              账户现金兜底、已有在途买单不再重复下
+      - buy:  持仓内加仓不限；非持仓标的必须是候选池成员（pool_codes）——持仓
+              agent 同样放行（提示词承诺的"换仓"此前被闸门挡死，2026-09-08 修复）；
+              新开仓 单轮 ≤ MAX_NEW_BUYS 且**当日累计** ≤ MAX_NEW_BUYS、
+              涨停不追、单票 ≤ 剩余额度 PER_STOCK_PCT、子账户虚拟现金不透支
+              （分账额度红线）、加仓后杠杆 ≤ LEVERAGE_MAX×权益、账户现金兜底、
+              已有在途买单不再重复下
     - 成交回报：wait_fill 轮询桥当日委托，按真实 filled_price/filled_volume 记账；
       超时未确认挂 pending（live_fills.reconcile 兜底 ≤1 分钟）
     返回已执行/将执行的动作列表 [{action, code, volume, price, reason}]。
@@ -1335,6 +1387,7 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
     executed: list = []
     sells, buys = [], []
     new_buys = 0
+    opened_today = daily_buy_codes(agent)  # 当日已开仓代码（日级上限口径）
     for d in decisions:
         code = d["code"]
         h = next((x for x in holdings if x["code"] == code), None)
@@ -1371,12 +1424,20 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
                 print(f"  ⏭️ [{agent}] 买入 {code}: pct=0，跳过")
                 continue
             if not h:
-                # 持仓 agent 盘中仅加仓已有标的；空仓 agent 可从候选池建仓（等价 09:35 权限）
-                if not pool_codes or code not in pool_codes or new_buys >= MAX_NEW_BUYS:
-                    print(f"  ⚠️ [{agent}] 买入 {code}: 非当前持仓且不在候选池/已达建仓上限，跳过")
+                # 非持仓买入 = 新开仓：必须在候选池内（持仓 agent 也可，兑现"允许换仓"），
+                # 且单轮 + 当日累计都受 MAX_NEW_BUYS 约束（风险预算口径=全天）
+                if not pool_codes or code not in pool_codes:
+                    print(f"  ⚠️ [{agent}] 买入 {code}: 非当前持仓且不在候选池，跳过")
+                    continue
+                if new_buys >= MAX_NEW_BUYS:
+                    print(f"  ⏭️ [{agent}] 买入 {code}: 本轮新开仓已达上限 {MAX_NEW_BUYS} 只，跳过")
+                    continue
+                if code not in opened_today and len(opened_today) >= MAX_NEW_BUYS:
+                    print(f"  ⏭️ [{agent}] 买入 {code}: 当日新开仓已达上限 {MAX_NEW_BUYS} 只"
+                          f"（已开 {'、'.join(sorted(opened_today))}），跳过")
                     continue
                 new_buys += 1
-                print(f"  🆕 [{agent}] 买入 {code}: 空仓建仓（候选池内，第 {new_buys} 只）")
+                print(f"  🆕 [{agent}] 买入 {code}: 新开仓（候选池内，本轮第 {new_buys} 只）")
             if h and at_limit_up(code, h['day_chg'], h.get('name')):
                 print(f"  ⏭️ [{agent}] 买入 {code}: 涨停（{h['day_chg']:+.2f}%），不追")
                 continue
@@ -1647,7 +1708,8 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
     ledger = load_ledger()
     last_decisions = load_last_decisions()
     ok = 0
-    pool, direction = None, None  # 空仓 agent 建仓用（懒加载候选池）
+    pool, direction = None, None  # 候选池（本轮懒加载一次，空仓建仓 + 持仓新开仓/换仓共用）
+    pool_loaded = False
     for agent in (agents if agents is not None else enabled_agents()):
       try:  # per-agent 隔离：单 agent 执行/解析异常不拖死其他 agent（2026-09-07 复盘）
         rec = (ledger.get("agents") or {}).get(agent) or {}
@@ -1659,12 +1721,13 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
             print(f"[{now:%F %T}] {agent} 🔒 持仓全部 T+1 锁定且可用资金不足建仓 → 本轮跳过"
                   f"（波动/板块/L2/新闻唤醒与尾盘轮仍在线）")
             continue
+        if not pool_loaded:  # 候选池：持仓 agent 也要（新开仓/换仓 + 注入池内实时价）
+            from live_llm_trade import load_pool
+
+            pool, direction = load_pool(20)
+            pool_loaded = True
         if not my_rows:
             # 空仓 → 候选池复盘 + 可建仓（等价 09:35 权限）；池子都没有就跳过
-            if pool is None:
-                from live_llm_trade import load_pool
-
-                pool, direction = load_pool(20)
             if not pool:
                 print(f"[{now:%F %T}] {agent} 空仓且无候选池，跳过")
                 continue
@@ -1700,13 +1763,15 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
             user_content = build_user_content(my_rows, virtual_asset, virtual_cash,
                                               agent,
                                               (last_decisions.get(agent) or {}).get("decisions"),
-                                              orderbook, cross, stale, recap, review)
+                                              orderbook, cross, stale, recap, review,
+                                              pool=pool)
         # 比赛配置多选：多选时按自然日轮转（一天一种模式，跨天轮换，
         # 盘中口径一致不横跳；单选/轮转关闭时行为不变）
         from prompts.analysis_modes import rotated_modes
 
         agent_exec_done = False  # 每 agent 每小时只执行一轮（多模式多轮会叠加买入突破分账额度）
         hyp_lines = load_hypotheses_summary()
+        sc_lines = load_decision_scorecard(agent)  # 决策远期记分卡（自我纠正回路）
     # 盘面状态（系统确定性注入，模型不可争辩；5 分钟缓存）
         try:
             from market_state import build_market_state
@@ -1731,6 +1796,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
             labeled_content = (f"【分析配置：{mode['name']}】\n{mode_prompt}\n"
                                + (f"{state_text}\n" if state_text else "")
                                + (f"{hyp_lines}\n" if hyp_lines else "")
+                               + (f"{sc_lines}\n" if sc_lines else "")
                                + (f"{news_brief_text}\n\n" if news_brief_text else "")
                                + "\n" + user_content)
             usage = None
@@ -1782,6 +1848,14 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
             if not decisions:
                 continue  # 该 mode 无结构化决策，不执行
             save_last_decisions(agent, decisions, now.isoformat())
+            try:  # 决策远期记分卡入池（统计失败不得影响交易主链路）
+                from decision_track import ingest_decisions
+
+                ingest_decisions(agent, decisions, now.isoformat(),
+                                 held_codes={h["code"] for h in my_holdings},
+                                 source="live_hourly_analysis")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  ⚠️ 决策记分卡入池失败（不影响交易）: {exc}")
             if agent_exec_done:
                 continue
             agent_exec_done = True
@@ -1816,7 +1890,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                           f"（分钟级哨兵监控）")
             executed = execute_intraday_decision(
                 broker, agent, exec_list, my_holdings, cash, dry_run=dry_run,
-                pool_codes={p.get("code") for p in pool} if not my_rows and pool else None)
+                pool_codes={p.get("code") for p in pool} if pool else None)
             if executed:
                 tag = "🟡 DRY-RUN 决策" if dry_run else "✅ 已执行"
                 acts = "/".join(f"{e['action']} {e['code']}" for e in executed)

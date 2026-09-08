@@ -182,6 +182,122 @@ def parse_intraday_decision(text: str) -> list | None:
 
 
 
+def build_pool_quote_block(pool: list, max_age_min: int = 45,
+                           path: Path | None = None, now=None) -> str:
+    """候选池实时行情（桥口径，live_l2_capture 每 5 分钟采集）→ 注入分析提示词。
+
+    背景（2026-09-08 上线）：候选池此前只注入 rank/score/行业，**没有现价**——
+    模型无法给新标的定价，只能输出 hold，或把买入意图写成 watch（哨兵只执行卖出），
+    实盘成交流水因此 10 卖 1 买。这里把已采集的池内实时价回灌，让"是否买入"
+    变成可判断的问题。数据缺失/过期的标的整行剔除，绝不臆造价格。
+
+    max_age_min=45：盘中采集节奏 5 分钟，午休段（11:30 收盘 → 12:00 轮）最长空档
+    30 分钟仍可用（块首标注实际新鲜度）；隔夜/盘前一律剔除——盘前要定价请用
+    quantdb 日K，别拿昨天的盘中快照当现价。
+    """
+    if not pool:
+        return ""
+    src = path or (ROOT / "data" / "l2_factors_live.json")
+    try:
+        factors = json.loads(src.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(factors, dict):
+        return ""
+    now = now or datetime.now().astimezone()
+    lines, stale_n, aged = [], 0, None
+    for p in pool:
+        code = str(p.get("code") or "").strip()
+        rec = factors.get(code) if code else None
+        if not isinstance(rec, dict):
+            continue
+        try:
+            price = float(rec.get("now_price") or 0)
+        except (TypeError, ValueError):
+            continue
+        if price <= 0:
+            continue
+        ts = _parse_cn_ts(str(rec.get("ts") or ""))
+        if ts is None:
+            continue
+        age = (now - ts).total_seconds() / 60
+        if age > max_age_min:
+            stale_n += 1
+            continue
+        aged = age if aged is None else min(aged, age)
+        pre = rec.get("pre_close")
+        chg = ""
+        try:
+            if pre and float(pre) > 0:
+                chg = f"（{(price / float(pre) - 1) * 100:+.2f}%）"
+        except (TypeError, ValueError):
+            chg = ""
+        sig = rec.get("signal_score")
+        sig_txt = f" · 信号分 {sig:.1f}" if isinstance(sig, (int, float)) else ""
+        nm = str(p.get("name") or "")
+        lines.append(f"- {nm} {code} 现价 ¥{price:.2f}{chg}{sig_txt}")
+    if not lines:
+        return ""
+    head = ("【候选池实时行情（桥口径，系统采集，"
+            + (f"最新 {aged:.0f} 分钟前" if aged is not None else "新鲜度未知") + "）】")
+    tail = ("（这是可直接下单的定价依据：买入按现价+1%限价撮合，"
+            "不必因『查不到价』而放弃；未列出的标的本轮无实时价，不要凭记忆报价）")
+    if stale_n:
+        tail += f"（另有 {stale_n} 只池内标的行情已过期，已剔除）"
+    return head + "\n" + "\n".join(lines) + "\n" + tail
+
+
+def load_decision_scorecard(agent: str, min_n: int = 6) -> str:
+    """该 agent 的决策远期记分卡（logs/decision_scorecard.json）→ 注入本轮分析。
+
+    口径：T+1 开盘入场、全市场等权基准（见 scripts/decision_track.py）。
+    只陈述事实，不替模型下结论——让模型自己看到"我在什么模式下亏钱"。
+    样本不足（n<min_n）的周期不展示，防小样本被当规律。"""
+    try:
+        sc = json.loads((ROOT / "logs" / "decision_scorecard.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    blk = ((sc.get("agents") or {}).get(agent) or {})
+    if not blk:
+        return ""
+
+    def _line(label: str, sub: dict, invert: bool = False) -> str | None:
+        parts = []
+        for h in (1, 5):
+            s = sub.get(f"t{h}") or {}
+            if not s.get("n") or s["n"] < min_n:
+                continue
+            exc = (f" · 超额 {s['avg_excess']:+.1%}"
+                   if s.get("avg_excess") is not None else "")
+            parts.append(f"T+{h} n={s['n']} 胜率 {s['win_rate']:.0%}{exc}")
+        if not parts:
+            return None
+        tail = "（正数=卖出后下跌，即卖对）" if invert else ""
+        return f"- {label}{tail}：" + " · ".join(parts)
+
+    lines = []
+    for kind, label, inv in (("bullish", "看多意向", False),
+                             ("position", "持仓管理", False),
+                             ("sell", "卖出决策", True)):
+        sub = blk.get(kind) or {}
+        ln = _line(label, sub, inv)
+        if ln:
+            lines.append(ln)
+    # 模式归因：T+5 超额最差/最好的标签各一条（各需 n≥5，避免单笔噪声）
+    tags = ((blk.get("bullish") or {}).get("by_tag_t5") or {})
+    ranked = [ (t, s) for t, s in tags.items()
+               if s.get("n", 0) >= 5 and s.get("avg_excess") is not None ]
+    ranked.sort(key=lambda kv: kv[1]["avg_excess"])
+    for t, s in (ranked[:1] + ranked[-1:] if len(ranked) > 1 else ranked[:1]):
+        lines.append(f"- 模式[{t}]：T+5 n={s['n']} 胜率 {s['win_rate']:.0%} "
+                     f"超额 {s['avg_excess']:+.1%}")
+    if not lines:
+        return ""
+    return ("\n【你的决策记分卡（系统自动统计 · T+1 开盘入场口径 · 基准=全市场等权）】\n"
+            + "\n".join(lines)
+            + "\n（样本 <30 时统计不显著，仅作行为参考；当轮结论仍以现场证据为准）")
+
+
 def load_hypotheses_summary() -> str:
     """已验证假设摘要（阶段2：带胜率证据，防拿未验证认知当真理）。"""
     try:
@@ -204,12 +320,28 @@ def load_hypotheses_summary() -> str:
                         key=lambda h: abs(h.get("vs_base_pp") or 0))
         _a_show = {id(h) for h in (_a_pos[:6] + _a_neg[:6])}
         _a_hidden = len(_a_verified) - len(_a_show)
-        for h in _v:
+        # —— 🚫 已证伪清单（前置，最高优先级）：防止重复使用已被数据否掉的认知 ——
+        # 对标 deepseek-harness-quant 的「证伪知识库」：开工前先看"哪些路已经堵死"，
+        # 否则复盘每轮都会重新提出同类想法，模型也会拿它当买入理由。
+        _falsified = [h for h in _v if h.get("status") == "contradicted"]
+        _verified = [h for h in _v if h.get("status") != "contradicted"]
+        if _falsified:
+            _falsified.sort(key=lambda h: abs(h.get("vs_base_pp") or 0), reverse=True)
+            lines.append("🚫 已证伪（实测反向，禁止作为买入/看多理由；可作规避、减仓参考）：")
+            for h in _falsified[:10]:
+                if h.get("win_rate") is None:
+                    lines.append(f"  - {h.get('name')}")
+                else:
+                    lines.append(f"  - {h.get('name')}: 胜率 {h['win_rate']:.0%} "
+                                 f"(vs 基准 {h.get('vs_base_pp'):+.1f}pp · n={h['n']})")
+            if len(_falsified) > 10:
+                lines.append(f"  - ……另有 {len(_falsified) - 10} 条已证伪，见 configs/hypotheses.json")
+        for h in _verified:
             if h.get("win_rate") is None:
-                lines.append(f"- {'✅已验证' if h['status'] == 'verified' else '🚫证伪'} {h.get('name')}")
+                lines.append(f"- ✅已验证 {h.get('name')}")
                 continue
             if id(h) in _a_show or str(h.get("source")) != "factor_screen":
-                lines.append(f"- {'✅已验证' if h['status'] == 'verified' else '🚫证伪'} {h.get('name')}: "
+                lines.append(f"- ✅已验证 {h.get('name')}: "
                              f"次5日胜率 {h['win_rate']:.0%} "
                              f"(vs 基准差 {h.get('vs_base_pp'):+.1f}pp · n={h['n']} · {h.get('updated', '')})")
         if _a_hidden > 0:

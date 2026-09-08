@@ -557,6 +557,10 @@ def run_pass(broker, dry_debug: bool = False) -> int:
             "ts": now.isoformat(timespec="seconds"),
             "name": "",
             "now_price": snap.get("now") or 0,
+            # 昨收/开盘：提示词据此算当日涨跌%（候选池此前只给评分不给价，
+            # 模型无法定价 → 只能空转或挂 watch，见 2026-09-08 决策记分卡上线复盘）
+            "pre_close": snap.get("pre_close") or 0,
+            "open": snap.get("open") or 0,
             "volume": snap.get("volume") or 0,
             "factors": fac,
             "signal_score": build_signal_score(fac),

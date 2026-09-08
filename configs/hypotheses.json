@@ -176,15 +176,6 @@
   "vs_base_pp": -15.0,
   "wf": null
  },
- "H_2026-09-04_0": {
-  "name": "{'description': '个股当日显著跑输所属行业（pct_change差≤-2%且行业当日为负）是板块内资金切换/出货先兆，次1-3日个股继续弱于行业的概率上升', 'trigger': '个股pct_change-行业均值pct",
-  "direction": "减仓/回避（当日尾盘或次日早盘执行）",
-  "win_rate": null,
-  "n": null,
-  "updated": "2026-09-04",
-  "status": "proposed",
-  "source": "review"
- },
  "A_gtja_158": {
   "name": "gtja_158（Alpha 因子·次5日截面，IC -0.094/ICIR -0.4）",
   "direction": "因子高值次日5日偏空",
@@ -1181,12 +1172,111 @@
   "note": "反向事件=每日因子 Bottom-5 的次5日胜率；直觉方向亏损成立（OOS 同向），反着用",
   "source": "factor_screen_inverse"
  },
- "H_2026-09-07_0": {
-  "name": "{'description': '深套高波动股在板块涨停潮日大涨(>9%)逼近前高且微观卖压因子恶化(价量背离<-0.5/五档卖压>0.7/5min动能转负)时，次一交易日冲高回落或低开概率显著偏高', 'trigger': '当日涨幅>9",
+ "H_2026-09-03_deepseek-v4-pro_0": {
+  "name": "候选池信号强度阈值有效性：side 全 HOLD 且 max(fusion)<0.02 时强制空仓的次日/5日收益是否优于全A随机买入",
+  "direction": "空仓（零仓位）期望收益与最大回撤均优于强行买入",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-03",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-03_glm-5.3-flash_0": {
+  "name": "账户级杠杆体检前置（每轮开头输出市值/权益）可改善高杠杆持仓出货价",
+  "direction": "体检前置组出货均价更高",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-03",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-04_deepseek-v4-flash_0": {
+  "name": "个股当日显著跑输所属行业（pct_change差≤-2%且行业当日为负）是板块内资金切换/出货先兆，次1-3日个股继续弱于行业的概率上升",
+  "direction": "减仓/回避（当日尾盘或次日早盘执行）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-04",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-04_deepseek-v4-pro_0": {
+  "name": "候选池≥15/20全HOLD(fusion<0.02)+当日全市场涨跌比≤0.55且买压<卖压的组合，次一交易日走弱概率偏高，空仓跳过优于追涨基线",
+  "direction": "防守(空仓/不追涨)",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-04",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-07_deepseek-v4-flash_0": {
+  "name": "深套高波动股在板块涨停潮日大涨(>9%)逼近前高且微观卖压因子恶化(价量背离<-0.5/五档卖压>0.7/5min动能转负)时，次一交易日冲高回落或低开概率显著偏高",
   "direction": "次日冲高减仓、低开>2%不接，回测验证方向",
   "win_rate": null,
   "n": null,
   "updated": "2026-09-07",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-07_deepseek-v4-pro_0": {
+  "name": "fusion全空(信号真空)状态存在跨日持续性，空仓日次日候选池仍大概率全HOLD",
+  "direction": "空仓日次日开仓胜率/信号出现率显著低于信号日，支持继续等待而非主动挖掘",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-07",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-07_glm-5.3-flash_0": {
+  "name": "缩量回调（量能低于5日均量且跌幅<2%）在震荡市中大概率不是破位，次日收复概率高",
+  "direction": "持有不砍、破前低才止损",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-07",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-08_deepseek-v4-flash_0": {
+  "name": "信号真空即正期望：候选池20只fusion全部<0.02且无BUY闸门时，次日至3日空仓(0收益零风险)优于买入池内top1",
+  "direction": "空仓/不建仓，禁止为平庸信号付隔夜风险",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-08",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-08_deepseek-v4-flash_1": {
+  "name": "破位卖出预案价值：个股跌破预置止损位后当日收盘系统性低于预案价，'破位即执行'优于等待反弹",
+  "direction": "触发即卖(或减仓)而非改单等待",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-08",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-08_deepseek-v4-pro_0": {
+  "name": "深度亏损（>-10%）持仓首笔清仓止损换股 vs 死扛的后续20日收益比较，验证'止损换股'规则",
+  "direction": "若换入标的（候选池第一名）20日中位收益 > 原票20日收益，则止损换股为正期望纪律",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-08",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-08_deepseek-v4-pro_1": {
+  "name": "T+1新仓当日量能枯竭（量比<0.2）且|收盘涨跌|<1%（贴成本横盘）的次日破位概率",
+  "direction": "若次日跌破成本-3%概率显著偏高，则'缩量贴成本新仓只守不攻、破位即清'固化为硬纪律",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-08",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-08_glm-5.3-flash_0": {
+  "name": "主线高低切（资金从化工流向铜/有色）+持仓股当日缩量滞涨+盘口转卖，组合出现后1-3日内跑输当日收盘的概率",
+  "direction": "看空持仓股短线时效（提前减仓优于持有到条件位）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-08",
   "status": "proposed",
   "source": "review"
  }

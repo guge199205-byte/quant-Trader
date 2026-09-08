@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """核心逻辑最小测试（P0-3，unittest 零依赖）。运行：python -m unittest discover -s tests
 覆盖：风险档位判定 / 假设状态判定 / 分歧检测 / JSON 块抽取 / 预算防抖档位。"""
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -93,6 +95,64 @@ class TestJsonBlocks(unittest.TestCase):
 
         self.assertEqual(json_blocks("no braces here"), [])
         self.assertEqual(json_blocks('{"bad": }'), [])
+
+
+class TestRegisterReviewHypotheses(unittest.TestCase):
+    """2026-09-08 回归：原式 `cand.get("description") or cand if isinstance(...)`
+    三元优先级错误 → dict 候选 str(dict) 进假设库；全局 H_{date}_{i} 撞 key
+    使后跑 agent 的候选静默丢失。"""
+
+    def _reg(self, tmp_path, agent, cands):
+        from post_review import register_review_hypotheses
+
+        p = tmp_path / "hypotheses.json"
+        n = register_review_hypotheses(agent, "2026-09-08", cands, hyp_path=p)
+        hyps = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        return n, hyps
+
+    def test_dict_candidate_uses_description_not_repr(self):
+        with tempfile.TemporaryDirectory() as td:
+            n, hyps = self._reg(Path(td), "deepseek-v4-flash", [
+                {"description": "信号真空即正期望", "direction": "空仓/不建仓"}])
+            self.assertEqual(n, 1)
+            entry = hyps["H_2026-09-08_deepseek-v4-flash_0"]
+            self.assertEqual(entry["name"], "信号真空即正期望")
+            self.assertNotIn("{", entry["name"])
+            self.assertEqual(entry["direction"], "空仓/不建仓")
+            self.assertEqual(entry["status"], "proposed")
+
+    def test_chinese_keys_accepted(self):
+        with tempfile.TemporaryDirectory() as td:
+            n, hyps = self._reg(Path(td), "glm-5.3-flash", [
+                {"描述": "主线高低切后减仓时效", "方向": "看空持仓股短线"}])
+            self.assertEqual(n, 1)
+            entry = hyps["H_2026-09-08_glm-5.3-flash_0"]
+            self.assertEqual(entry["name"], "主线高低切后减仓时效")
+            self.assertEqual(entry["direction"], "看空持仓股短线")
+
+    def test_agent_prefix_prevents_key_collision(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            from post_review import register_review_hypotheses
+            p = td / "hypotheses.json"
+            cands = [{"description": "假设甲", "direction": "d1"}]
+            n1 = register_review_hypotheses("agent-a", "2026-09-08", cands, hyp_path=p)
+            n2 = register_review_hypotheses("agent-b", "2026-09-08", cands, hyp_path=p)
+            self.assertEqual((n1, n2), (1, 1))
+            hyps = json.loads(p.read_text(encoding="utf-8"))
+            self.assertEqual(len(hyps), 2)
+
+    def test_string_candidate_and_garbage_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            n, hyps = self._reg(Path(td), "a", ["纯文本假设", 42, {"trigger": "无description"}])
+            self.assertEqual(n, 1)
+            self.assertEqual(hyps["H_2026-09-08_a_0"]["name"], "纯文本假设")
+
+    def test_missing_description_not_registered(self):
+        with tempfile.TemporaryDirectory() as td:
+            n, hyps = self._reg(Path(td), "a", [{"trigger": "无description键"}])
+            self.assertEqual(n, 0)
+            self.assertEqual(hyps, {})
 
 
 if __name__ == "__main__":

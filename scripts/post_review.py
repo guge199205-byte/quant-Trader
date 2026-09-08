@@ -304,6 +304,48 @@ def load_yesterday_outcome(agent: str, date: str) -> str:
         return ""
 
 
+_DESC_KEYS = ("description", "描述")
+_DIR_KEYS = ("direction", "方向")
+
+
+def register_review_hypotheses(agent: str, date: str, candidates,
+                               hyp_path: Path | None = None) -> int:
+    """复盘 hypothesis_candidates → 假设库（proposed 待复测），返回新增条数。
+    name 取 description（兼容中文键"描述"——glm 系模型会照复盘模板回中文键）；
+    字符串候选取全文。key 含 agent 前缀：2026-09-08 实录全局 H_{date}_{i} 让
+    先跑完的 agent 占 key，后跑 agent 的候选静默丢失。"""
+    path = hyp_path or (ROOT / "configs" / "hypotheses.json")
+    try:
+        hyps = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(hyps, dict):
+        return 0
+    added = 0
+    for i, cand in enumerate(candidates or []):
+        if isinstance(cand, str):
+            txt = cand[:120]
+            direction = ""
+        elif isinstance(cand, dict):
+            desc = next((cand.get(k) for k in _DESC_KEYS if cand.get(k)), "")
+            txt = str(desc)[:120]
+            direction = str(next((cand.get(k) for k in _DIR_KEYS if cand.get(k)), "") or "")
+        else:
+            continue
+        key = f"H_{date}_{agent}_{i}"
+        if key not in hyps and txt:
+            hyps[key] = {"name": txt, "direction": direction,
+                         "win_rate": None, "n": None, "updated": date,
+                         "status": "proposed", "source": "review"}
+            added += 1
+    if added:
+        try:
+            path.write_text(json.dumps(hyps, ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError:
+            return 0
+    return added
+
+
 def run_review(agent: str, date: str, dry: bool = False) -> int:
     from dsh_agent import run_agent
 
@@ -346,23 +388,14 @@ def run_review(agent: str, date: str, dry: bool = False) -> int:
         for k in payload:
             if b.get(k) is not None:
                 payload[k] = b[k]
-    # v2：复盘 hypothesis_candidates 自动登记入假设库（状态 proposed 待复测）
+    # v2：复盘 hypothesis_candidates 自动登记入假设库（proposed 待复测）
     try:
-        hyp_path = ROOT / "configs" / "hypotheses.json"
-        hyps = json.loads(hyp_path.read_text(encoding="utf-8")) if hyp_path.is_file() else {}
-        changed = False
-        for i, cand in enumerate(payload.get("hypothesis_candidates") or []):
-            txt = str(cand.get("description") or cand if isinstance(cand, str) else cand)[:120]
-            key = f"H_{date}_{i}"
-            if key not in hyps and txt:
-                hyps[key] = {"name": txt, "direction": str(cand.get("direction") or ""),
-                             "win_rate": None, "n": None, "updated": date,
-                             "status": "proposed", "source": "review"}
-                changed = True
-        if changed:
-            hyp_path.write_text(json.dumps(hyps, ensure_ascii=False, indent=1), encoding="utf-8")
-    except (OSError, ValueError, TypeError):
-        pass
+        n_new = register_review_hypotheses(
+            agent, date, payload.get("hypothesis_candidates") or [])
+        if n_new:
+            print(f"✓ 假设登记 {n_new} 条 → configs/hypotheses.json")
+    except Exception as exc:  # noqa: BLE001 假设登记失败不阻塞复盘
+        print(f"⚠️ 假设登记失败: {exc}")
     payload["date"] = date
     payload["agent"] = agent
     try:

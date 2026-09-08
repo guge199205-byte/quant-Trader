@@ -120,14 +120,26 @@ def dedup_articles(arts: list) -> list:
     return out
 
 
+def _hits_watch(a: dict, watch_codes: "set | dict") -> bool:
+    """确定性持仓命中：enrichment.tickers 命中关注代码，或标题点名关注公司名。
+    2026-09-08 实录：全天原始标题 0 次出现关注代码/名称（万华/福恩等小票上不了
+    快讯标题），门卫 LLM 无素材可判 → holdings 分流全天恒 0。代码/名称级命中
+    不再依赖门卫（与 enrichment 同级的最强信号），直接进 holdings。"""
+    keys = set(watch_codes) if isinstance(watch_codes, dict) else set(watch_codes)
+    tk = set((a.get("enrichment") or {}).get("tickers") or [])
+    if tk & keys:
+        return True
+    title = str(a.get("title") or "")
+    names = set(watch_codes.values()) if isinstance(watch_codes, dict) else set()
+    return any(n and n in title for n in names)
+
+
 def split_holdings_related(arts: list, watch_codes: "set | dict") -> tuple[list, list]:
-    """规则保底分流：enrichment.tickers 命中 watch → holdings；其余 → 其他。
+    """规则保底分流：命中关注代码或公司名 → holdings；其余 → 其他。
     watch_codes 兼容 set 与 {code: name} dict（dict 按键判定）。"""
-    keys = set(watch_codes) if isinstance(watch_codes, dict) else watch_codes
     h, other = [], []
     for a in arts:
-        tk = set((a.get("enrichment") or {}).get("tickers") or [])
-        (h if tk & keys else other).append(a)
+        (h if _hits_watch(a, watch_codes) else other).append(a)
     return h, other
 
 
@@ -135,11 +147,9 @@ _GLOBAL_RE = re.compile("|".join(GLOBAL_KW))
 
 
 def rule_direction(art: dict, watch_codes: "set | dict") -> str:
-    """门卫降级时的规则方向：命中关注代码 → holdings；外围/宏观词 → macro；
+    """门卫降级时的规则方向：命中关注代码/公司名 → holdings；外围/宏观词 → macro；
     其余 → micro。只用于门卫 LLM 失败时的兜底（宁粗勿丢）。"""
-    keys = set(watch_codes) if isinstance(watch_codes, dict) else watch_codes
-    tk = set((art.get("enrichment") or {}).get("tickers") or [])
-    if tk & keys:
+    if _hits_watch(art, watch_codes):
         return "holdings"
     title = str(art.get("title") or "")
     if _GLOBAL_RE.search(title):
@@ -302,7 +312,7 @@ def _system_for(stage: str) -> str:
             "宏观已在输入给出不用重述；你负责：主题≤4、watch≤5（给代码+触发条件）、"
             "开放风险≤3、持仓逐票保真转写（≤8，只转写输入出现的，不加新内容）、"
             "给市场研究的参考、一句话编辑备注。行式输出（每行一条，字段用 | 分隔，"
-            "严禁其他文字）：\n"
+            "严禁其他文字；直接写最终答案，不要写思考/推演/自我检查过程）：\n"
             "T | 主题 | 驱动逻辑（可多行）\n"
             "W | 代码 | 名称 | 逻辑 | 触发条件（可多行）\n"
             "R | 开放风险（可多行）\n"
@@ -467,7 +477,8 @@ class TruncatedOutputError(RuntimeError):
         self.usage = usage
 
 
-def call_llm(user: str, system: str, stage: str = "") -> tuple[str, dict | None]:
+def call_llm(user: str, system: str, stage: str = "",
+             max_tokens: int | None = None) -> tuple[str, dict | None]:
     """v4-flash 直连（重试 1 次，120s 超时）。失败 raise 由调用段降级。"""
     env = {}
     try:
@@ -489,7 +500,8 @@ def call_llm(user: str, system: str, stage: str = "") -> tuple[str, dict | None]
     payload = {"model": MODEL,
                "messages": [{"role": "system", "content": system},
                             {"role": "user", "content": user}],
-               "temperature": 0.2, "max_tokens": _MAX_TOKENS.get(stage, 8000)}
+               "temperature": 0.2,
+               "max_tokens": max_tokens or _MAX_TOKENS.get(stage, 8000)}
     last_exc = None
     for attempt in range(2):
         try:
@@ -822,7 +834,8 @@ def load_watch_codes() -> tuple[dict, list]:
 # 编排
 # ============================================================
 
-CHUNK = 100          # 单批进门卫的条数（指令保持率 & 输出不超限）
+CHUNK = 50           # 单批进门卫的条数（100 条 × 逐条判决行曾必触 max_tokens 截断，
+                     # 2026-09-08 午后两期全灭实录 → 批减半 + 预算放宽双保险）
 _JSON_TAIL = ("\n\n严格只输出 JSON：不要任何解释/思考过程/分析草稿/markdown 代码块，"
               "回答的首字符必须是 {。")
 _LINE_TAIL = ("\n\n逐行输出保留项（每行一个，格式：`序号 方向`，"
@@ -833,13 +846,37 @@ _PIPE_TAIL = ("\n\n严格行式输出：每行一个条目，字段以 | 分隔�
 # 各段输出协议：全部行式填表（散文型模型 JSON 遵从率差，填表最稳；
 # chief 2026-09-07 实测 JSON/行式混排指令会引发模型自我矛盾性长思考）
 _MODE = {GATE: "gate", MACRO: "macro", MICRO: "micro", HOLD: "holdings", CHIEF: "chief"}
-# 输出预算受 120s 超时约束（≈4-6k token 上限）：批量段用行式协议压缩输出
-_MAX_TOKENS = {GATE: 4000, MICRO: 4000, MACRO: 3000, HOLD: 3000, CHIEF: 6000}
+# 输出预算受 120s 超时约束（≈4-6k token 上限）：批量段用行式协议压缩输出。
+# 2026-09-08 实录：v4-flash 思考+输出合计吃满预算即截断（GATE 批 100 全灭、
+# CHIEF 推演 9943 字未及写分子）→ 常规预算上调一档，截断后另有一次性放宽重试。
+_MAX_TOKENS = {GATE: 6000, MICRO: 5000, MACRO: 4000, HOLD: 4000, CHIEF: 8000}
+TRUNC_RETRY_MAX_TOKENS = 10000
+
+# 单次运行统计（截断/重试/门卫兜底批数）→ state.last_run，供告警与排查
+_RUN_STATS: dict = {}
 
 
 def _chunked(seq: list, n: int = CHUNK):
     for i in range(0, len(seq), n):
         yield seq[i:i + n]
+
+
+def _call_with_trunc_retry(stage: str, full_user: str) -> tuple[str, dict | None]:
+    """截断重试：截断多为思考+输出超出预算 → 放宽 max_tokens 再试一次，并在
+    system 里压制思考泄漏。重试仍截才让 TruncatedOutputError 上抛作废。"""
+    try:
+        return call_llm(full_user, _system_for(stage), stage=stage)
+    except TruncatedOutputError:
+        _RUN_STATS["truncations"] += 1
+        print(f"↻ [{AGENT_CN[stage]}] 输出被截断，放宽 max_tokens 重试 1 次")
+        content, usage = call_llm(
+            full_user,
+            _system_for(stage) + "\n再次强调：跳过一切思考/推演/自我检查，"
+            "直接按协议逐行输出最终答案。",
+            stage=stage, max_tokens=TRUNC_RETRY_MAX_TOKENS)
+        _RUN_STATS["trunc_retries_ok"] += 1
+        print(f"✓ [{AGENT_CN[stage]}] 截断重试成功")
+        return content, usage
 
 
 def _run_stage(stage: str, user: str) -> tuple[dict | None, bool]:
@@ -848,11 +885,11 @@ def _run_stage(stage: str, user: str) -> tuple[dict | None, bool]:
     mode = _MODE.get(stage, "json")
     tail = {"gate": _LINE_TAIL, "json": _JSON_TAIL}.get(mode, _PIPE_TAIL)
     try:
-        content, usage = call_llm(user + tail, _system_for(stage), stage=stage)
+        content, usage = _call_with_trunc_retry(stage, user + tail)
     except TruncatedOutputError as exc:
         # 截断原文照常落盘（前端对话/审计可见），但不做解析救捞 → 上层降级
         path = append_log(user, exc.content, stage, exc.usage)
-        print(f"⚠️ [{AGENT_CN[stage]}] 输出被截断，整轮作废防草稿行污染"
+        print(f"⚠️ [{AGENT_CN[stage]}] 输出被截断（重试仍截），整轮作废防草稿行污染"
               f"（token={exc.usage and exc.usage.get('total_tokens')}）→ {path.relative_to(ROOT)}")
         return None, False
     except Exception as exc:  # noqa: BLE001
@@ -920,6 +957,9 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
     节假日（工作日但非交易日）：白天不跑，晚间 22:00 后统一一次全景；
     --force 手动不受限。"""
     now = datetime.now(CN_TZ)
+    _RUN_STATS.clear()
+    _RUN_STATS.update({"truncations": 0, "trunc_retries_ok": 0,
+                       "gate_fallback_batches": 0})
     if not force and not is_trading_day(now.date()) and now.hour < 21:
         print("⏭️ 节假日：白天不分析，晚间（22:00 后）统一一次全景")
         return 0
@@ -975,6 +1015,7 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
                         for x in (d.get("related") or [])
                         if isinstance(x, dict) and isinstance(x.get("i"), int)}
             print("⚠️ 门卫该批失败，本批按规则方向兜底")
+            _RUN_STATS["gate_fallback_batches"] += 1
             return {arts.index(a): rule_direction(a, watch_codes) for a in chunk}
 
         with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as ex:
@@ -984,7 +1025,9 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
         g_skip = len(arts) - len(kept_i)
         g_macro = [a for i, a in enumerate(arts) if rel_idx.get(i) == "macro"]
         g_micro = [a for i, a in enumerate(arts) if rel_idx.get(i) == "micro"]
-        h_art = [a for i, a in enumerate(arts) if rel_idx.get(i) == "holdings"]
+        # 确定性持仓命中直达 holdings（标题点名关注公司/代码时不依赖门卫判断）
+        h_art = [a for i, a in enumerate(arts)
+                 if rel_idx.get(i) == "holdings" or _hits_watch(a, watch_codes)]
         g_micro = list({id(a): a for a in g_micro + [a for i, a in enumerate(arts)
                                                      if i not in kept_i]}.values())
         print(f"门卫分流 → macro {len(g_macro)} / micro {len(g_micro)} / "
@@ -1021,6 +1064,7 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
         results.setdefault(s, {"skipped": True})
 
     # 5) 主编汇总（含上一版分子连续性 + 各段原始 JSON）
+    chief_ok: bool | None = None   # None=未跑（--stage 跳过），True/False=本期产出与否
     if CHIEF in stages:
         seg_parts = [_seg_compact(s, results.get(s)) for s in (MACRO, MICRO, HOLD)]
         prev = {}
@@ -1037,6 +1081,7 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
                 + json.dumps(prev_ref, ensure_ascii=False)[:1600] + "\n"
         chief_user += "\n" + ("\n".join(seg_parts) if seg_parts else "（三段均无输出）")
         d, ok = _run_stage(CHIEF, chief_user)
+        chief_ok = d is not None
         if d:
             # 主题按名去重（模型偶发同一主题多行）；confidence 缺失回退三段均值
             themes_dedup = list({t.get("name"): t
@@ -1069,8 +1114,15 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
             print(f"✓ 主编分子已落盘 → {BRIEF_FILE}（confidence={brief['confidence']:.2f}）")
             print(brief["text"])
 
-    save_state({**st, "last_end": until_iso, "last_stages": list(stages),
-                "last_ok": now.isoformat()})
+    new_st = {**st, "last_end": until_iso, "last_stages": list(stages),
+              "last_ok": now.isoformat(), "last_run": {**_RUN_STATS, "ts": now.isoformat()}}
+    if chief_ok:
+        new_st["last_chief_ok"] = now.isoformat()
+    elif chief_ok is False:
+        # 主编本期无产出（截断/解析失败）→ 告警与排查依据（兜底轮 last_ok 会照常刷新，
+        # 不能再让 state 看起来"一切正常"，2026-09-08 静默 4 小时实录）
+        new_st["last_chief_fail"] = now.isoformat()
+    save_state(new_st)
     return 0
 
 

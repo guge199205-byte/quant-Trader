@@ -220,6 +220,77 @@ def test_truncated_output_error_class():
     assert exc.content == "半截草稿" and exc.usage == {"total_tokens": 7311}
 
 
+def _reset_run_stats():
+    N._RUN_STATS.clear()
+    N._RUN_STATS.update({"truncations": 0, "trunc_retries_ok": 0,
+                         "gate_fallback_batches": 0})
+
+
+def test_hits_watch_by_ticker_and_name():
+    """2026-09-08 回归：全天标题 0 次点名关注代码 → holdings 恒 0。
+    代码与公司名两种确定性命中都必须成立，与门卫 LLM 无关。"""
+    watch = {"600309.SH": "万华化学", "001312.SZ": ""}
+    assert N._hits_watch({"title": "某公司公告", "enrichment": {"tickers": ["600309.SH"]}}, watch)
+    assert N._hits_watch({"title": "万华化学：MDI挂牌价上调", "enrichment": {"tickers": []}}, watch)
+    assert not N._hits_watch({"title": "万州港股价波动", "enrichment": {"tickers": []}}, watch)
+    assert not N._hits_watch({"title": "无关新闻", "enrichment": {"tickers": ["000001.SZ"]}}, watch)
+
+
+def test_split_holdings_related_matches_names():
+    """名称命中（无 enrichment 兜底）也应进 holdings。"""
+    arts = [
+        {"title": "福恩股份中标公告", "enrichment": {}},
+        {"title": "无关新闻", "enrichment": {"tickers": []}},
+    ]
+    h, other = N.split_holdings_related(arts, {"001312.SZ": "福恩股份"})
+    assert [a["title"] for a in h] == ["福恩股份中标公告"]
+    assert len(other) == 1
+
+
+def test_rule_direction_name_hit():
+    """门卫降级兜底：名称命中 → holdings（此前只认 enrichment.tickers）。"""
+    art = {"title": "万华化学发布提价函", "enrichment": {"tickers": []}}
+    assert N.rule_direction(art, {"600309.SH": "万华化学"}) == "holdings"
+
+
+def test_truncation_retry_recovers(monkeypatch):
+    """截断后放宽 max_tokens 重试一次应救回整段（2026-09-08 午后两期全灭回归）。"""
+    _reset_run_stats()
+    calls = []
+
+    def fake_llm(user, system, stage="", max_tokens=None):
+        calls.append(max_tokens or N._MAX_TOKENS.get(stage, 8000))
+        if len(calls) == 1:
+            raise N.TruncatedOutputError("半截", {"total_tokens": 9999})
+        return "V | 重试成功 | 0.1\nC | 0.5", {"prompt_tokens": 10, "completion_tokens": 5,
+                                               "total_tokens": 15}
+
+    monkeypatch.setattr(N, "call_llm", fake_llm)
+    fake_log = N.ROOT / "test_fake_log.jsonl"
+    monkeypatch.setattr(N, "append_log",
+                        lambda user, content, sig, usage=None: fake_log)
+    d, ok = N._run_stage(N.MACRO, "测试输入")
+    assert ok and d and d["view"] == "重试成功"
+    assert calls == [N._MAX_TOKENS[N.MACRO], N.TRUNC_RETRY_MAX_TOKENS]
+    assert N._RUN_STATS["truncations"] == 1 and N._RUN_STATS["trunc_retries_ok"] == 1
+
+
+def test_truncation_retry_still_truncated_gives_up(monkeypatch):
+    """重试仍截断 → 整轮作废返回 (None, False)，不解析救捞。"""
+    _reset_run_stats()
+
+    def fake_llm(user, system, stage="", max_tokens=None):
+        raise N.TruncatedOutputError("半截", {"total_tokens": 9999})
+
+    monkeypatch.setattr(N, "call_llm", fake_llm)
+    fake_log = N.ROOT / "test_fake_log.jsonl"
+    monkeypatch.setattr(N, "append_log",
+                        lambda user, content, sig, usage=None: fake_log)
+    d, ok = N._run_stage(N.CHIEF, "测试输入")
+    assert d is None and not ok
+    assert N._RUN_STATS["truncations"] == 1 and N._RUN_STATS["trunc_retries_ok"] == 0
+
+
 # ---------- 晚间复盘（news_review） ----------
 
 import news_review as R  # noqa: E402

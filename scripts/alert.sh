@@ -215,6 +215,33 @@ if [ -n "$RT_DOWN" ]; then
     fi
 fi
 
+# 2e. 新闻分子新鲜度（盘中每小时一期，>75 分钟无新刊 = 门卫/主编批量截断的
+#      静默故障；2026-09-08 实录：latest.json 停在 10:55，交易 agent 吃 230 分钟
+#      旧新闻，兜底轮把 state last_ok 照常刷新导致零告警）
+NEWS_STALE=$(python3 - data/news_brief/latest.json <<'PY'
+import os, sys, datetime
+BJ = datetime.timezone(datetime.timedelta(hours=8))
+now = datetime.datetime.now(BJ)
+if now.weekday() >= 5:
+    raise SystemExit(0)
+m = now.hour * 60 + now.minute
+if not ((9 * 60 + 30 <= m < 11 * 60 + 30) or (13 * 60 <= m < 15 * 60)):
+    raise SystemExit(0)
+if (10 * 60 + 45) > m:            # 早盘前两刊（09:25/09:55）未齐，不判定
+    raise SystemExit(0)
+try:
+    age = (now.timestamp() - os.path.getmtime(sys.argv[1])) / 60
+except OSError:
+    raise SystemExit(0)
+if age > 75:
+    print(int(age))
+PY
+)
+if [ -n "$NEWS_STALE" ]; then
+    ALERTS="$ALERTS
+🟡 新闻分子停更 ${NEWS_STALE} 分钟（盘中应每小时一期）——查 logs/news_brief.log 门卫/主编是否批量截断，必要时手动跑 news_brief.py；交易侧当前引用的是过期新闻"
+fi
+
 # 2c. 因子库新鲜度：alpha_library 分区滞后日K ≥5 自然日 → 提醒重跑
 #     （alpha_library_factors.py 为手动批处理，quantdb 日K 每日同步会领先它）
 if [ $((NOW % 1800)) -lt 300 ]; then   # ~每 30 分钟检查一次，防刷屏

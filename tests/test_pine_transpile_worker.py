@@ -1,0 +1,148 @@
+"""Pine 转写/回测队列 worker：沙箱命令构造 + 队列消费状态机。
+
+worker 是唯一执行模型产出代码的地方，所以这里锁三件事：
+  1. 回测段必须包在 bwrap 里（只读根 + 断网 + 仅策略目录可写），缺 bwrap 就拒跑；
+  2. 静态检查没过的候选永远不进回测；
+  3. 每一步状态都落到 job.json（界面靠它轮询）。
+
+运行：.venv/bin/python -m pytest tests/test_pine_transpile_worker.py -q
+"""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts import pine_transpile_worker as w  # noqa: E402
+
+
+@pytest.fixture
+def out_dir(tmp_path, monkeypatch):
+    d = tmp_path / "pine_transpile"
+    (d / "queue").mkdir(parents=True)
+    monkeypatch.setattr(w, "OUT_DIR", d)
+    monkeypatch.setattr(w, "QUEUE_DIR", d / "queue")
+    monkeypatch.setattr(w, "LOCK_PATH", d / "worker.lock")
+    return d
+
+
+def _job(out_dir: Path, item_id: str) -> dict:
+    return json.loads((out_dir / item_id / "job.json").read_text(encoding="utf-8"))
+
+
+class TestSandboxCmd:
+    def test_wraps_in_bwrap_without_network(self, tmp_path):
+        cmd = w.sandbox_cmd(tmp_path, ["--id", "0001", "--no-transpile"])
+        assert cmd[0].endswith("bwrap")
+        assert "--unshare-net" in cmd
+        assert "--ro-bind" in cmd and "/" in cmd
+        # 只有策略目录可写
+        i = cmd.index("--bind")
+        assert cmd[i + 1] == str(tmp_path) == cmd[i + 2]
+        # 真正的命令在最后，且是 --no-transpile 那条
+        assert cmd[-4:] == [str(w.CLI), "--id", "0001", "--no-transpile"]
+
+    def test_refuses_without_bwrap(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(w.shutil, "which", lambda _: None)
+        with pytest.raises(RuntimeError, match="bwrap"):
+            w.sandbox_cmd(tmp_path, ["--id", "0001"])
+
+
+class TestProcess:
+    def test_static_failure_never_reaches_backtest(self, out_dir, monkeypatch):
+        calls: list[list[str]] = []
+
+        def fake_run(argv, timeout):
+            calls.append(argv)
+            d = out_dir / "0001"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "meta.json").write_text(
+                json.dumps({"title": "甲", "problems": ["禁止动态执行：eval("]}),
+                encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, stdout="静态检查未通过", stderr="")
+
+        monkeypatch.setattr(w, "_run", fake_run)
+        monkeypatch.setattr(w, "sandbox_cmd", lambda *a, **k: pytest.fail("不该进回测"))
+
+        job = w.process({"id": "0001", "symbol": "600309.SH"})
+        assert job["status"] == "failed" and job["stage"] == "static"
+        assert job["problems"] == ["禁止动态执行：eval("]
+        assert len(calls) == 1  # 只有转写那一次
+
+    def test_happy_path_runs_transpile_then_sandboxed_backtest(self, out_dir, monkeypatch):
+        calls: list[list[str]] = []
+
+        def fake_run(argv, timeout):
+            calls.append(argv)
+            d = out_dir / "0001"
+            d.mkdir(parents=True, exist_ok=True)
+            if len(calls) == 1:                       # 转写段
+                (d / "meta.json").write_text(
+                    json.dumps({"title": "甲", "problems": []}), encoding="utf-8")
+            else:                                     # 回测段
+                (d / "report.json").write_text(
+                    json.dumps({"symbol": "600309.SH", "trades": 3, "stats": {}}),
+                    encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+        monkeypatch.setattr(w, "_run", fake_run)
+        monkeypatch.setattr(w, "sandbox_cmd", lambda item_dir, argv: ["bwrap", *argv])
+
+        job = w.process({"id": "0001", "symbol": "600309.SH", "adj": "forward"})
+        assert job["status"] == "done" and job["stage"] == "done"
+        assert len(calls) == 2
+        assert calls[1][0] == "bwrap" and "--no-transpile" in calls[1]
+        assert "--adj" in calls[1] and calls[1][calls[1].index("--adj") + 1] == "forward"
+
+    def test_timeout_marks_failed(self, out_dir, monkeypatch):
+        def fake_run(argv, timeout):
+            raise subprocess.TimeoutExpired(argv, timeout)
+
+        monkeypatch.setattr(w, "_run", fake_run)
+        job = w.process({"id": "0002", "symbol": "600309.SH"})
+        assert job["status"] == "failed" and "超时" in job["error"]
+
+    def test_missing_id_rejected(self, out_dir):
+        with pytest.raises(ValueError):
+            w.process({"symbol": "600309.SH"})
+
+    def test_backtest_exit_code_marks_failed(self, out_dir, monkeypatch):
+        def fake_run(argv, timeout):
+            d = out_dir / "0003"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "meta.json").write_text(json.dumps({"problems": []}), encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 1 if argv[0] == "bwrap" else 0,
+                                               stdout="", stderr="boom")
+
+        monkeypatch.setattr(w, "_run", fake_run)
+        monkeypatch.setattr(w, "sandbox_cmd", lambda item_dir, argv: ["bwrap", *argv])
+        job = w.process({"id": "0003", "symbol": "600309.SH"})
+        assert job["status"] == "failed" and job["stage"] == "backtest"
+        assert "boom" in job["log"]
+
+
+class TestLock:
+    def test_second_worker_skips(self, out_dir):
+        first = w._claim_lock()
+        assert first is not None
+        try:
+            assert w._claim_lock() is None
+        finally:
+            first.close()
+
+
+class TestMain:
+    def test_consumes_queue_and_clears_request(self, out_dir, monkeypatch):
+        (out_dir / "queue/0001.json").write_text(
+            json.dumps({"id": "0001", "symbol": "600309.SH"}), encoding="utf-8")
+        monkeypatch.setattr(w, "process", lambda req: {"status": "done", "stage": "done"})
+        assert w.main() == 0
+        assert not (out_dir / "queue/0001.json").exists()   # 摘牌
+
+    def test_broken_request_is_dropped(self, out_dir):
+        (out_dir / "queue/0001.json").write_text("{ 不是 json", encoding="utf-8")
+        assert w.main() == 0
+        assert not (out_dir / "queue/0001.json").exists()

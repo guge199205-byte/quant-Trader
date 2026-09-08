@@ -167,3 +167,64 @@ class TestService:
     def test_index_payload_shape(self, lib):
         payload = json.loads((lib / "index.json").read_text(encoding="utf-8"))
         assert set(payload) >= {"generated", "total", "usable", "categories", "items"}
+
+
+@pytest.fixture()
+def queue(lib, tmp_path, monkeypatch):
+    """把转写/队列目录指到临时目录；标的校验换成直通（另有用例单测真实校验）。"""
+    d = tmp_path / "pine_transpile"
+    monkeypatch.setattr(pl, "TRANSPILE_DIR", d)
+    monkeypatch.setattr(pl, "QUEUE_DIR", d / "queue")
+    monkeypatch.setattr(pl, "_check_symbol", lambda s: s)
+    return d
+
+
+class TestBacktestQueue:
+    def test_enqueue_writes_request_and_reports_queued(self, queue):
+        got = pl.enqueue_backtest("0001", "600309.SH", adj="forward")
+        assert got["queued"] is True
+        req = json.loads((queue / "queue/0001.json").read_text(encoding="utf-8"))
+        assert req["symbol"] == "600309.SH" and req["adj"] == "forward"
+        # 还没开跑 → 界面看到 queued
+        assert pl.job_status("0001")["status"] == "queued"
+
+    def test_duplicate_enqueue_rejected(self, queue):
+        pl.enqueue_backtest("0001", "600309.SH")
+        with pytest.raises(ValueError, match="已在队列"):
+            pl.enqueue_backtest("0001", "600309.SH")
+
+    def test_running_job_rejected(self, queue):
+        d = queue / "0001"
+        d.mkdir(parents=True)
+        (d / "job.json").write_text(json.dumps({"status": "running", "stage": "backtest"}),
+                                    encoding="utf-8")
+        with pytest.raises(ValueError, match="正在跑"):
+            pl.enqueue_backtest("0001", "600309.SH")
+
+    def test_unknown_id_and_bad_adj_rejected(self, queue):
+        with pytest.raises(ValueError):
+            pl.enqueue_backtest("0099", "600309.SH")
+        with pytest.raises(ValueError):
+            pl.enqueue_backtest("0001", "600309.SH", adj="前复权")
+
+    def test_check_symbol_rejects_unknown(self, monkeypatch):
+        from backend.services import market_lab as ml
+
+        monkeypatch.setattr(ml, "_names", lambda: {"600309.SH": "万华化学"})
+        assert pl._check_symbol("600309") == "600309.SH"
+        with pytest.raises(ValueError):
+            pl._check_symbol("999999.SZ")
+
+    def test_list_transpile_skips_work_dirs(self, queue):
+        """queue/ 是工作目录，不能当成一条策略冒出来。"""
+        (queue / "queue").mkdir(parents=True)
+        d = queue / "0001"
+        d.mkdir(parents=True)
+        (d / "meta.json").write_text(json.dumps({"title": "甲", "problems": []}),
+                                     encoding="utf-8")
+        got = pl.list_transpile()
+        assert set(got) == {"0001"}
+        assert got["0001"]["job"] == {"status": "", "stage": "", "error": ""}
+
+    def test_read_report_missing_is_empty(self, queue):
+        assert pl.read_report("0001") == {}

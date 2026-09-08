@@ -402,6 +402,11 @@
   white-space: nowrap;
 }
 
+.lab-trades th.num,
+.lab-trades td.num {
+  text-align: right;
+}
+
 .lab-trades td {
   padding: 4px 6px;
   border-bottom: 1px solid #f0f0f0;
@@ -867,6 +872,53 @@
   align-items: center;
   gap: 10px;
   margin-top: 8px;
+}
+
+/* 策略库 → 转写并回测 */
+.lab-lib-run {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+
+.lab-lib-run label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  font-family: 'Courier New', monospace;
+  color: #555;
+}
+
+.lab-lib-sym {
+  width: 108px;
+  padding: 5px 7px;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+  border: 1.5px solid #000;
+  background: #fff;
+  color: #000;
+  outline: none;
+}
+
+.lab-lib-run-btn {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 112px;
+  margin-top: 0;
+  padding: 6px 16px;
+  white-space: nowrap;
+}
+
+.lab-spark {
+  display: block;
+  width: 100%;
+  height: 30px;
+  margin-top: 6px;
+  border: 1px solid #e6e6e6;
+  background: #fcfcfc;
 }
 
 .lab-lib-save {

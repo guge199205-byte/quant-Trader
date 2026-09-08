@@ -941,8 +941,59 @@ export interface PineTranspile {
   net_pct: number | null;
   dd_pct: number | null;
   bh_pct: number | null;
+  job: { status: string; stage: string; error: string };
 }
 
 /** 转写产物一览，key = 策略库 id */
 export const fetchPineTranspile = () =>
   unwrap<Record<string, PineTranspile>>(api.get('/market-lab/transpile'));
+
+export interface PineTradeRow {
+  entry_time: string;
+  entry_price: number | null;
+  qty: number | null;
+  signal: string;
+  exit_time: string | null;
+  exit_price: number | null;
+  profit: number | null;
+  profit_pct: number | null;
+}
+
+export interface PineReport {
+  id: string;
+  symbol: string;
+  adj: string;
+  trades: number;
+  stats: Record<string, { value?: number; pct?: number }>;
+  trade_rows: PineTradeRow[];
+  equity: { date: string; value: number }[];
+}
+
+export interface PineJob {
+  status: 'queued' | 'running' | 'done' | 'failed' | '';
+  stage: string;
+  error?: string;
+  problems?: string[];
+  log?: string;
+  updated?: string;
+}
+
+/** 入队「转写 + 沙箱回测」（宿主 worker 消费） */
+export const runPineBacktest = (
+  id: string,
+  symbol: string,
+  adj = 'backward',
+  force = false,
+) =>
+  unwrap<{ queued: boolean; request: Record<string, unknown> }>(
+    api.post(`/market-lab/library/${encodeURIComponent(id)}/backtest`, {
+      symbol,
+      adj,
+      force,
+    }),
+  );
+
+export const fetchPineJob = (id: string) =>
+  unwrap<{ job: PineJob; report: PineReport | null }>(
+    api.get(`/market-lab/library/${encodeURIComponent(id)}/job`),
+  );

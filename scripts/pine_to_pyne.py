@@ -223,9 +223,12 @@ def validate(item_id: str, symbol: str, adj: str = "backward") -> dict:
     t0 = time.time()
     res = ml.run_script_file(cand, symbol, adj=adj)
     stats = res.get("stats") or {}
+    trades = res.get("trades") or []
     report = {"id": item_id, "symbol": symbol, "adj": adj,
               "elapsed_sec": round(time.time() - t0, 1),
-              "stats": stats, "trades": len(res.get("trades") or []),
+              "stats": stats, "trades": len(trades),
+              # 逐笔与净值一并落盘：界面要画净值曲线 / 列成交，重跑一次回测没必要。
+              "trade_rows": trades, "equity": res.get("equity") or [],
               "meta": res.get("meta"),
               "validated": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2),
@@ -279,6 +282,8 @@ def main() -> int:
     ap.add_argument("--adj", default="backward")
     ap.add_argument("--install", action="store_true", help="装进 lab_strategies")
     ap.add_argument("--force", action="store_true", help="已有候选时强制重新转写")
+    ap.add_argument("--no-transpile", action="store_true",
+                    help="只校验已有候选（不调模型）。队列 worker 的沙箱回测段走这个。")
     ap.add_argument("--list", action="store_true")
     args = ap.parse_args()
 
@@ -294,7 +299,12 @@ def main() -> int:
 
     cand = OUT_DIR / args.id / "candidate.py"
     meta_path = OUT_DIR / args.id / "meta.json"
-    if cand.exists() and meta_path.exists() and not args.force:
+    if args.no_transpile:
+        if not cand.exists() or not meta_path.exists():
+            print(f"没有候选文件：{cand}（先转写一次）")
+            return 2
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    elif cand.exists() and meta_path.exists() and not args.force:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         print(f"复用已有候选：{meta.get('title')}（--force 可重新转写）")
     else:

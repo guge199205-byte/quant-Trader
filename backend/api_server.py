@@ -2097,6 +2097,38 @@ def pine_transpile_list():
         return {"success": False, "error": f"转写产物读取失败: {e}"}
 
 
+@app.post("/api/market-lab/library/{item_id}/backtest")
+def pine_library_backtest(item_id: str, payload: dict = Body(default={})):
+    """把「转写 + 沙箱回测」排进队列（宿主 worker 消费，见 scripts/pine_transpile_worker.py）。
+
+    这里只写请求文件：容器里没有 bwrap，也不该执行模型产出的代码。
+    """
+    try:
+        return {"success": True, "data": _pine_lib().enqueue_backtest(
+            item_id, payload.get("symbol", ""), payload.get("adj", "backward"),
+            payload.get("model", ""), bool(payload.get("force")))}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("pine library backtest enqueue failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"入队失败: {e}"}
+
+
+@app.get("/api/market-lab/library/{item_id}/job")
+def pine_library_job(item_id: str):
+    """该策略的转写/回测任务状态 + 回测报告（净值、逐笔）。"""
+    try:
+        pl = _pine_lib()
+        job = pl.job_status(item_id)
+        report = pl.read_report(item_id)
+        return {"success": True, "data": {"job": job, "report": report}}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("pine library job failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"任务状态读取失败: {e}"}
+
+
 def main():
     import uvicorn
 

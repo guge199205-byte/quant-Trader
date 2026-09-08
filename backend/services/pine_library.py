@@ -117,8 +117,17 @@ def reset_source(item_id: str) -> dict:
 TRANSPILE_DIR = LIB_DIR.parent / "pine_transpile"
 
 
+def _read_json(path: Path) -> dict:
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
 def list_transpile() -> dict:
-    """转写产物一览：{id: {title, problems, has_report, stats}}。
+    """转写产物一览：{id: {title, problems, has_report, stats, job}}。
 
     转写在宿主上跑（要执行模型产出的代码，不进 API 进程），页面只读结果。
     """
@@ -126,17 +135,14 @@ def list_transpile() -> dict:
     if not TRANSPILE_DIR.is_dir():
         return out
     for d in sorted(TRANSPILE_DIR.iterdir()):
-        if not d.is_dir():
+        if not d.is_dir() or not ID_RE.match(d.name):   # queue/ 之类的工作目录不算条目
             continue
-        meta, report = {}, {}
-        try:
-            if (d / "meta.json").exists():
-                meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
-            if (d / "report.json").exists():
-                report = json.loads((d / "report.json").read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        meta = _read_json(d / "meta.json")
+        report = _read_json(d / "report.json")
+        if not meta and not report:
             continue
         stats = report.get("stats") or {}
+        job = _read_json(d / "job.json")
         out[d.name] = {
             "title": meta.get("title", ""),
             "model": meta.get("model", ""),
@@ -149,5 +155,63 @@ def list_transpile() -> dict:
             "net_pct": (stats.get("Net profit") or {}).get("pct"),
             "dd_pct": (stats.get("Max equity drawdown") or {}).get("pct"),
             "bh_pct": (stats.get("Buy & hold return") or {}).get("pct"),
+            "job": {"status": job.get("status", ""), "stage": job.get("stage", ""),
+                    "error": job.get("error", "")},
         }
     return out
+
+
+# ---------- 转写 / 回测队列（宿主 worker 消费：scripts/pine_transpile_worker.py） ----------
+# API 只写请求文件（容器里没有 bwrap，也不能执行模型产出的代码），
+# worker 在宿主上转写 + 沙箱回测，进度写回 <id>/job.json。
+
+QUEUE_DIR = TRANSPILE_DIR / "queue"
+ADJS = ("backward", "forward", "unadjusted")
+
+
+def _check_symbol(symbol: str) -> str:
+    from backend.services import market_lab as ml
+
+    code = ml.normalize_code(symbol)
+    if not code or code not in ml._names():
+        raise LibraryError(f"未知标的: {symbol!r}")
+    return code
+
+
+def job_status(item_id: str) -> dict:
+    """该策略当前任务状态。队列里有请求但还没开跑 → queued。"""
+    item_id = _check_id(item_id)
+    job = _read_json(TRANSPILE_DIR / item_id / "job.json")
+    if not job and (QUEUE_DIR / f"{item_id}.json").exists():
+        return {"status": "queued", "stage": "queued", "error": ""}
+    return job
+
+
+def read_report(item_id: str) -> dict:
+    """回测报告（stats + 逐笔 + 净值）。没跑过 → 空 dict。"""
+    item_id = _check_id(item_id)
+    return _read_json(TRANSPILE_DIR / item_id / "report.json")
+
+
+def enqueue_backtest(item_id: str, symbol: str, adj: str = "backward",
+                     model: str = "", force: bool = False) -> dict:
+    """把「转写 + 回测」请求排进队列，由宿主 worker 消费。"""
+    item_id = _check_id(item_id)
+    get_source(item_id)                      # id 必须存在
+    code = _check_symbol(symbol)
+    if adj not in ADJS:
+        raise LibraryError(f"未知复权口径: {adj}")
+    qpath = QUEUE_DIR / f"{item_id}.json"
+    if qpath.exists():
+        raise LibraryError("该策略已在队列里")
+    if job_status(item_id).get("status") == "running":
+        raise LibraryError("该策略正在跑，等它结束")
+
+    req = {"id": item_id, "symbol": code, "adj": adj, "model": model,
+           "force": bool(force),
+           "requested": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = qpath.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(req, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(qpath)                        # 原子落地，worker 不会读到半截
+    return {"queued": True, "request": req}

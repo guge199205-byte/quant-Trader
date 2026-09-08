@@ -5,16 +5,25 @@
  *  - recrawl：修好爬虫后重爬的，缩进完整；
  *  - edited：本页保存的编辑（写 data/pine_library/edited/，不动桌面原文件）。
  * 索引由 scripts/pine_library_index.py 生成。
+ *
+ * 「转写并回测」：本机没有 Pine 解释器，让 .pine 跑起来只能让模型翻成 Pyne-Python。
+ * 页面只把请求写进队列（data/pine_transpile/queue/），宿主 worker
+ * （scripts/pine_transpile_worker.py）转写 + 静态闸 + bwrap 沙箱回测，结果写回
+ * <id>/job.json 与 report.json，这里轮询展示。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   fetchPineList,
+  fetchPineJob,
   fetchPineSource,
   fetchPineTranspile,
   resetPineSource,
+  runPineBacktest,
   savePineSource,
+  type PineJob,
   type PineListItem,
   type PineList,
+  type PineReport,
   type PineTranspile,
 } from '../../api/client';
 
@@ -26,11 +35,54 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 const PAGE = 200;
+const POLL_MS = 2500;
 
 const fmtPct = (v: number | null | undefined) =>
   v === null || v === undefined || Number.isNaN(v)
     ? '—'
     : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`;
+
+const num = (v: number | null | undefined, digits = 1) =>
+  v === null || v === undefined || Number.isNaN(v) ? '—' : v.toFixed(digits);
+
+/** axios 错误 → 人话（后端 400 的 detail 优先） */
+const errText = (e: unknown): string => {
+  const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  return detail || (e instanceof Error ? e.message : String(e));
+};
+
+const STAGE_LABEL: Record<string, string> = {
+  queued: '已入队，等宿主 worker 取（每分钟一轮）',
+  transpile: '转写中：调模型翻成 Pyne-Python…',
+  static: '静态检查未通过',
+  backtest: '沙箱回测中（bwrap：只读根 + 断网）…',
+  done: '完成',
+  worker: 'worker 异常',
+};
+
+function Spark({ points }: { points: { date: string; value: number }[] }) {
+  if (points.length < 2) return null;
+  const vs = points.map((p) => p.value);
+  const lo = Math.min(...vs);
+  const hi = Math.max(...vs);
+  const span = hi - lo || 1;
+  const w = 100;
+  const h = 30;
+  const d = vs
+    .map((v, i) => `${i ? 'L' : 'M'}${((i / (vs.length - 1)) * w).toFixed(2)},${(h - ((v - lo) / span) * h).toFixed(2)}`)
+    .join('');
+  return (
+    <svg className="lab-spark" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+      <path
+        d={d}
+        fill="none"
+        stroke={vs[vs.length - 1] >= vs[0] ? '#e2373b' : '#1a9e5c'}
+        strokeWidth="1.2"
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  );
+}
 
 export default function StrategyLibrary() {
   const [category, setCategory] = useState('');
@@ -47,6 +99,12 @@ export default function StrategyLibrary() {
   const [saveErr, setSaveErr] = useState('');
   const [saving, setSaving] = useState(false);
   const seq = useRef(0);
+
+  const [symbol, setSymbol] = useState('600309.SH');
+  const [job, setJob] = useState<PineJob | null>(null);
+  const [report, setReport] = useState<PineReport | null>(null);
+  const [queuing, setQueuing] = useState(false);
+  const [btErr, setBtErr] = useState('');
 
   const load = useCallback(
     (cat: string, query: string, offset = 0) => {
@@ -79,15 +137,31 @@ export default function StrategyLibrary() {
     return () => clearTimeout(t);
   }, [category, q, load]);
 
-  useEffect(() => {
+  const refreshTranspile = useCallback(() => {
     fetchPineTranspile()
       .then(setTranspile)
       .catch(() => setTranspile({}));
   }, []);
 
+  useEffect(() => {
+    refreshTranspile();
+  }, [refreshTranspile]);
+
+  const loadJob = useCallback((id: string) => {
+    fetchPineJob(id)
+      .then((d) => {
+        setJob(d.job);
+        setReport(d.report);
+      })
+      .catch(() => undefined);
+  }, []);
+
   const open = (id: string) => {
     setSaveMsg('');
     setSaveErr('');
+    setBtErr('');
+    setJob(null);
+    setReport(null);
     fetchPineSource(id)
       .then((d) => {
         setCur(d);
@@ -95,7 +169,20 @@ export default function StrategyLibrary() {
         setDirty(false);
       })
       .catch(() => setSaveErr('源码读取失败'));
+    loadJob(id);
   };
+
+  // 任务在跑就轮询；跑完刷新列表上的 AI 角标
+  const running = job?.status === 'queued' || job?.status === 'running';
+  useEffect(() => {
+    if (!cur || !running) return;
+    const t = setInterval(() => loadJob(cur.id), POLL_MS);
+    return () => clearInterval(t);
+  }, [cur, running, loadJob]);
+
+  useEffect(() => {
+    if (job?.status === 'done' || job?.status === 'failed') refreshTranspile();
+  }, [job?.status, refreshTranspile]);
 
   const save = () => {
     if (!cur) return;
@@ -108,7 +195,7 @@ export default function StrategyLibrary() {
         setSaveMsg(`已保存 · ${r.lines} 行 · ${r.indent_ok ? '缩进完整' : '仍无缩进'}`);
         setCur({ ...cur, edited: true, source_kind: 'edited', source: draft });
       })
-      .catch(() => setSaveErr('保存失败'))
+      .catch((e) => setSaveErr(errText(e) || '保存失败'))
       .finally(() => setSaving(false));
   };
 
@@ -123,9 +210,26 @@ export default function StrategyLibrary() {
       .catch(() => setSaveErr('重置失败'));
   };
 
+  const run = () => {
+    if (!cur) return;
+    setBtErr('');
+    setQueuing(true);
+    runPineBacktest(cur.id, symbol)
+      .then(() => {
+        setJob({ status: 'queued', stage: 'queued' });
+        setReport(null);
+      })
+      .catch((e) => setBtErr(errText(e) || '入队失败'))
+      .finally(() => setQueuing(false));
+  };
+
   const items = list?.items ?? [];
   const canMore = list ? list.filtered > items.length : false;
   const tp = cur ? transpile[cur.id] : undefined;
+  const stats = report?.stats ?? {};
+  const total = stats['Total trades']?.value;
+  const wins = stats['Winning trades']?.value;
+  const rows = (report?.trade_rows ?? []).slice(-8).reverse();
 
   return (
     <div className="lab-lib">
@@ -212,7 +316,7 @@ export default function StrategyLibrary() {
 
         <div className="lab-lib-src">
           {!cur ? (
-            <div className="lab-empty">左侧点一个策略 → 这里看源码</div>
+            <div className="lab-empty">左侧点一个策略 → 这里看源码 / 回测</div>
           ) : (
             <>
               <div className="lab-lib-head">
@@ -245,24 +349,119 @@ export default function StrategyLibrary() {
                 </p>
               )}
 
-              {tp ? (
+              <div className="lab-lib-run">
+                <label>
+                  <span>回测标的</span>
+                  <input
+                    className="lab-lib-sym"
+                    value={symbol}
+                    placeholder="600309.SH"
+                    onChange={(e) => setSymbol(e.target.value)}
+                  />
+                </label>
+                <button
+                  className="lab-run lab-lib-run-btn"
+                  disabled={running || queuing}
+                  onClick={run}
+                >
+                  {running ? '跑着呢…' : queuing ? '入队中…' : '转写并回测'}
+                </button>
+                {job?.status === 'failed' && (
+                  <span className="lab-lib-msg err">{job.error || '失败'}</span>
+                )}
+                {btErr && <span className="lab-lib-msg err">{btErr}</span>}
+              </div>
+
+              {running && (
                 <div className="lab-transpile">
-                  <span className={`tag ${tp.problems.length ? 'warn' : ''}`}>
-                    AI 转写 · {tp.problems.length ? `静态未过（${tp.problems.length}）` : '静态通过'}
-                  </span>
+                  <span className="tag">{STAGE_LABEL[job?.stage ?? ''] ?? job?.stage}</span>
                   <span className="lab-transpile-stats">
-                    {tp.has_report
-                      ? `回测 ${tp.symbol}：策略 ${fmtPct(tp.net_pct)} · 买入持有 ${fmtPct(tp.bh_pct)} · 回撤 ${fmtPct(tp.dd_pct)} · ${tp.trades ?? 0} 笔`
-                      : '已生成候选，尚未回测'}
+                    宿主上转写 + 沙箱回测，约 30–60 秒
                   </span>
                 </div>
+              )}
+
+              {job?.status === 'failed' && job.stage === 'static' && (
+                <div className="lab-err">
+                  静态检查未通过（候选没有进回测）：
+                  {(job.problems ?? []).map((p) => (
+                    <div key={p}>· {p}</div>
+                  ))}
+                </div>
+              )}
+
+              {report ? (
+                <>
+                  <div className="lab-transpile">
+                    <span className="tag">
+                      AI 转写 · {tp && tp.problems.length ? `静态未过（${tp.problems.length}）` : '静态通过'}
+                    </span>
+                    <span className="lab-transpile-stats">
+                      回测 {report.symbol}（{report.adj}）· {report.trades} 笔
+                      {total ? ` · 胜率 ${num(((wins ?? 0) / total) * 100)}%` : ''}
+                    </span>
+                  </div>
+                  <div className="lab-stats">
+                    <div className={`lab-stat ${(report.stats['Net profit']?.pct ?? 0) >= 0 ? 'up' : 'down'}`}>
+                      <span className="k">策略收益</span>
+                      <span className="v">{fmtPct(report.stats['Net profit']?.pct)}</span>
+                    </div>
+                    <div className="lab-stat">
+                      <span className="k">买入持有</span>
+                      <span className="v">{fmtPct(report.stats['Buy & hold return']?.pct)}</span>
+                    </div>
+                    <div className="lab-stat down">
+                      <span className="k">最大回撤</span>
+                      <span className="v">
+                        {fmtPct(-(report.stats['Max equity drawdown']?.pct ?? 0))}
+                      </span>
+                    </div>
+                    <div className="lab-stat">
+                      <span className="k">成交 / 胜率</span>
+                      <span className="v">
+                        {report.trades}
+                        {total ? ` / ${num(((wins ?? 0) / total) * 100)}%` : ''}
+                      </span>
+                    </div>
+                  </div>
+                  <Spark points={report.equity} />
+                  {rows.length > 0 && (
+                    <div className="lab-trades">
+                      <div className="lab-table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>买入</th>
+                              <th className="num">价</th>
+                              <th>卖出</th>
+                              <th className="num">价</th>
+                              <th className="num">盈亏</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map((t, i) => (
+                              <tr key={`${t.entry_time}-${i}`} className={(t.profit ?? 0) >= 0 ? 'up' : 'down'}>
+                                <td>{t.entry_time}</td>
+                                <td className="num">{num(t.entry_price, 2)}</td>
+                                <td>{t.exit_time ?? '持有中'}</td>
+                                <td className="num">{num(t.exit_price, 2)}</td>
+                                <td className="num">{fmtPct(t.profit_pct)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </>
               ) : (
-                <p className="lab-note">
-                  AI 转写：还没跑过。本机没有 Pine 解释器，让 .pine 跑起来的唯一路径是翻成
-                  Pyne-Python 模板。在宿主上执行
-                  <code>scripts/pine_to_pyne.py --id {cur.id} --validate 600309.SH</code>
-                  即可（转写要执行模型产出的代码，所以不进 API 进程）。
-                </p>
+                !running && (
+                  <p className="lab-note">
+                    还没回测过。本机没有 Pine 解释器，.pine 要先翻成 Pyne-Python 才能跑——
+                    点上面的「转写并回测」，宿主 worker 会调模型转写、静态检查、再在 bwrap
+                    沙箱里回测（断网 + 只读根）。队列由 cron 每分钟取一次。
+                  </p>
+                )
               )}
 
               <textarea

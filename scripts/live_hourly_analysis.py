@@ -771,11 +771,14 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
     return "\n".join(lines)
 
 
-def build_flat_content(pool: list, direction: dict, cash: float, agent: str) -> str:
+def build_flat_content(pool: list, direction: dict, cash: float, agent: str,
+                       compact: bool = False) -> str:
     """空仓 agent 的候选池复盘提示词：从池里决定是否建仓/建哪些（或继续空仓）。
 
     pool = load_pool(20) 返回的候选池行；方向 = picks.json 大盘方向。
     与 build_user_content 共用 INTRA_DAY_SCHEMA 决策块，规则按空仓状态裁剪。
+    compact=True：候选池与今日此前轮次一致，只展示前 8 行 + 其余名单
+    （dsh agent 有对话历史，整天重复整表是纯 token 浪费；池变化或当日首注给全表）。
     """
     from live_llm_trade import pool_rows
 
@@ -788,10 +791,15 @@ def build_flat_content(pool: list, direction: dict, cash: float, agent: str) -> 
         "池内没有方向标签——是否买入/换仓由你按 分数+大盘+板块+新闻分子 综合判断，"
         "任何 HOLD/BUY 侧标签一律不作为依据）：",
         "",
-        "| # | 代码 | 名称 | 行业 | score | fusion |",
-        "|---|---|---|---|---|---|",
+        "| # | 代码 | 名称 | 行业 | score | fusion | 备注 |",
+        "|---|---|---|---|---|---|---|",
     ]
-    lines += pool_rows(pool)
+    if compact and len(pool) > 8:
+        lines += pool_rows(pool[:8])
+        rest = "、".join(str(p.get("name") or p.get("code") or "") for p in pool[8:])
+        lines.append(f"（其余 {len(pool) - 8} 只与今日此前轮次一致，按评分降序：{rest}）")
+    else:
+        lines += pool_rows(pool)
     if direction:
         lines += ["", f"大盘方向：{direction}", ""]
     ctx = load_market_context()
@@ -1661,8 +1669,24 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                 print(f"[{now:%F %T}] {agent} 空仓且无候选池，跳过")
                 continue
             virtual_asset = virtual_cash
-            user_content = build_flat_content(pool, direction, virtual_cash, agent)
-            print(f"[{now:%F %T}] {agent} 空仓，候选池复盘（可建仓 ¥{virtual_cash:,.0f}）")
+            # 候选池 diff：当日该 agent 已注入过同一份池（dsh 有对话历史）→ 紧凑注入
+            # 前 8 行 + 全名单；llm 无状态模式/池变化/当日首次 → 全表（保守可逆）
+            st = load_state()
+            pool_sig = ",".join(str(p.get("code") or "") for p in pool)
+            today = now.strftime("%Y-%m-%d")
+            seen_sigs = st.get("last_pool_sig") or {}
+            seen_days = st.get("last_pool_sig_day") or {}
+            pool_compact = (agent_mode_for(agent) == "dsh"
+                            and seen_sigs.get(agent) == pool_sig
+                            and seen_days.get(agent) == today)
+            if not pool_compact:
+                save_state({**st,
+                            "last_pool_sig": {**seen_sigs, agent: pool_sig},
+                            "last_pool_sig_day": {**seen_days, agent: today}})
+            user_content = build_flat_content(pool, direction, virtual_cash, agent,
+                                              compact=pool_compact)
+            print(f"[{now:%F %T}] {agent} 空仓，候选池复盘"
+                  f"（可建仓 ¥{virtual_cash:,.0f}{'，紧凑注入' if pool_compact else ''}）")
         else:
             print(f"[{now:%F %T}] {agent} 名下持仓 {len(my_rows)} 只，盘中分析")
             virtual_asset = virtual_cash + sum(r["price"] * r["volume"] for r in my_rows)

@@ -214,16 +214,20 @@ def load_hypotheses_summary() -> str:
                              f"(vs 基准差 {h.get('vs_base_pp'):+.1f}pp · n={h['n']} · {h.get('updated', '')})")
         if _a_hidden > 0:
             lines.append(f"- ……另有 {_a_hidden} 条 A_ 因子假设已验证，见 configs/hypotheses.json")
-        # WF 未通过验证的假设：证据展示但明确标注未确认（防 pooled 小样本被当真理）
-        for h in hyp.values():
-            if h.get("status") != "proposed" or not h.get("n") or h.get("win_rate") is None:
-                continue
+        # WF 未通过验证的假设：证据展示但明确标注未确认（防 pooled 小样本被当真理）；
+        # 只展示 |vs_base_pp| 前 8 条（proposed 增长无上界，防刷屏挤占预算），其余注明条数
+        _wf = [h for h in hyp.values()
+               if h.get("status") == "proposed" and h.get("n") and h.get("win_rate") is not None]
+        _wf.sort(key=lambda h: -abs(h.get("vs_base_pp") or 0))
+        for h in _wf[:8]:
             wf = h.get("wf") or {}
             oos = wf.get("oos_diff_pp")
             oos_txt = f"，OOS {oos:+.0f}pp" if oos is not None else ""
             lines.append(f"- ⏳未过WF {h.get('name')}: pooled 胜率 {h['win_rate']:.0%}"
                          f"（{h.get('vs_base_pp', 0):+.1f}pp · n={h['n']}{oos_txt}）"
                          "——证据仅供参考，勿当已验证结论")
+        if len(_wf) > 8:
+            lines.append(f"- ……另有 {len(_wf) - 8} 条未过WF假设，见 configs/hypotheses.json")
         return ("\n【事件研究假设（近1年×60样本，walk-forward 纪律；"
                 "仅 ✅/🚫 过滚动验证，⏳ 证据未确认）】\n"
                 + "\n".join(lines)) if lines else ""

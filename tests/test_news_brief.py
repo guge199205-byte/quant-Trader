@@ -418,6 +418,43 @@ def test_trade_recap_intent_note(monkeypatch, tmp_path):
     assert out.count("申报意图") == 1  # 意图==成交、或缺 intent 字段的行不加注
 
 
+def test_flat_content_pool_compact_diff():
+    """模板瘦身：当日重复注入同一份候选池时只给前 8 行+全名单（dsh 有历史），
+    首注/池小于 8 只时不裁剪。"""
+    pool = [{"rank": i + 1, "code": f"60000{i}.SH", "name": f"测试股{i}",
+             "industry": "测试", "score": 0.9 - i * 0.01, "fusion": 0.02,
+             "remark": "r"} for i in range(12)]
+    full = L.build_flat_content(pool, {}, 100000.0, "t-agent")
+    compact = L.build_flat_content(pool, {}, 100000.0, "t-agent", compact=True)
+    # "\n| " 计数含表头分隔行（+1）
+    assert full.count("\n| ") == 13 and "与今日此前轮次一致" not in full
+    assert compact.count("\n| ") == 9 and "与今日此前轮次一致" in compact
+    assert "测试股11" in compact  # 未展示行的名单仍在（模型知道全池成员）
+    small = L.build_flat_content(pool[:5], {}, 100000.0, "t-agent", compact=True)
+    assert small.count("\n| ") == 6
+
+
+def test_hypotheses_summary_wf_cap(monkeypatch, tmp_path):
+    """模板瘦身：⏳未过WF 假设只展示 |vs_base_pp| 前 8 条，其余计数（防刷屏）。"""
+    import live_prompt_context as PC
+
+    cfg = tmp_path / "configs"
+    cfg.mkdir()
+    hyp = {"A_x": {"status": "verified", "n": 100, "win_rate": 0.6,
+                   "name": "已验证甲", "vs_base_pp": 5.0,
+                   "updated": "2026-09-01", "source": "factor_screen"}}
+    for i in range(10):
+        hyp[f"W_{i}"] = {"status": "proposed", "n": 50, "win_rate": 0.55,
+                         "name": f"未过wf假设{i}", "vs_base_pp": float(i),
+                         "source": "factor_screen"}
+    (cfg / "hypotheses.json").write_text(json.dumps(hyp, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(PC, "ROOT", tmp_path)
+    out = PC.load_hypotheses_summary()
+    assert "已验证甲" in out
+    assert "未过wf假设9" in out and "未过wf假设0" not in out
+    assert "另有 2 条未过WF假设" in out
+
+
 def test_cli_parser_exposes_all_run_pipeline_args():
     """回归：cli 曾访问 a.force 但 parser 未定义 → 每次调用必崩。
     保护：cli 传给 run_pipeline 的属性必须在 parser 里都能解析出来。"""

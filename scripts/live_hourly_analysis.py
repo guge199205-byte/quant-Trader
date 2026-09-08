@@ -1347,7 +1347,7 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
             if at_limit_down(code, h['day_chg'], h.get('name')):
                 print(f"  ⏭️ [{agent}] 卖出 {code}: 跌停（{h['day_chg']:+.2f}%），不接")
                 continue
-            sells.append((code, vol, d["reason"]))
+            sells.append((code, vol, d["reason"], raw_vol))
             print(f"  📉 [{agent}] 卖出 {code} {vol}/{avail}股 ({d['pct']:.0%}): {d['reason']}")
         elif d["action"] == "buy":
             if code in pending_buy:
@@ -1371,7 +1371,7 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
             print(f"  📈 [{agent}] 买入 {code} 用剩余额度 {pct:.0%}（≤{PER_STOCK_PCT:.0%}）: {d['reason']}")
 
     if dry_run:
-        for code, vol, _ in sells:
+        for code, vol, _reason, _iv in sells:
             executed.append({"action": "sell", "code": code, "volume": vol,
                              "price": 0, "reason": "dry-run"})
         for code, pct, _ in buys:
@@ -1382,7 +1382,7 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
     # 执行：先卖后买（同 live_llm_trade 顺序）
     from live_trade_picks import compute_order
 
-    for code, vol, reason in sells:
+    for code, vol, reason, raw_vol in sells:
         try:
             klines = broker.get_klines(code, interval="daily")[-5:]
         except Exception:  # noqa: BLE001
@@ -1416,6 +1416,7 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
                 log_line({"ts": now_cn().isoformat(), "mode": "execute_intraday",
                           "agent": agent, "code": code, "side": "sell",
                           "volume": fv, "price": fp, "cost_price": cost_p,
+                          "intent_volume": raw_vol,
                           "fill": {"order_id": fill.get("order_id"),
                                    "filled_price": fp, "filled_volume": fv}})
                 executed.append({"action": "sell", "code": code, "volume": fv,
@@ -1429,6 +1430,7 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
                 log_line({"ts": now_cn().isoformat(), "mode": "execute_intraday",
                           "agent": agent, "code": code, "side": "sell",
                           "volume": vol, "price": limit, "pending": True,
+                          "intent_volume": raw_vol,
                           "result": result})
         except Exception as exc:  # noqa: BLE001
             print(f"  ❌ [{agent}] 卖出 {code} 失败: {exc}")
@@ -1439,7 +1441,8 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
             from live_trade_picks import log_line
 
             log_line({"ts": now_cn().isoformat(), "mode": "execute_intraday", "agent": agent,
-                      "code": code, "volume": vol, "error": str(exc)})
+                      "code": code, "volume": vol, "intent_volume": raw_vol,
+                      "error": str(exc)})
         time.sleep(1)  # 桥限流
 
     ledger = load_ledger()

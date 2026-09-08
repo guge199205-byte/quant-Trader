@@ -43,7 +43,8 @@ def build_trade_recap(agent: str, days: int = 7) -> str:
                 continue
             events.append({"ts": ts, "code": r.get("code"),
                            "side": str(r["side"]).lower(), "vol": fv,
-                           "price": float(fp or 0)})
+                           "price": float(fp or 0),
+                           "intent": r.get("intent_volume")})
     if not events:
         return ""
     events.sort(key=lambda e: e["ts"])
@@ -56,7 +57,10 @@ def build_trade_recap(agent: str, days: int = 7) -> str:
             d = e["ts"][5:10].replace("-", "/")
             act = "买入" if e["side"] == "buy" else "卖出"
             px = f" @{e['price']:.2f}" if e["price"] else ""
-            lines.append(f"- {d} {act} {e['code']} {e['vol']}股{px}")
+            note = ""
+            if e.get("intent") and e["vol"] != int(e["intent"]):
+                note = f"（申报意图 {int(e['intent'])} 股，手数合规后实际 {e['vol']} 股）"
+            lines.append(f"- {d} {act} {e['code']} {e['vol']}股{px}{note}")
     if not lines:
         return ""
     return ("【近期交易回顾（近{days}日，仅事实参考）】".format(days=days)

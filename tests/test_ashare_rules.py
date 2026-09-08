@@ -68,6 +68,19 @@ def test_round_qty():
     assert R.round_buy_qty("600309.SH", 150) == 100
 
 
+def test_round_sell_qty_nearest_lot_ties_down():
+    """2026-09-08 回归：600×33% 意图 199 股被地板取整成 100（一半），模型对不上账。
+    主板/创业板改最近整手（恰半手向下）；科创板/北交所 1 股递增，意图本身合法。"""
+    assert R.round_sell_qty("600309.SH", 199, 600) == 200  # 实录事故量：最近整手向上
+    assert R.round_sell_qty("600309.SH", 150, 600) == 100  # 恰半手向下，不放大意图
+    assert R.round_sell_qty("600309.SH", 199, 500) == 200
+    assert R.round_sell_qty("600309.SH", 30, 600) == 100   # 不足起报量抬升（原语义不变）
+    assert R.round_sell_qty("688183.SH", 350, 600) == 350  # 科创板 1 股递增：不再 floor 到 200
+    assert R.round_sell_qty("430047.BJ", 550, 800) == 550  # 北交所 1 股递增
+    assert R.round_sell_qty("688183.SH", 550, 600) == 600  # 卖后剩 50 <200 碎股 → 全清
+    assert R.round_sell_qty("600309.SH", 100, 130) == 130  # 送股后零碎持仓（130 非整手）→ 全清
+
+
 def test_rules_brief_mentions_2026_rules():
     brief = R.rules_brief()
     assert "ST/*ST 2026-07-06 起同步放宽至±10%" in brief

@@ -379,6 +379,33 @@ def test_price_watch_auction_guard():
     assert not in_close_auction(_dt.fromisoformat("2026-09-07T15:01:00+08:00"))
 
 
+def test_trade_recap_intent_note(monkeypatch, tmp_path):
+    """回归 2026-09-08：卖出 600×33% 意图 199 → 整手合规实卖 100，模型下一轮
+    对不上账。成交日志记 intent_volume，回顾块对偏差交易注入对照说明。"""
+    import live_prompt_context as PC
+
+    monkeypatch.setattr(PC, "ROOT", tmp_path)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    rows = [
+        {"ts": "2026-09-08T10:05:00+08:00", "agent": "t-agent", "code": "600309.SH",
+         "side": "sell", "mode": "execute_intraday", "volume": 100, "price": 77.68,
+         "intent_volume": 199, "fill": {"filled_volume": 100, "filled_price": 77.68}},
+        {"ts": "2026-09-08T10:06:00+08:00", "agent": "t-agent", "code": "688183.SH",
+         "side": "sell", "mode": "execute_intraday", "volume": 350, "price": 131.0,
+         "intent_volume": 350, "fill": {"filled_volume": 350, "filled_price": 131.0}},
+        {"ts": "2026-09-08T10:07:00+08:00", "agent": "t-agent", "code": "600309.SH",
+         "side": "sell", "mode": "execute_intraday", "volume": 50, "price": 77.0,
+         "fill": {"filled_volume": 50, "filled_price": 77.0}},  # 旧行无 intent → 无对照
+    ]
+    (logs / "live_trade_test.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    out = PC.build_trade_recap("t-agent")
+    assert "600309.SH" in out and "688183.SH" in out
+    assert "申报意图 199 股" in out
+    assert out.count("申报意图") == 1  # 意图==成交、或缺 intent 字段的行不加注
+
+
 def test_cli_parser_exposes_all_run_pipeline_args():
     """回归：cli 曾访问 a.force 但 parser 未定义 → 每次调用必崩。
     保护：cli 传给 run_pipeline 的属性必须在 parser 里都能解析出来。"""

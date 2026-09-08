@@ -98,9 +98,11 @@ def at_limit_up(code: str, day_chg: float | None, name: str | None = None) -> bo
 def round_sell_qty(code: str, raw: int, avail: int) -> int:
     """把目标卖出股数调成交易所可受理的量。返回 0 = 无合法可卖量。
 
-    - 科创板/北交所：≥200/≥100 股起、1 股递增 → 目标不足起报量抬到起报量；
+    - 科创板/北交所：≥200/≥100 股起、1 股递增 → 起报量之上意图本身合法；
       卖出后会留下"一次性才能卖出"的碎股尾部 → 直接一次性全清（防之后卖不掉）
-    - 主板/创业板：100 股整数倍；同理碎股尾部全清
+    - 主板/创业板：100 股整数倍 → 最近整手取整（恰半手向下，不放大意图）；
+      2026-09-08 实录：600 股×33% 意图 199 股被地板取整成 100（一半），
+      模型下一轮对不上账——取整改最近值，配合 intent_volume 对照行闭环
     """
     raw = min(max(int(raw or 0), 0), max(int(avail or 0), 0))
     if raw <= 0 or avail <= 0:
@@ -114,7 +116,10 @@ def round_sell_qty(code: str, raw: int, avail: int) -> int:
         lot, min_qty = 100, 100  # 主板/创业板（unknown 按主板保守处理）
     if avail < min_qty:
         return avail  # 不足起报量只能一次性全卖
-    qty = (raw // lot) * lot
+    if b in ("star", "bse"):
+        qty = raw  # 1 股递增：任意量合法，不足起报量由下一行抬升
+    else:
+        qty = (raw // lot) * lot + (lot if raw % lot > lot // 2 else 0)
     if qty < min_qty:
         qty = min_qty  # 目标不足起报量 → 抬到最小可申报量
     if avail - qty < lot:

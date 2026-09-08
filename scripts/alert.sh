@@ -39,6 +39,24 @@ for spec in "mcp_us:8100" "mcp_cn:8200" "mcp_hk:8300" "dsh:3081"; do
     fi
 done
 
+# 1b. dsh 对外入口（dsh-proxy：host 网络 nginx，绑 DSH_BIND_IP:3081 → 127.0.0.1:3081）。
+#     2026-09-08 实录：proxy 容器 09-07 退出（exit 0 且被标记为手动停止 → unless-stopped
+#     不会拉起），上面那轮 127.0.0.1:3081 探活照样通（dsh 本体在听），但 8093 反代的是
+#     LAN 地址 → 用户看到 502 Bad Gateway nginx/1.31.4，且零告警。这里补探 + 自愈。
+DSH_BIND=$(sed -n 's/^DSH_BIND_IP="\?\([^"]*\)"\?$/\1/p' .env 2>/dev/null | head -1)
+DSH_BIND="${DSH_BIND:-127.0.0.1}"
+if ! timeout 3 bash -c "echo > /dev/tcp/$DSH_BIND/3081" 2>/dev/null; then
+    docker start baymax-dsh-proxy >/dev/null 2>&1
+    sleep 2
+    if timeout 3 bash -c "echo > /dev/tcp/$DSH_BIND/3081" 2>/dev/null; then
+        ALERTS="$ALERTS
+🔧 dsh-proxy ($DSH_BIND:3081) 掉线已自动拉起"
+    else
+        ALERTS="$ALERTS
+🔴 dsh-proxy ($DSH_BIND:3081) 掉线且自动拉起失败——8093 交易智能体前端会 502"
+    fi
+fi
+
 # 2. 交易停滞检测：按"最近一笔成功成交"判定（>48h 无成功记录才告警）。
 #    2026-09-02 事故修复：行情断开时失败下单也写 live_trade_*.jsonl，
 #    旧逻辑统计文件 mtime 被失败记录"刷新鲜"掩盖，净值冻了 3 天零告警。
@@ -256,6 +274,57 @@ if [ $((NOW % 1800)) -lt 300 ]; then   # ~每 30 分钟检查一次，防刷屏
             ALERTS="$ALERTS
 🟡 因子库 alpha_library 滞后日K ${LAG} 天（${AL_DT} vs ${KL_DT}）——重跑 alpha_library_factors.py 增量刷新"
         fi
+    fi
+fi
+
+# 2f. 持仓命中事件风险清单（解禁窗口内 / 近期负面新闻）：要"告警跑"的仓位
+#     清单由 risk_list.py 每交易日重建（data/risk_block.json），买入侧已硬拦；
+#     这里管的是"买完才进清单"的存量仓位——按 (日期, 代码) 去重，一天只报一次。
+RISK_HIT=$(python3 - logs/live_ledger.json data/risk_block.json <<'PY'
+import json, sys, datetime
+BJ = datetime.timezone(datetime.timedelta(hours=8))
+today = datetime.datetime.now(BJ).date().isoformat()
+try:
+    ledger = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(0)
+try:
+    doc = json.load(open(sys.argv[2], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(0)
+items = doc.get("items") if isinstance(doc, dict) else {}
+if not isinstance(items, dict):
+    raise SystemExit(0)
+seen = {}
+for agent, rec in (ledger.get("agents") or {}).items():
+    for code in (rec.get("positions") or {}):
+        it = items.get(str(code).split(".")[0])
+        if not it or str(it.get("expire") or "") < today:
+            continue
+        seen.setdefault(code, (agent, it.get("reason") or ""))
+for code, (agent, reason) in sorted(seen.items()):
+    print(f"{code}|{agent}|{reason}")
+PY
+)
+if [ -n "$RISK_HIT" ]; then
+    RISK_SEEN="/tmp/.baymax_risk_alerted_$(date +%F)"
+    RISK_NEW=""
+    while IFS='|' read -r code agent reason; do
+        [ -z "$code" ] && continue
+        grep -q "^$code$" "$RISK_SEEN" 2>/dev/null && continue
+        echo "$code" >> "$RISK_SEEN"
+        RISK_NEW="$RISK_NEW
+🔴 持仓 $code（$agent）命中事件风险：$reason —— 评估减仓/退出"
+    done <<< "$RISK_HIT"
+    [ -n "$RISK_NEW" ] && ALERTS="$ALERTS$RISK_NEW"
+fi
+# 清单本身的新鲜度：>3 自然日未重建 = event_radar/news_brief 的刷新链路断了，
+# 买入侧会拿旧清单（过期条目会自动失效，但新增解禁/负面新闻会漏拦）
+if [ -f data/risk_block.json ]; then
+    RISK_AGE_D=$(( ( $(date +%s) - $(stat -c %Y data/risk_block.json) ) / 86400 ))
+    if [ "$RISK_AGE_D" -ge 3 ]; then
+        ALERTS="$ALERTS
+🟡 事件风险清单已 ${RISK_AGE_D} 天未重建（应每交易日刷新）——查 event_radar/news_brief 是否正常，或手动跑 scripts/risk_list.py refresh"
     fi
 fi
 

@@ -1,0 +1,146 @@
+/** 单策略选股：选定一个策略 → 全池标的按该策略的回测表现排序，挑最适合它的股票。
+ *
+ * 与「策略排行」互补：排行回答「哪个策略平均最强」，选股回答「这个策略该买哪几只」。
+ */
+import { useEffect, useState } from 'react';
+import { fetchLabBatchRun, type LabBatchRow } from '../../api/client';
+
+const SORTS: { id: string; label: string }[] = [
+  { id: 'net', label: '净收益' },
+  { id: 'sharpe', label: '夏普' },
+  { id: 'profit_factor', label: '盈亏比' },
+  { id: 'dd', label: '回撤最小' },
+  { id: 'trades', label: '成交笔数' },
+];
+
+const fmt = (v: number | null, d = 1, suffix = '') =>
+  v === null || v === undefined || Number.isNaN(v) ? '—' : `${v.toFixed(d)}${suffix}`;
+
+const fmtPct = (v: number | null, d = 1) =>
+  v === null || v === undefined || Number.isNaN(v)
+    ? '—'
+    : `${v > 0 ? '+' : ''}${v.toFixed(d)}%`;
+
+const tone = (v: number | null) => (v === null ? '' : v >= 0 ? 'up' : 'down');
+
+export default function BatchScreener({
+  runId,
+  strategies,
+  onPickSymbol,
+}: {
+  runId: string;
+  strategies: { id: string; name: string }[];
+  onPickSymbol: (code: string) => void;
+}) {
+  const [sid, setSid] = useState('');
+  const [sort, setSort] = useState('net');
+  const [rows, setRows] = useState<LabBatchRow[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    setSid((cur) => cur || (strategies[0]?.id ?? ''));
+  }, [strategies]);
+
+  useEffect(() => {
+    if (!runId || !sid) return;
+    setBusy(true);
+    setErr('');
+    fetchLabBatchRun(runId, sid, sort, 500)
+      .then((d) => setRows(d.rows ?? []))
+      .catch(() => {
+        setRows([]);
+        setErr('选股结果读取失败');
+      })
+      .finally(() => setBusy(false));
+  }, [runId, sid, sort]);
+
+  const winners = rows.filter(
+    (r) => r.net_pct !== null && r.buy_hold_pct !== null && r.net_pct > r.buy_hold_pct,
+  ).length;
+
+  return (
+    <div className="lab-batch-body">
+      <div className="lab-screen-bar">
+        <label>
+          <span>策略</span>
+          <select value={sid} onChange={(e) => setSid(e.target.value)}>
+            {strategies.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>排序</span>
+          <select value={sort} onChange={(e) => setSort(e.target.value)}>
+            {SORTS.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="lab-screen-stat">
+          {busy ? '计算中…' : `${rows.length} 只 · 跑赢买入持有 ${winners} 只`}
+        </div>
+      </div>
+
+      {err && <div className="lab-err">{err}</div>}
+
+      <div className="lab-table-wrap lab-table-tall">
+        <table className="lab-rank">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>标的</th>
+              <th className="num">策略收益</th>
+              <th className="num">买入持有</th>
+              <th className="num">超额</th>
+              <th className="num">回撤</th>
+              <th className="num">夏普</th>
+              <th className="num">盈亏比</th>
+              <th className="num">胜率</th>
+              <th className="num">笔数</th>
+              <th className="num">区间</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => {
+              const excess =
+                r.net_pct !== null && r.buy_hold_pct !== null ? r.net_pct - r.buy_hold_pct : null;
+              return (
+                <tr key={r.symbol} onClick={() => onPickSymbol(r.symbol)} title="点击查看该标的K线与逐笔">
+                  <td className="idx">{i + 1}</td>
+                  <td className="name">
+                    {r.name || r.symbol}
+                    <span className="code">{r.symbol}</span>
+                  </td>
+                  <td className={`num ${tone(r.net_pct)}`}>{fmtPct(r.net_pct)}</td>
+                  <td className="num">{fmtPct(r.buy_hold_pct)}</td>
+                  <td className={`num ${tone(excess)}`}>{fmtPct(excess)}</td>
+                  <td className="num down">{fmt(-(r.dd_pct ?? 0), 1, '%')}</td>
+                  <td className="num">{fmt(r.sharpe, 2)}</td>
+                  <td className="num">{fmt(r.profit_factor, 2)}</td>
+                  <td className="num">{fmt(r.win_rate_pct, 1, '%')}</td>
+                  <td className="num">{fmt(r.trades, 0)}</td>
+                  <td className="num range">
+                    {r.start.slice(2, 7)}~{r.end.slice(2, 7)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {!busy && !rows.length && !err && (
+        <div className="lab-empty">该批次没有这个策略的结果（跑批时未包含？）</div>
+      )}
+      <p className="lab-note">
+        点任意一行 → 跳到「单标的回测」看这只票的 K 线与逐笔。「超额」= 策略收益 − 买入持有，
+        正值说明这段时间里择时比躺着强。
+      </p>
+    </div>
+  );
+}

@@ -12,9 +12,16 @@
 from __future__ import annotations
 
 import csv
+import os
 import tempfile
 import threading
 from pathlib import Path
+
+# PyneCore 每次 import 策略模块都会把 <script>.toml 重写一遍（core/script.py 的
+# _decorate）。批量回测是多进程、且每个回测都要清缓存重导入 → 并发写同一个 toml，
+# 某个进程正好读到半截文件就报 "Invalid TOML: missing [script] section!"。
+# 模板的输入值我们一律走 ScriptRunner(inputs=...) 传入，不需要它落盘。
+os.environ.setdefault("PYNE_SAVE_SCRIPT_TOML", "0")
 
 # PyneCore 的脚本模块缓存在 sys.modules 里，回测前必须清（见 _purge_script_module）。
 # 清缓存是进程级操作，多个回测并发会互相踩 → 用锁把「清缓存 + 跑」串行化。
@@ -259,6 +266,17 @@ def _num(s) -> float | None:
         return None
 
 
+def _fix_infinite_pf(stats: dict) -> None:
+    """无亏损交易时 PyneCore 的 Profit factor 写 0（真值应为 ∞）→ 归为缺失。
+
+    不处理的话，全胜标的会以「盈亏比 0」混进均值，把策略排名算反。
+    """
+    pf = stats.get("Profit factor")
+    loss = (stats.get("Gross loss") or {}).get("value")
+    if pf and pf.get("value") == 0 and not loss:
+        pf["value"] = None
+
+
 def _parse_trades_csv(path: Path) -> list[dict]:
     """逐笔 CSV → 开/平配对记录。"""
     if not path.is_file():
@@ -312,24 +330,23 @@ def _purge_script_module(script_path: Path) -> None:
         del sys.modules[key]
 
 
-def run_backtest(strategy_id: str, symbol: str, adj: str = "backward",
-                 start: str = "", end: str = "", params: dict | None = None) -> dict:
-    """单策略 × 单标的回测。返回 {stats, trades, equity, meta}。"""
+def _run_strategy_on_bars(strategy_id: str, bars: list[dict], symbol: str, adj: str,
+                          overrides: dict | None = None, want_trades: bool = True) -> dict:
+    """核心回测：K线已在手 → 跑一次 PyneCore，返回 {stats, trades, equity, meta}。
+
+    与 run_backtest 分离是为了批量回测：同一标的的 K 线只从 quantdb 读一次，
+    6 个策略复用（读盘是瓶颈，6× 重复读会白烧 6 倍 IO）。
+    """
     spec = STRATEGIES.get(strategy_id)
     if not spec:
         raise ValueError(f"未知策略: {strategy_id}")
     _require_pyne()
     from pynecore.core.script_runner import ScriptRunner
 
-    bars = load_klines(symbol, adj=adj, limit=0, start=start, end=end)
-    if len(bars) < 60:
-        raise ValueError(f"K线不足（{len(bars)} 根，至少 60 根）")
     script = STRATEGY_DIR / spec["file"]
     if not script.is_file():
         raise FileNotFoundError(f"策略文件缺失: {script}")
-    _purge_script_module(script)
 
-    overrides = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
     code = normalize_code(symbol)
     with tempfile.TemporaryDirectory(prefix="lab_bt_") as td:
         tdir = Path(td)
@@ -337,6 +354,10 @@ def run_backtest(strategy_id: str, symbol: str, adj: str = "backward",
         trade_csv = tdir / "trades.csv"
         with _RUN_LOCK:
             _purge_script_module(script)
+            # 历史遗留的 <策略>.toml 会在 import 时覆盖 input 默认值（PyneCore 的
+            # input 读 _old_input_values）→ 参数来源必须只有 .py 与本次 inputs 两条路，
+            # 每次回测前把残留清掉。
+            script.with_suffix(".toml").unlink(missing_ok=True)
             runner = ScriptRunner(
                 script_path=script, ohlcv_iter=iter(_bars_ohlcv(bars)),
                 syminfo=_syminfo(symbol, stock_name(symbol)),
@@ -346,9 +367,10 @@ def run_backtest(strategy_id: str, symbol: str, adj: str = "backward",
             for _ in runner.run_iter():
                 pass
         stats = _parse_strat_csv(strat_csv)
-        trades = _parse_trades_csv(trade_csv)
+        _fix_infinite_pf(stats)
+        trades = _parse_trades_csv(trade_csv) if want_trades else []
 
-    eq = list(getattr(runner, "equity_curve", None) or [])
+    eq = list(getattr(runner, "equity_curve", None) or []) if want_trades else []
     equity = [{"date": b["date"], "value": round(float(v), 2)}
               for b, v in zip(bars[-len(eq):], eq)] if eq else []
     return {
@@ -358,8 +380,20 @@ def run_backtest(strategy_id: str, symbol: str, adj: str = "backward",
         "meta": {"strategy": strategy_id, "name": spec["name"], "symbol": code,
                  "name_cn": stock_name(symbol), "adj": adj,
                  "start": bars[0]["date"], "end": bars[-1]["date"], "bars": len(bars),
-                 "params": overrides},
+                 "params": overrides or {}},
     }
+
+
+def run_backtest(strategy_id: str, symbol: str, adj: str = "backward",
+                 start: str = "", end: str = "", params: dict | None = None) -> dict:
+    """单策略 × 单标的回测。返回 {stats, trades, equity, meta}。"""
+    if strategy_id not in STRATEGIES:
+        raise ValueError(f"未知策略: {strategy_id}")
+    bars = load_klines(symbol, adj=adj, limit=0, start=start, end=end)
+    if len(bars) < 60:
+        raise ValueError(f"K线不足（{len(bars)} 根，至少 60 根）")
+    overrides = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
+    return _run_strategy_on_bars(strategy_id, bars, symbol, adj, overrides)
 
 
 def list_strategies() -> list[dict]:

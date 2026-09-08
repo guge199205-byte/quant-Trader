@@ -806,3 +806,75 @@ export const runLabBacktest = (payload: {
   end?: string;
   params?: Record<string, number>;
 }) => unwrap<BtResult>(api.post('/market-lab/backtest', payload));
+
+// ---------- 批量回测（股票池 × 策略，scripts/lab_batch_backtest.py 跑批产物） ----------
+
+export interface LabBatchRow {
+  symbol: string;
+  name: string;
+  strategy: string;
+  net_pct: number | null;
+  buy_hold_pct: number | null;
+  dd_pct: number | null;
+  sharpe: number | null;
+  sortino: number | null;
+  profit_factor: number | null;
+  win_rate_pct: number | null;
+  trades: number | null;
+  avg_bars: number | null;
+  bars: number;
+  start: string;
+  end: string;
+}
+
+export interface LabBatchRank {
+  strategy: string;
+  name: string;
+  symbols: number;
+  mean_net_pct: number | null;
+  median_net_pct: number | null;
+  mean_dd_pct: number | null;
+  mean_sharpe: number | null;
+  mean_profit_factor: number | null;
+  mean_win_rate_pct: number | null;
+  mean_trades: number | null;
+  beat_bh_pct: number | null;
+}
+
+export interface LabBatchRun {
+  run_id: string;
+  created: string;
+  pool: string;
+  pool_label: string;
+  adj: string;
+  strategies: { id: string; name: string }[];
+  universe: number;
+  counts: { rows: number; skipped: number; errors: number };
+  elapsed_sec?: number;
+}
+
+export interface LabBatchDetail extends LabBatchRun {
+  ranking: LabBatchRank[];
+  rows: LabBatchRow[];
+  skipped: { symbol: string; name?: string; bars?: number; reason: string }[];
+  errors: { symbol?: string; strategy?: string; error: string }[];
+}
+
+export interface LabPool {
+  id: string;
+  label: string;
+  count: number;
+}
+
+export const fetchLabBatchRuns = (limit = 20) =>
+  unwrap<LabBatchRun[]>(api.get('/market-lab/batch/runs', { params: { limit } }));
+
+export const fetchLabBatchPools = () =>
+  unwrap<LabPool[]>(api.get('/market-lab/batch/pools'));
+
+export const fetchLabBatchRun = (runId: string, strategy = '', sort = 'net', limit = 200) =>
+  unwrap<LabBatchDetail>(
+    api.get(`/market-lab/batch/${encodeURIComponent(runId)}`, {
+      params: { strategy, sort, limit },
+    }),
+  );

@@ -1966,6 +1966,72 @@ def lab_backtest(payload: dict = Body(...)):
         return {"success": False, "error": f"回测失败: {e}"}
 
 
+# ---------- 批量回测（股票池 × 策略，产物由 scripts/lab_batch_backtest.py 生成） ----------
+
+def _lab_batch():
+    from backend.services import lab_batch as lb
+
+    return lb
+
+
+@app.get("/api/market-lab/batch/runs")
+def lab_batch_runs(limit: int = Query(20, ge=1, le=100)):
+    """批次列表（时间倒序，只含摘要）。"""
+    try:
+        return {"success": True, "data": _lab_batch().list_runs(limit=limit)}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"批次列表失败: {e}"}
+
+
+@app.get("/api/market-lab/batch/pools")
+def lab_batch_pools():
+    """可选股票池（指数成分 + 全市场），附当前成员数。"""
+    try:
+        lb = _lab_batch()
+        data = []
+        for key, (_, label) in lb.INDEX_POOLS.items():
+            try:
+                n = len(lb.resolve_pool(key))
+            except Exception:  # noqa: BLE001 缺文件不影响其它池
+                n = 0
+            data.append({"id": key, "label": label, "count": n})
+        return {"success": True, "data": data}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"股票池列表失败: {e}"}
+
+
+@app.get("/api/market-lab/batch/{run_id}")
+def lab_batch_run(run_id: str, strategy: str = "", sort: str = "net",
+                  limit: int = Query(200, ge=1, le=5000)):
+    """单批次结果：ranking=策略排行；strategy 非空时返回该策略的选股明细（倒序前 N）。"""
+    try:
+        lb = _lab_batch()
+        d = lb.load_run(run_id)
+        rows = d.get("rows", [])
+        if strategy:
+            rows = [r for r in rows if r["strategy"] == strategy]
+            key = {"net": "net_pct", "dd": "dd_pct", "sharpe": "sharpe",
+                   "profit_factor": "profit_factor", "trades": "trades"}.get(sort, "net_pct")
+            rows = sorted(rows, key=lambda r: (r.get(key) is not None, r.get(key) or -1e9),
+                          reverse=True)
+        return {"success": True, "data": {
+            "run_id": d.get("run_id"), "created": d.get("created"),
+            "pool": d.get("pool"), "pool_label": d.get("pool_label"),
+            "adj": d.get("adj"), "strategies": d.get("strategies"),
+            "universe": d.get("universe"), "counts": d.get("counts"),
+            "elapsed_sec": d.get("elapsed_sec"),
+            "ranking": d.get("ranking", []),
+            "rows": rows[:limit],
+            "skipped": d.get("skipped", [])[:50],
+            "errors": d.get("errors", [])[:50],
+        }}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("lab batch load failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"批次读取失败: {e}"}
+
+
 def main():
     import uvicorn
 

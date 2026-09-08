@@ -9,6 +9,7 @@
 运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_market_lab.py -q
 （回测用例需 pynecore；未安装时自动跳过，代码归一/缓存清理用例仍会执行）
 """
+import os
 import sys
 from pathlib import Path
 
@@ -95,3 +96,39 @@ class TestStrategyRegistry:
             assert spec["name"] and spec["desc"]
             assert spec["params"], f"{sid} 无参数定义"
             assert (ml.STRATEGY_DIR / spec["file"]).is_file(), f"{sid} 策略文件缺失"
+
+
+class TestTomlOverrides:
+    """PyneCore 的 <策略>.toml 里 `value =` 会在运行时覆盖 input 默认值。
+
+    实测（2026-09-08）：给 donchian.toml 写 entry_len=99/exit_len=3，同一标的同一
+    参数的回测从 -16.7%/60 笔变成 -30.7%/44 笔。批量回测多进程并发重写该文件时，
+    读到半截文件会报错、读到别人的值会静默算出不同结果——必须保证模板目录里没有 toml。
+    """
+
+    def test_side_file_disabled(self):
+        assert os.environ.get("PYNE_SAVE_SCRIPT_TOML") == "0", "必须禁用 PyneCore 回写 toml"
+        assert not list(ml.STRATEGY_DIR.glob("*.toml")), "模板目录不该有 toml 残留"
+
+    @pytest.mark.skipif(
+        not (Path("/data/quantdb/1_kline_data").is_dir()
+             or (Path.home() / "projects/quantmind/data/quantdb/1_kline_data").is_dir()),
+        reason="quantdb 未挂载",
+    )
+    def test_poisoned_toml_is_ignored(self):
+        pytest.importorskip("pynecore", reason="PyneCore 运行时未安装")
+        script = ml.STRATEGY_DIR / ml.STRATEGIES["donchian"]["file"]
+        toml = script.with_suffix(".toml")
+        toml.write_text("[script]\npyramiding = 1\n\n"
+                        "[inputs.entry_len]\nvalue = 99\n\n"
+                        "[inputs.exit_len]\nvalue = 3\n", encoding="utf-8")
+        try:
+            bars = ml.load_klines("600028.SH", adj="backward", limit=0)
+            got = ml._run_strategy_on_bars("donchian", bars, "600028.SH", "backward",
+                                           want_trades=False)
+            trades = got["stats"]["Total trades"]["value"]
+            clean = ml.run_backtest("donchian", "600028.SH", adj="backward")
+            assert trades == clean["stats"]["Total trades"]["value"], "残留 toml 污染了回测"
+            assert not toml.exists(), "回测前应清掉残留 toml"
+        finally:
+            toml.unlink(missing_ok=True)

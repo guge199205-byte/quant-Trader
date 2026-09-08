@@ -152,3 +152,6 @@ data/us_picks.json
 
 # PyneCore 运行时自动生成的脚本配置（inputs 元数据，随脚本重生成）
 backend/services/lab_strategies/*.toml
+
+# 批量回测结果（每池一份，几百 KB，跑批产物不入库；界面直接读本地文件）
+data/lab_batch/

@@ -47,6 +47,11 @@ TRIGGER_SECTOR_ABS = 5.0    # 或板块绝对涨跌 ≥5%（强势/弱势确认�
 TRIGGER_INOUT_DELTA = 0.3   # 持仓内外盘失衡较上次分析变化 ≥0.3（-1..1 尺度）→ 唤醒
 TRIGGER_NEWS_IMPACT = 1.0   # 新闻管线持仓信号新出现 |impact|≥1 → 唤醒
 
+# ---- 锁仓降频（2026-09-08）：持仓全部 T+1 锁定且资金不足以建仓 → 整点轮跳过该 agent。
+# 唤醒机制（波动/板块/L2/新闻）与尾盘轮不走此闸门，兜底不漏事；默认保守（宁多跑）。
+LOCKED_SKIP_CASH = 2000    # 可用资金低于此值视为无法建仓（约最便宜一手×20%额度都难覆盖）
+LOCKED_SKIP_BEFORE = 14 * 60 + 30  # 北京 14:30 前才允许跳过，尾盘轮永远全跑
+
 # ---- 盘中执行参数（分析建议 → 实际买卖）----
 # 与 live_llm_trade.py 保持同一套闸门口径：
 #   sell: 只卖可卖量（T+1 当日买入跳过）、跌停不接、100 股整数倍
@@ -1562,9 +1567,18 @@ def compute_forced_trims(holdings: list, virtual_cash: float,
     return out
 
 
+def agent_locked_idle(my_holdings: list, virtual_cash: float) -> bool:
+    """锁仓降频判据：名下有持仓但全部 T+1 不可卖，且可用资金不足以建仓
+    → 本轮整点分析对该 agent 无事可做（卖出被 T+1 封死、买入金额不够一手）。
+    只用于整点定时轮降频；唤醒触发与尾盘轮不经过本判据。"""
+    return bool(my_holdings) and all(h["avail"] <= 0 for h in my_holdings) \
+        and virtual_cash < LOCKED_SKIP_CASH
+
+
 def run_analysis(broker, reason: str, dry_run: bool = True,
                  agents: list | None = None,
-                 gap_window: tuple[str, str] | None = None) -> int:
+                 gap_window: tuple[str, str] | None = None,
+                 allow_lock_skip: bool = False) -> int:
     """完整盘中分析（每小时 cron + 9:30 开盘 + 波动触发 + 断线恢复补跑共用）：
     在途成交 reconcile → 净值记录 → 各分账 agent 名下持仓 LLM 简评落盘
     → 解析决策（sell/buy/watch）→ 闸门校验 → 桥执行（dry_run=False 才真下单）
@@ -1633,6 +1647,10 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
         my_rows = [r for r in rows if r["code"] in mine_codes]
         my_holdings = [h for h in holdings if h["code"] in mine_codes]
         virtual_cash = agent_virtual_cash(ledger, agent)
+        if allow_lock_skip and agent_locked_idle(my_holdings, virtual_cash):
+            print(f"[{now:%F %T}] {agent} 🔒 持仓全部 T+1 锁定且可用资金不足建仓 → 本轮跳过"
+                  f"（波动/板块/L2/新闻唤醒与尾盘轮仍在线）")
+            continue
         if not my_rows:
             # 空仓 → 候选池复盘 + 可建仓（等价 09:35 权限）；池子都没有就跳过
             if pool is None:
@@ -1948,9 +1966,12 @@ def main() -> int:
         return 0
     broker = TdxBridgeBroker()
     label = "手动触发" if agents_filter else "每小时定时"
+    # 锁仓降频只挂整点定时轮且尾盘前；手动/波动/补跑一律全跑
+    allow_lock_skip = (label == "每小时定时"
+                       and now.hour * 60 + now.minute < LOCKED_SKIP_BEFORE)
     try:
         rc = run_analysis(broker, label, dry_run=not do_execute,
-                          agents=agents_filter)
+                          agents=agents_filter, allow_lock_skip=allow_lock_skip)
     except Exception as exc:  # noqa: BLE001 桥挂/数据源坏 → 一行落日志，等下一轮 cron
         print(f"[{now:%F %T}] ⚠️ {label}分析失败: {type(exc).__name__}: {exc}（等下一轮重试）")
         rc = 1

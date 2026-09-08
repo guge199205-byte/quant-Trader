@@ -379,6 +379,18 @@ def test_price_watch_auction_guard():
     assert not in_close_auction(_dt.fromisoformat("2026-09-07T15:01:00+08:00"))
 
 
+def test_agent_locked_idle_gate():
+    """锁仓降频判据（2026-09-08）：全 T+1 锁定+资金不足建仓 → 整点轮跳过该 agent。
+    有可卖量/资金充足/空仓三种情形都必须照常分析（保守默认：宁多跑不少跑）。"""
+    locked = [{"code": "600309.SH", "avail": 0}]
+    unlocked = [{"code": "600309.SH", "avail": 100}]
+    assert L.agent_locked_idle(locked, L.LOCKED_SKIP_CASH - 1)
+    assert not L.agent_locked_idle(unlocked, L.LOCKED_SKIP_CASH - 1)  # 有可卖量 → 不跳
+    assert not L.agent_locked_idle(locked, L.LOCKED_SKIP_CASH)        # 资金可建仓 → 不跳
+    assert not L.agent_locked_idle([], L.LOCKED_SKIP_CASH - 1)        # 空仓走建仓分支
+    assert not L.agent_locked_idle([], 0)
+
+
 def test_trade_recap_intent_note(monkeypatch, tmp_path):
     """回归 2026-09-08：卖出 600×33% 意图 199 → 整手合规实卖 100，模型下一轮
     对不上账。成交日志记 intent_volume，回顾块对偏差交易注入对照说明。"""

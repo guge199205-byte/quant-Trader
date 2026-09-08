@@ -41,6 +41,13 @@ import './Live.css';
 
 const BENCH_COLOR = '#10a37f';
 
+/** 对话日志每次只拉最近 N 个回合：单条 ~6KB，全量可累积到 1MB+，
+ *  而新回合每小时才产生一次——全量轮询是页面周期性卡顿的主因（2026-09-08）。 */
+const LOG_LIMIT = 80;
+/** 对话日志轮询间隔：一个回合/小时/模型，30s 轮一遍纯属浪费（每轮 ~1.3MB）。
+ *  手动「立即分析」触发后会单独 refresh，不依赖这个节奏。 */
+const LOG_POLL_MS = 120000;
+
 /** 空仓时间段反推（成交事件 + 当前账本，时间戳毫秒；纯事实驱动——
  *  净值曲线本身是阶梯状（桥行情缓存分钟级刷新），按数值连段判空仓会整线误虚。
  *  账本只存当前快照，用成交事件倒走重建：穿越一笔清仓卖出 → 空仓区间开始；
@@ -294,6 +301,12 @@ export default function Live() {
       );
       setAnalyzeState('sent');
       window.setTimeout(() => setAnalyzeState('idle'), 25000);
+      // 日志轮询已放宽到 2 分钟（LOG_POLL_MS）：手动触发后补一次拉取，
+      // 让新回合 ~90s 内出现，不必等下一个轮询周期。
+      window.setTimeout(() => {
+        void logs.refresh();
+        void chatAll.refresh();
+      }, 90000);
     } catch (e) {
       setAnalyzeMsg(`触发失败：${e instanceof Error ? e.message : String(e)}`);
       setAnalyzeState('error');
@@ -325,7 +338,9 @@ export default function Live() {
   );
 
   // 实盘账户净值（A股：每分钟采样，前端 20s 轮询尽量实时）
-  const liveEquity = usePolling(() => fetchLiveEquity(), [], 60000, 15000);
+  // 首轮不延后（phase=0）：它是净值图的数据源，延后 15s 会让图表先画一屏模拟盘
+  // 再换源（用户口径「刷新后图表先是乱的」）。其余端点错峰即可。
+  const liveEquity = usePolling(() => fetchLiveEquity(), [], 60000, 0);
   // 实盘数据成功过一次后保留最后一帧：单轮轮询失败/延迟时仍画实盘旧帧，
   // 不再整图回退到模拟盘序列（启动后换源闪变的根因之一）
   const liveEqRef = useRef(liveEquity.data);
@@ -338,8 +353,10 @@ export default function Live() {
   // 实盘 LLM 分析 token 累计（30s 刷新，模型卡显示）
   const tokenUsage = usePolling(() => fetchTokenUsage(), [], 30000, 8000);
   // 实盘账本/成交（上移：空仓段反推在 lines memo 里要用）
-  const liveLedger = usePolling(() => fetchLiveLedger(), [], 30000, 12000);
-  const liveTrades = usePolling(() => fetchLiveTradesFor(market), [market], 30000, 7000);
+  // 账本/成交同样 phase=0：它们是 cn 净值图的虚线/事件标注数据源，错峰反而让首屏
+  // 先画一条没有事件标注的线、再补上（2026-09-08）。
+  const liveLedger = usePolling(() => fetchLiveLedger(), [], 30000, 0);
+  const liveTrades = usePolling(() => fetchLiveTradesFor(market), [market], 30000, 0);
 
   const lines = useMemo(() => {
     const eq = liveEq;
@@ -471,30 +488,39 @@ export default function Live() {
             )
           : fetchTrades(effectiveModel, market)
         : Promise.resolve([]),
-    [effectiveModel, selectedModel, rows, market],
+    // deps 用 agentsKey（名字串）而非 rows 数组：overview 每 30s 换一次 data 引用，
+    // 用 rows 会让本钩子每 30s 重启一次、把间隔设成多少都白搭（2026-09-08）。
+    [effectiveModel, selectedModel, agentsKey, market],
     30000,
   );
+  // 对话 tab「全部模型」视图会自己拉全部 agent 日志，此时 logs 钩子再拉一遍
+  // 就是纯重复（同一份 1MB+ payload 一次加载发两遍，2026-09-08）。这里让位。
+  const chatAllActive = selectedModel === 'all' && tab === 'chat';
   const logs = usePolling<LogLine[]>(
-    () => (effectiveModel ? fetchLogs(effectiveModel, market) : Promise.resolve([])),
-    [effectiveModel, market],
-    30000,
+    () =>
+      effectiveModel && !chatAllActive
+        ? fetchLogs(effectiveModel, market, LOG_LIMIT)
+        : Promise.resolve([]),
+    [effectiveModel, market, chatAllActive],
+    LOG_POLL_MS,
   );
   // 对话 tab「全部模型」视图：并行拉各模型日志 → 混合时间流
   // 注意用 selectedModel 判断（effectiveModel 会把 all 降级成第一个模型）
   const chatAll = usePolling<{ name: string; lines: LogLine[] }[] | null>(() => {
-    if (selectedModel !== 'all' || tab !== 'chat' || !rows.length) return Promise.resolve(null);
-    const units = rows.map((r) => ({ name: r.name, pull: () => fetchLogs(r.name, market) }));
-    if (market === 'cn') {
-      // 晚间市场研究 agent 的对话卡（pseudo『研究总控』，数据目录 market-research）
-      units.push({ name: '市场研究', pull: () => fetchLogs('market-research', market) });
+    if (!chatAllActive || !rows.length) return Promise.resolve(null);
+    const units = rows.map((r) => ({ name: r.name, pull: () => fetchLogs(r.name, market, LOG_LIMIT) }));
+    // cn 的 overview 已把 market-research 计入 rows（研究总控有独立净值线），
+    // 这里只在缺失时补一张中文名对话卡——否则同一份日志拉两遍、卡片也重影。
+    if (market === 'cn' && !units.some((u) => u.name === 'market-research')) {
+      units.push({ name: '市场研究', pull: () => fetchLogs('market-research', market, LOG_LIMIT) });
     }
     return Promise.all(units.map((u) => u.pull().catch(() => [] as LogLine[]))).then(
       (lists) => units.map((u, i) => ({ name: u.name, lines: lists[i] })),
     );
-  }, [selectedModel, tab, rows, market], 30000);
+  }, [chatAllActive, agentsKey, market], LOG_POLL_MS);
 
   // ---------- 实盘账户（A股：通达信桥 /live/account；港股：富途 /api/futu/account 直连 OpenD） ----------
-  const liveAcct = usePolling(() => fetchLiveAccountFor(market), [market], 30000, 3000);
+  const liveAcct = usePolling(() => fetchLiveAccountFor(market), [market], 30000, 0);
   const livePositions = (liveAcct.data?.positions ?? []).filter(
     (p) => Number(p.total_volume) > 0,
   );
@@ -950,6 +976,10 @@ export default function Live() {
     );
   }
 
+  // cn 首帧实盘净值未到前不画图：perfs 是模拟盘回放，先画出来再换源就是用户看到的
+  // 「刷新后图表先是乱的」（X 轴 08-03…08-27 那串）。phase 已归零，等待只剩一次请求。
+  const chartPending = market === 'cn' && liveEquity.loading && !liveEqRef.current;
+
   return (
     <>
       {/* 导航栏横线正下方的独立条：交易时段（北京时间）+ 交易规则 + 盘中状态 +
@@ -1070,6 +1100,11 @@ export default function Live() {
           </div>
           {overview.loading && !rows.length ? (
             <div className="loading"><div className="spinner" />加载中…</div>
+          ) : chartPending ? (
+            // 占位高度与图表一致，避免实盘首帧到达时布局跳动
+            <div className="loading" style={{ height: 'clamp(360px, 44vw, 560px)' }}>
+              <div className="spinner" />实盘净值加载中…
+            </div>
           ) : (
             <>
               <EquityChart

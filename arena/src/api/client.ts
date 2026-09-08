@@ -142,8 +142,12 @@ export const fetchPositions = (agent: string, market: MarketId) =>
 export const fetchTrades = (agent: string, market: MarketId) =>
   unwrap<TradeRecord[]>(api.get(`/agents/${encodeURIComponent(agent)}/trades`, { params: { market } }));
 
-export const fetchLogs = (agent: string, market: MarketId) =>
-  unwrap<LogLine[]>(api.get(`/agents/${encodeURIComponent(agent)}/logs`, { params: { market } }));
+/** 分析日志（每行 = 一个分析回合）。limit>0 只取最近 N 条：
+ *  全量日志累积 1MB+，对话 tab 每 30s 全量拉取是页面卡顿主因（2026-09-08）。 */
+export const fetchLogs = (agent: string, market: MarketId, limit = 0) =>
+  unwrap<LogLine[]>(api.get(`/agents/${encodeURIComponent(agent)}/logs`, {
+    params: limit > 0 ? { market, limit } : { market },
+  }));
 
 // ---------- 最新价格（滚动价格条） ----------
 

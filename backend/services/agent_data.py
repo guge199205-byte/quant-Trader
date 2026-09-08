@@ -9,11 +9,17 @@ import json
 import math
 import os
 import statistics
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.config import get_data_root
+
+# 价格行缓存（见 _cached_price_rows）：解析结果按文件版本记忆化，避免同一市场重复解析。
+_PRICE_ROWS_CACHE: Dict[tuple, List[tuple]] = {}
+_PRICE_ROWS_LOCK = threading.Lock()
+_PRICE_ROWS_MAX = 12
 
 
 def list_agents(config: dict, market: str = "us") -> List[Dict[str, Any]]:
@@ -97,8 +103,14 @@ def enrich_trades_with_prices(config: dict, market: str,
 
 
 def load_agent_logs(config: dict, agent: str, market: str = "us",
-                    date: Optional[str] = None) -> List[Dict[str, Any]]:
-    """读取某 agent 的日志记录；date 指定时只读该日期目录（精确匹配前缀）。"""
+                    date: Optional[str] = None,
+                    limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """读取某 agent 的日志记录；date 指定时只读该日期目录（精确匹配前缀）。
+
+    limit：只取最近 N 条（按日期目录正序取尾部）。日志单条 = 一整个分析回合
+    （提示词+回复，约 6KB），全量累积可达 1MB+，前端每 30s 轮询一遍是纯浪费
+    （2026-09-08 卡顿治理）。
+    """
     log_dir = _agent_log_dir(config, agent, market)
     if not log_dir.exists():
         return []
@@ -111,7 +123,7 @@ def load_agent_logs(config: dict, agent: str, market: str = "us",
         log_file = folder / "log.jsonl"
         if log_file.exists():
             lines.extend(_read_jsonl(log_file))
-    return lines
+    return lines[-limit:] if limit and limit > 0 else lines
 
 
 def compute_equity_series(config: dict, agent: str, market: str = "us") -> List[Dict[str, Any]]:
@@ -248,15 +260,39 @@ def _fallback_price_rows(path: Path, field_chain: tuple[str, ...]) -> List[tuple
     return rows
 
 
+def _cached_price_rows(path: Path, field_chain: tuple[str, ...]) -> List[tuple]:
+    """merged.jsonl → [(symbol, date_key, price)]，按 (路径, 字段链, mtime, size) 记忆化。
+
+    为什么需要（2026-09-08）：解析整份 merged.jsonl（duckdb 展开全表）是
+    /api/overview 与 /api/prices 的主要成本，而 overview 对每个 agent 各调一次
+    compute_equity_series → 同一市场重复解析 3 次。冷启动实测 5.8s，正是前端
+    「刷新后左侧几秒才显示」的根因。文件 mtime/size 变化（每日价格同步）即失效。
+    """
+    try:
+        st = path.stat()
+        key = (str(path), field_chain, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return []
+    with _PRICE_ROWS_LOCK:
+        hit = _PRICE_ROWS_CACHE.get(key)
+    if hit is not None:
+        return hit
+    rows = _duckdb_price_rows(path, field_chain)
+    if not rows:
+        rows = _fallback_price_rows(path, field_chain)
+    with _PRICE_ROWS_LOCK:
+        _PRICE_ROWS_CACHE[key] = rows
+        while len(_PRICE_ROWS_CACHE) > _PRICE_ROWS_MAX:  # 无界增长防护（3 市场 × 2 字段链）
+            _PRICE_ROWS_CACHE.pop(next(iter(_PRICE_ROWS_CACHE)))
+    return rows
+
+
 def _load_price_lookup(config: dict, market: str) -> Dict[str, Dict[str, float]]:
     """构建 {date: {symbol: price}} 查询表（优先 DuckDB，逐行兜底）。
 
     价格取每日首条记录（"1. buy price" → "1. open" 优先级，口径同旧实现）。
     """
-    merged = _merged_file(config, market)
-    rows = _duckdb_price_rows(merged, ("1. buy price", "1. open"))
-    if not rows:
-        rows = _fallback_price_rows(merged, ("1. buy price", "1. open"))
+    rows = _cached_price_rows(_merged_file(config, market), ("1. buy price", "1. open"))
     lookup: Dict[str, Dict[str, float]] = {}
     for symbol, date_key, price in rows:
         lookup.setdefault(date_key, {}).setdefault(symbol, price)
@@ -270,9 +306,7 @@ def load_latest_prices(config: dict, market: str) -> Dict[str, Dict[str, Any]]:
     - 返回 {symbol: {price, date, prev_close, change_pct}}，无昨收时 change_pct 为 None
     """
     merged = _merged_file(config, market)
-    rows = _duckdb_price_rows(merged, ("4. sell price", "4. close", "1. buy price", "1. open"))
-    if not rows:
-        rows = _fallback_price_rows(merged, ("4. sell price", "4. close", "1. buy price", "1. open"))
+    rows = _cached_price_rows(merged, ("4. sell price", "4. close", "1. buy price", "1. open"))
     per_symbol: Dict[str, List[tuple]] = {}
     for symbol, date_key, price in rows:
         per_symbol.setdefault(symbol, []).append((date_key, price))

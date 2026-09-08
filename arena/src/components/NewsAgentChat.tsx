@@ -17,14 +17,18 @@ export const NEWS_AGENTS = [
 
 /** 新闻 tab —— 各新闻 agent 的分析对话（与「模型对话」同款渲染，区别于文章流）。
  *  筛选由 Live 筛选栏（filter-select）控制：agent='all' = 混合时间流，单选 = 只看该段。
- *  60s 轮询。 */
+ *  2 分钟轮询 + 只取最近 N 个回合：news-gate/news-micro 全量已到 800KB/agent，
+ *  六段并行全量拉取一次 ~1.7MB（2026-09-08 卡顿治理）。 */
+const NEWS_LOG_LIMIT = 20;
+const NEWS_POLL_MS = 120000;
+
 export default function NewsAgentChat({ agent = 'all' }: { agent?: string }) {
   const sel = agent;
   const ids = sel === 'all' ? NEWS_AGENTS.map((a) => a.id) : [sel];
   const logs = usePolling<LogLine[][]>(
-    () => Promise.all(ids.map((id) => fetchLogs(id, 'cn').catch(() => [] as LogLine[]))),
+    () => Promise.all(ids.map((id) => fetchLogs(id, 'cn', NEWS_LOG_LIMIT).catch(() => [] as LogLine[]))),
     [sel],
-    60000,
+    NEWS_POLL_MS,
   );
 
   const agents = useMemo(() => {

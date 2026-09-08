@@ -49,7 +49,8 @@ export default function ModelDetail() {
     30000,
   );
   const logs = usePolling(
-    () => (tab === 'logs' ? fetchLogs(name, m) : Promise.resolve(null)),
+    // 只取最近 80 个回合：全量日志可累积到 1MB+（2026-09-08 卡顿治理）
+    () => (tab === 'logs' ? fetchLogs(name, m, 80) : Promise.resolve(null)),
     [name, m, tab],
     30000,
   );

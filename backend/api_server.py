@@ -344,9 +344,12 @@ def get_holdings(agent: str, market: str = Query("us")):
 
 
 @app.get("/api/agents/{agent}/logs")
-def get_logs(agent: str, market: str = Query("us"), date: Optional[str] = None):
+def get_logs(agent: str, market: str = Query("us"), date: Optional[str] = None,
+             limit: int = Query(0, ge=0, le=2000)):
+    """agent 分析日志（每行 = 一个分析回合）。limit>0 只回最近 N 条——
+    全量日志可累积到 1MB+，前端轮询用 limit 收窄（2026-09-08 卡顿治理）。"""
     cfg = config()
-    lines = agent_data.load_agent_logs(cfg, agent, market, date)
+    lines = agent_data.load_agent_logs(cfg, agent, market, date, limit or None)
     return {"success": True, "data": lines}
 
 

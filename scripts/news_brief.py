@@ -669,6 +669,8 @@ def _seg_compact(stage: str, d: dict | None) -> str:
     if not d or d.get("skipped"):
         return f"[{AGENT_CN.get(stage, stage)}] 本窗口无输出"
     out = [f"[{AGENT_CN.get(stage, stage)}]"]
+    if d.get("degraded"):
+        out.append("  ⚠ 本段部分批次失败，以下为已成功批次的要点（数据不完整）")
     if stage == MACRO:
         out.append(f"宏观 {d.get('view')}（bias {_fnum(d.get('bias')):+.1f}）")
         for x in _list_of_dicts(d.get("drivers"))[:4]:
@@ -799,6 +801,21 @@ def merge_watch_codes(positions: list | None, pool: list | None,
     return out
 
 
+def _name_lookup() -> dict:
+    """全市场名称表（quantdb instrument_detail）——桥不返回 stock_name 时的兜底。
+
+    2026-09-08 实测：桥持仓 `stock_name=None`（两只实盘持仓 001312.SZ/600309.SH
+    都没有名字）→ `_hits_watch` 的名称级命中对**真正持仓的票**永远不可能，
+    holdings 段只剩 enrichment.tickers 一条路（当日 0 命中）。
+    """
+    try:
+        from live_hourly_analysis import load_names
+
+        return load_names() or {}
+    except Exception:  # noqa: BLE001 名称兜底失败不阻塞管线
+        return {}
+
+
 def load_watch_codes() -> tuple[dict, list]:
     """现场取持仓（桥）+ 候选池（live_llm_trade）；各自独立降级。
     返回 ({code: name}, warns)——名称一并返回：次新股代码模型不认识，
@@ -827,6 +844,16 @@ def load_watch_codes() -> tuple[dict, list]:
                 codes.setdefault(c, str(p.get("name") or ""))
     except Exception as exc:  # noqa: BLE001
         warns.append(f"候选池获取失败: {str(exc)[:80]}")
+    missing = [c for c, n in codes.items() if not n]
+    if missing:
+        names = _name_lookup()
+        for c in missing:
+            if names.get(c):
+                codes[c] = names[c]
+        still = [c for c in missing if not codes.get(c)]
+        if still:
+            warns.append(f"{len(still)} 只关注码无名称（名称表未覆盖）: "
+                         f"{','.join(still[:5])}")
     return codes, warns
 
 
@@ -951,6 +978,18 @@ def _run_chunked(stage: str, arts: list, title: str) -> tuple[dict | None, bool]
     return _merge_chunks(d_list), ok_all and any(d_list)
 
 
+def _stage_result(d: dict | None, ok: bool) -> dict:
+    """段结果归一：全败 → skipped；**部分批次失败 → 保留已解析数据 + degraded 标记**。
+
+    2026-09-08 前：任一批失败即整段丢弃，且标成 degraded=false——8 批里 1 批作废
+    = 全段消失（当日 09:25/19:05 两轮 micro 段实录），主编收到"[板块个股情报]
+    本窗口无输出"，交易侧整天没有股票级事件。部分成功的数据是有效的，没有理由丢。
+    """
+    if d is None:
+        return {"skipped": True, "degraded": True}
+    return {**d, "degraded": True} if not ok else d
+
+
 def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
                  window_until: str = "", force: bool = False) -> int:
     """完整管线。0=成功/空窗短路。每段独立降级，不因单段失败中断下游。
@@ -1048,7 +1087,7 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
         if stage == HOLD:
             user += "\n" + _watch_line(watch_codes).replace("关注代码", "当前实盘持仓/关注池代码")
         d, ok = _run_chunked(stage, arts_sub, user)
-        results[stage] = d if ok else {"skipped": True, "degraded": not d}
+        results[stage] = _stage_result(d, ok)
 
     tasks = []
     if MACRO in stages and (g_macro or not gate_active):

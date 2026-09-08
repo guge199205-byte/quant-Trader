@@ -464,3 +464,90 @@ def test_cli_parser_exposes_all_run_pipeline_args():
     assert ns.force is False  # 默认不强制
     assert N.build_arg_parser().parse_args(["--force"]).force is True
     assert N.build_arg_parser().parse_args(["--stage", "macro"]).stage == "macro"
+
+
+# ---------- 2026-09-08 巡检：部分批次失败的数据保全 / 持仓名兜底 / lessons 闭环 ----------
+
+def test_stage_result_keeps_partial_data():
+    """8 批里 1 批作废不该让整段消失（当日 09:25/19:05 micro 段实录）。"""
+    d = N._stage_result({"events": [{"name": "x"}]}, ok=False)
+    assert d["events"] == [{"name": "x"}] and d["degraded"] is True
+    assert N._stage_result(None, ok=False) == {"skipped": True, "degraded": True}
+    # 全成功：原样返回，不引入 degraded 键
+    assert N._stage_result({"events": []}, ok=True) == {"events": []}
+
+
+def test_seg_compact_marks_degraded_to_chief():
+    """主编必须知道这段是不完整数据（否则把部分当全部下结论）。"""
+    txt = N._seg_compact("news-micro", {"events": [
+        {"name": "北方铜业", "tickers": ["000737.SZ"], "event_type": "涨停异动",
+         "sentiment": 0.8}], "degraded": True})
+    assert "部分批次失败" in txt and "北方铜业" in txt
+    assert "部分批次失败" not in N._seg_compact("news-micro", {"events": []})
+
+
+def test_watch_codes_name_fallback(monkeypatch):
+    """桥 stock_name=None 时用全市场名称表兜底（实盘持仓两只实测都没有名字）。"""
+    import agent_tools.brokers.tdx_bridge as TB
+
+    class _B:
+        def _account_query(self):
+            return {"positions": [{"stock_code": "001312.SZ", "stock_name": None,
+                                   "total_volume": 1100},
+                                  {"stock_code": "600309.SH", "stock_name": "万华化学",
+                                   "total_volume": 500}]}
+
+    monkeypatch.setattr(TB, "TdxBridgeBroker", lambda *a, **k: _B())
+    import live_llm_trade as LT
+    monkeypatch.setattr(LT, "load_pool", lambda top=20: ([], {}))
+    monkeypatch.setattr(N, "_name_lookup",
+                        lambda: {"001312.SZ": "福恩股份", "600309.SH": "别处名字"})
+    codes, warns = N.load_watch_codes()
+    assert codes["001312.SZ"] == "福恩股份"   # 桥缺名 → 兜底
+    assert codes["600309.SH"] == "万华化学"   # 桥有名字 → 不覆盖
+    assert not warns
+
+
+def test_watch_codes_reports_uncovered_names(monkeypatch):
+    """名称表也没覆盖 → 如实告警，不静默（否则名称级命中永远不可能）。"""
+    import agent_tools.brokers.tdx_bridge as TB
+
+    class _B:
+        def _account_query(self):
+            return {"positions": [{"stock_code": "999999.SZ", "stock_name": None,
+                                   "total_volume": 100}]}
+
+    monkeypatch.setattr(TB, "TdxBridgeBroker", lambda *a, **k: _B())
+    import live_llm_trade as LT
+    monkeypatch.setattr(LT, "load_pool", lambda top=20: ([], {}))
+    monkeypatch.setattr(N, "_name_lookup", lambda: {})
+    codes, warns = N.load_watch_codes()
+    assert codes == {"999999.SZ": ""}
+    assert any("无名称" in w and "999999.SZ" in w for w in warns)
+
+
+def test_review_collect_rows_includes_micro_events():
+    """micro 事件是每日唯一稳定的个股级信号流：不纳入 → lessons 永远空。"""
+    briefs = [{"holdings": [], "segments": {"news-micro": {"events": [
+        {"tickers": ["000737.SZ"], "name": "北方铜业", "event_type": "涨停异动",
+         "sentiment": 0.8},
+        {"tickers": ["600000.SH"], "name": "浦发银行", "event_type": "公告",
+         "sentiment": 0.2},                                    # 弱信号 → 跳过
+        {"tickers": ["000002.SZ"], "name": "万科A", "event_type": "业绩",
+         "sentiment": -0.9},
+    ]}}}]
+    rows = R.collect_rows(briefs)
+    assert {r["code"] for r in rows} == {"000737.SZ", "000002.SZ"}
+    assert {r["verdict"] for r in rows} == {"利好", "利空"}
+    assert all(r["source"] == "micro" for r in rows)
+
+
+def test_review_collect_rows_tolerates_skipped_and_garbage_micro():
+    """段整体 skipped / sentiment 脏值 / tickers 缺失 → 不崩、不产生假信号。"""
+    briefs = [{"holdings": [], "segments": {"news-micro": {"skipped": True}}},
+              {"holdings": [], "segments": {"news-micro": {"events": [
+                  {"tickers": ["000001.SZ"], "event_type": "x", "sentiment": "坏值"},
+                  {"event_type": "y", "sentiment": 0.9},          # 无 tickers
+                  "不是字典",
+              ]}}}]
+    assert R.collect_rows(briefs) == []

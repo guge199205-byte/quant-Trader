@@ -2,7 +2,8 @@
 """晚间复盘 Agent（news-review）：当日新闻分子 vs 个股实际涨跌 → 信号有效性复盘。
 
 流程（交易日收盘后运行，cron 北京 22:30 = JST 23:30）：
-  1. 读当日 data/news_brief/history.jsonl（各轮分子，含 holdings 逐票 verdict/impact）
+  1. 读当日 data/news_brief/history.jsonl（各轮分子：holdings 逐票 verdict/impact
+     + micro 事件 sentiment）
   2. 汇总当日被点评过的代码 → 桥日K取「当日 bar vs 昨收」实际涨跌
   3. 逐条判定：利好&涨=hit(有用) / 利好&跌=reverse(反向) / |涨跌|≤1%=flat(无用)；利空对称
   4. 聚合进 data/news_brief/lessons.json（按 事件类型 × 来源 的 hit/reverse/flat 计数，
@@ -30,6 +31,7 @@ from news_brief import CN_TZ, HISTORY_FILE, LESSONS_FILE, append_log  # noqa: E4
 REVIEW = "news-review"
 AGENT_CN = "晚间复盘"
 FLAT_BAND = 1.0        # |当日涨跌| ≤ 1% 视为"无反应"
+MICRO_MIN_SENTIMENT = 0.5  # micro 事件 |sentiment| 低于此不参与复盘（弱信号宁精勿滥）
 MAX_CODES = 30         # 单日复盘个股上限（桥调用预算）
 
 
@@ -84,21 +86,53 @@ def collect_mentions(briefs: list[dict]) -> list[dict]:
 
 
 def collect_rows(briefs: list[dict]) -> list[dict]:
-    """各轮分子的 holdings 逐票行去重合并（同 code 同事件只留一条，保留最强 impact）。"""
+    """各轮分子的逐票信号去重合并（同 code 同事件只留一条，保留最强 impact）。
+
+    两个来源：
+    - holdings 逐票行（verdict 直接给出）——主编保真转写，但该段因"新闻没点名
+      持仓"常年为空（当日持仓股上不了快讯标题 → holdings 全天 0 条）
+    - micro 事件（sentiment -1..1 → 利好/利空）——**每日唯一稳定的个股级信号流**
+      （约 5 条/轮）
+
+    2026-09-08 前只复盘 holdings → rows 恒空 → lessons.json 恒为 `{}`，
+    "越用越准"的经验闭环从未启动。弱信号（|sentiment|<0.5）不参与，宁精勿滥。
+    """
     best: dict = {}
+
+    def _add(code, name, verdict: str, impact, event_type, source) -> None:
+        try:
+            imp = float(impact)
+        except (TypeError, ValueError):
+            return
+        if not code or verdict not in ("利好", "利空") or imp == 0:
+            return
+        key = (str(code), str(event_type or "")[:24])
+        prev = best.get(key)
+        if prev is None or abs(imp) > abs(float(prev.get("impact") or 0)):
+            best[key] = {"code": str(code), "name": str(name or ""),
+                         "verdict": verdict, "impact": imp,
+                         "event_type": str(event_type or ""),
+                         "source": str(source or "")}
+
     for b in briefs:
         for h in (b.get("holdings") or []):
-            if not isinstance(h, dict) or not h.get("code"):
+            if not isinstance(h, dict):
                 continue
-            code = str(h["code"])
-            verdict = str(h.get("verdict") or "中性")
-            impact = float(h.get("impact") or 0)
-            if verdict == "中性" or impact == 0:
-                continue  # 中性信号不参与有效性复盘
-            key = (code, str(h.get("event_type") or "")[:24])
-            prev = best.get(key)
-            if prev is None or abs(impact) > abs(float(prev.get("impact") or 0)):
-                best[key] = h
+            _add(h.get("code"), h.get("name"), str(h.get("verdict") or "中性"),
+                 h.get("impact"), h.get("event_type"), h.get("source"))
+        micro = (b.get("segments") or {}).get("news-micro") or {}
+        for e in (micro.get("events") or []):
+            if not isinstance(e, dict):
+                continue
+            try:
+                senti = float(e.get("sentiment"))
+            except (TypeError, ValueError):
+                continue
+            if abs(senti) < MICRO_MIN_SENTIMENT:
+                continue
+            for code in (e.get("tickers") or []):
+                _add(code, e.get("name"), "利好" if senti > 0 else "利空", senti,
+                     e.get("event_type"), "micro")
     return list(best.values())
 
 

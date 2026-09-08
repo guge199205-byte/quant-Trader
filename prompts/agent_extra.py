@@ -37,6 +37,9 @@ ROLE_SPECIFIC = {
 # 通用工具纪律（三 agent 一致，2026-09-03 评审结论）
 COMMON_RULES = """
 【工具与输出纪律（全员）】
+- baymax_price 的 A 股口径：只有 T-1 历史日K（quantdb，后复权价，与实时市价
+  不可直接比价），查当日/盘中必然为空——不要重试；实时价一律以系统注入的
+  行情快照为准，历史K线与财务改用 baymax_quantdb。
 - baymax_search（JINA 语义搜索）已配置可用：消息面优先用它，
   失败一次即改用 web_search/quantdb 新闻表，不要连续重试同一个失败工具。
 - 任何"条件动作"（跌破 X 减 N%、涨到 Y 兑现）必须同时输出为 watch 决策

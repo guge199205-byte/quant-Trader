@@ -5,22 +5,29 @@
 没接风险预算档位（2026-09-08 发现），而它才是每天第一笔买入的入口。
 闸门逻辑一旦分叉，风险预算就只兑现一半，且改动只能改到一半的路径上。
 
-职责边界：本模块只判"这笔买入能不能下"（halt/pct/池成员/新开仓上限），
+职责边界：本模块只判"这笔买入能不能下"（halt/标的边界/pct/池成员/新开仓上限），
 不碰行情、不碰账本；在途单去重、涨停不追、资金/杠杆/现金校验仍在调用方
 （它们需要实时行情与账户快照，不属于纯判定）。
 """
 from dataclasses import dataclass
 
+from symbol_policy import SymbolPolicy, check_symbol
+
 
 @dataclass(frozen=True)
 class BuyGate:
-    """买入闸门的静态参数（当日风险预算档位 + 候选池）。"""
+    """买入闸门的静态参数（当日风险预算档位 + 候选池 + 标的边界）。
+
+    policy 默认 `SymbolPolicy()`：**默认禁买 ST**——调用方忘读配置也守住底线；
+    黑名单需显式 `load_policy()`（见 symbol_policy）。
+    """
 
     pool_codes: frozenset
     per_stock_pct: float
     max_new_buys: int
     halted: bool = False
     halt_reason: str = ""
+    policy: SymbolPolicy = SymbolPolicy()
 
 
 @dataclass(frozen=True)
@@ -34,15 +41,19 @@ class BuyDecision:
 
 
 def check_buy(code: str, pct: float, held: bool, new_buys: int,
-              opened_today, gate: BuyGate) -> BuyDecision:
+              opened_today, gate: BuyGate, name: str | None = None) -> BuyDecision:
     """买入放行判定。
 
-    held=True（持仓内加仓）只受熔断与 pct 约束；held=False（新开仓）还须是
+    held=True（持仓内加仓）只受熔断/标的边界/pct 约束；held=False（新开仓）还须是
     候选池成员，且**单轮与当日累计**都 ≤ max_new_buys（风险预算口径=全天）。
     opened_today：当日已成交买入的代码集合（daily_buy_codes）。
+    name：标的名称，仅用于 ST/退市识别；取不到按非风险股放行（fail-open，见 symbol_policy）。
     """
     if gate.halted:
         return BuyDecision(False, f"当日已熔断（{gate.halt_reason}）")
+    risk = check_symbol(code, name, gate.policy)
+    if risk:
+        return BuyDecision(False, f"标的边界：{risk}")
     try:  # 模型可能吐字符串/None/脏值：闸门自身必须容错，绝不因脏输入炸掉下单流程
         pct = float(pct or 0)
     except (TypeError, ValueError):

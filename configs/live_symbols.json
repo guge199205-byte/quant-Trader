@@ -1,0 +1,5 @@
+{
+  "_note": "实盘标的边界（scripts/symbol_policy.py 读取）。block_buy 为操作员黑名单：这些代码一律禁止买入（卖出不受限），改完立即生效，无需重启。allow_st=true 才放行 ST/*ST/退市整理股（默认 false）。文件缺失或损坏 → 仍禁 ST，仅黑名单为空。",
+  "block_buy": [],
+  "allow_st": false
+}

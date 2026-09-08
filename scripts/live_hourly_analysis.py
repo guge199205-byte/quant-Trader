@@ -770,7 +770,9 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
         "```json",
         INTRA_DAY_SCHEMA,
         "```",
-        "规则：sell 的 pct=卖出可卖量的比例（0~1，清仓=1.0）；buy 的 pct=使用剩余额度的比例（≤0.2）；"
+        f"规则：sell 的 pct=卖出可卖量的比例（0~1，清仓=1.0）；buy 的 pct=使用剩余额度的比例"
+        f"（≤{PER_STOCK_PCT:.0%}，当日新开仓 ≤{MAX_NEW_BUYS} 只）；"
+        "ST/*ST/退市整理股与黑名单标的不可买入（闸门硬拦）；"
         "watch=挂条件位：stop_loss=跌破此价自动减仓 pct 比例、take_profit=涨到此价自动止盈 pct"
         "（至少给一个，由分钟级价格哨兵实时监控执行，不用等下一个整点）；"
         "move_stop=可选，价格**上触**该价后把 stop_loss 自动上移到该价（只用于浮盈锁利，"
@@ -835,7 +837,8 @@ def build_flat_content(pool: list, direction: dict, cash: float, agent: str,
         "```json",
         INTRA_DAY_SCHEMA,
         "```",
-        "规则：buy 的 pct=使用剩余额度的比例（≤0.2），最多建仓 3 只；"
+        f"规则：buy 的 pct=使用剩余额度的比例（≤{PER_STOCK_PCT:.0%}），"
+        f"最多建仓 {MAX_NEW_BUYS} 只；ST/*ST/退市整理股与黑名单标的不可买入（闸门硬拦）；"
         "候选池整体都不吸引人时全部 hold 保持空仓观望（空仓不丢人，等更好的机会）；"
         "你没有持仓，不要输出 sell；不要 watch 没持有的股票（哨兵无法执行）。",
     ]
@@ -1358,7 +1361,8 @@ def daily_buy_codes(agent: str, day: str | None = None,
 
 def execute_intraday_decision(broker, agent: str, decisions: list,
                               holdings: list, cash: float, dry_run: bool = True,
-                              pool_codes: set | None = None) -> list:
+                              pool_codes: set | None = None,
+                              names: dict | None = None) -> list:
     """盘中决策 → 闸门校验 → 桥下单 → 分账记账（按真实成交价/量）→ 交易日志。
 
     与 live_llm_trade.py 同一套安全闸门：
@@ -1370,10 +1374,12 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
               涨停不追、单票 ≤ 剩余额度 PER_STOCK_PCT、子账户虚拟现金不透支
               （分账额度红线）、加仓后杠杆 ≤ LEVERAGE_MAX×权益、账户现金兜底、
               已有在途买单不再重复下、**循环熔断**（当日已实现亏损 ≥5% 日初权益或
-              日内权益回撤 ≥6% → 该 agent 当日禁买，卖出照常；见 live_breaker）
+              日内权益回撤 ≥6% → 该 agent 当日禁买，卖出照常；见 live_breaker）、
+              **标的边界**（ST/*ST/退市整理股与操作员黑名单禁买；见 symbol_policy）
     - 成交回报：wait_fill 轮询桥当日委托，按真实 filled_price/filled_volume 记账；
       超时未确认挂 pending（live_fills.reconcile 兜底 ≤1 分钟）
     返回已执行/将执行的动作列表 [{action, code, volume, price, reason}]。
+    names：代码→名称（load_names），标的边界判定用；缺省时仅能按持仓行名称识别。
     """
     import time
 
@@ -1399,10 +1405,11 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
         print(f"  🛑 [{agent}] 循环熔断：{halt_reason} → 今日禁止买入（卖出照常）")
     # 买入闸门（纯函数，与 09:35 开盘轮共用同一实现，防两处判定漂移）
     from buy_gate import BuyGate, check_buy
+    from symbol_policy import load_policy
 
     gate = BuyGate(pool_codes=frozenset(pool_codes or ()),
                    per_stock_pct=PER_STOCK_PCT, max_new_buys=MAX_NEW_BUYS,
-                   halted=halt, halt_reason=halt_reason)
+                   halted=halt, halt_reason=halt_reason, policy=load_policy())
     for d in decisions:
         code = d["code"]
         h = next((x for x in holdings if x["code"] == code), None)
@@ -1434,7 +1441,8 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
             if code in pending_buy:
                 print(f"  ⏭️ [{agent}] 买入 {code}: 已有在途买单未确认，跳过")
                 continue
-            bd = check_buy(code, d["pct"], bool(h), new_buys, opened_today, gate)
+            bd = check_buy(code, d["pct"], bool(h), new_buys, opened_today, gate,
+                           name=(h or {}).get("name") or (names or {}).get(code))
             if not bd.ok:
                 print(f"  ⏭️ [{agent}] 买入 {code}: {bd.reason}，跳过")
                 continue
@@ -1894,7 +1902,8 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                           f"（分钟级哨兵监控）")
             executed = execute_intraday_decision(
                 broker, agent, exec_list, my_holdings, cash, dry_run=dry_run,
-                pool_codes={p.get("code") for p in pool} if pool else None)
+                pool_codes={p.get("code") for p in pool} if pool else None,
+                names=names)
             if executed:
                 tag = "🟡 DRY-RUN 决策" if dry_run else "✅ 已执行"
                 acts = "/".join(f"{e['action']} {e['code']}" for e in executed)

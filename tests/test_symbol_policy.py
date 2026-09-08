@@ -1,0 +1,165 @@
+"""标的边界（symbol_policy）：实盘买入的**标的级**硬约束。
+
+背景：候选池只约束"买什么"，不构成安全边界——池里出现 ST/*ST/退市整理股时
+买入路径此前照单全收（`ashare_rules` 只用 ST 算涨跌停幅度，没有禁买），
+`agent_tools/risk.py` 的 blacklist 又只作用于 MCP 路径。本测试锁定三条底线：
+风险股禁买、操作员黑名单禁买（不依赖名称）、名称缺失时放行（fail-open 取舍）。
+
+运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_symbol_policy.py -q
+"""
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
+from buy_gate import BuyGate, check_buy  # noqa: E402
+from symbol_policy import (SymbolPolicy, check_symbol, is_risky_name,  # noqa: E402
+                           load_policy)
+
+DEFAULT = SymbolPolicy()
+
+
+# ---------------------------------------------------------------- 风险股识别
+
+def test_st_variants_detected():
+    for n in ("ST中珠", "*ST海航", "SST前锋", "S*ST前锋", "st中珠", " *ST 海航 "):
+        assert is_risky_name(n), n
+
+
+def test_delisting_names_detected():
+    for n in ("退市海润", "海润退"):
+        assert is_risky_name(n), n
+
+
+def test_normal_names_not_flagged():
+    for n in ("贵州茅台", "万华化学", "宁德时代", "中国平安", "隆基绿能", ""):
+        assert not is_risky_name(n), n
+
+
+def test_missing_name_is_not_risky():
+    """名称取不到 → 不算风险股（放行；见模块 fail-open 说明）。"""
+    for n in (None, "", "   "):
+        assert not is_risky_name(n)
+
+
+# ---------------------------------------------------------------- 判定
+
+def test_st_buy_rejected_with_reason():
+    r = check_symbol("600666.SH", "*ST瑞德", DEFAULT)
+    assert "ST" in r and "600666.SH" in r
+
+
+def test_blacklist_rejected_without_name():
+    """黑名单按代码匹配：名称表拉不到也照样拦得住。"""
+    p = SymbolPolicy(block_buy=frozenset({"600666.SH"}))
+    assert "黑名单" in check_symbol("600666.SH", None, p)
+
+
+def test_blacklist_code_matching_ignores_case_and_space():
+    p = SymbolPolicy(block_buy=frozenset({"600666.SH"}))
+    assert "黑名单" in check_symbol(" 600666.sh ", "正常名称", p)
+
+
+def test_normal_symbol_passes():
+    assert check_symbol("600309.SH", "万华化学", DEFAULT) == ""
+
+
+def test_allow_st_operator_override():
+    p = SymbolPolicy(allow_st=True)
+    assert check_symbol("600666.SH", "*ST瑞德", p) == ""
+
+
+# ---------------------------------------------------------------- 配置加载
+
+def test_load_policy_missing_file_is_default(tmp_path):
+    p = load_policy(tmp_path / "nope.json")
+    assert p.block_buy == frozenset() and p.allow_st is False
+
+
+def test_load_policy_corrupt_file_is_default(tmp_path):
+    f = tmp_path / "bad.json"
+    f.write_text("{not json", encoding="utf-8")
+    assert load_policy(f) == SymbolPolicy()
+
+
+def test_load_policy_reads_and_normalizes(tmp_path):
+    f = tmp_path / "ok.json"
+    f.write_text(json.dumps({"block_buy": [" 600666.sh ", "", None],
+                             "allow_st": True, "_note": "x"}), encoding="utf-8")
+    p = load_policy(f)
+    assert p.block_buy == frozenset({"600666.SH"}) and p.allow_st is True
+
+
+def test_load_policy_bad_block_type_is_empty(tmp_path):
+    f = tmp_path / "ok.json"
+    f.write_text(json.dumps({"block_buy": "600666.SH"}), encoding="utf-8")
+    assert load_policy(f).block_buy == frozenset()
+
+
+# ---------------------------------------------------------------- 闸门接线
+
+def _gate(**kw) -> BuyGate:
+    base = {"pool_codes": frozenset({"600666.SH", "600309.SH"}),
+            "per_stock_pct": 0.2, "max_new_buys": 3}
+    base.update(kw)
+    return BuyGate(**base)
+
+
+def test_gate_blocks_st_new_position():
+    d = check_buy("600666.SH", 0.2, False, 0, set(), _gate(), name="*ST瑞德")
+    assert not d.ok and "标的边界" in d.reason
+
+
+def test_gate_blocks_st_add_on_existing_position():
+    """禁买是"这只不碰"，不是"别开新仓"——已持有的 ST 也不许加仓（卖出照常）。"""
+    d = check_buy("600666.SH", 0.2, True, 0, set(), _gate(), name="ST瑞德")
+    assert not d.ok and "标的边界" in d.reason
+
+
+def test_gate_blocks_st_even_when_caller_forgot_policy():
+    """默认 policy 即禁 ST：调用方忘读配置也守得住底线。"""
+    g = BuyGate(pool_codes=frozenset({"600666.SH"}), per_stock_pct=0.2, max_new_buys=3)
+    assert not check_buy("600666.SH", 0.2, False, 0, set(), g, name="*ST瑞德").ok
+
+
+def test_gate_allows_normal_pool_member():
+    d = check_buy("600309.SH", 0.2, False, 0, set(), _gate(), name="万华化学")
+    assert d.ok and d.pct == 0.2
+
+
+def test_gate_unknown_name_passes():
+    """名称缺失 → 放行（fail-open）：不能因名称表拉不到就停掉全天买入。"""
+    assert check_buy("600666.SH", 0.2, False, 0, set(), _gate()).ok
+
+
+def test_gate_operator_blacklist_blocks_pool_member():
+    p = SymbolPolicy(block_buy=frozenset({"600309.SH"}))
+    d = check_buy("600309.SH", 0.2, False, 0, set(), _gate(policy=p), name="万华化学")
+    assert not d.ok and "黑名单" in d.reason
+
+
+def test_gate_sell_side_unaffected():
+    """标的边界只拦买入：闸门根本不参与卖出判定（卖出由 execute_intraday_decision 直通）。"""
+    import live_hourly_analysis as H
+
+    out = H.execute_intraday_decision(
+        None, "test-agent-policy",
+        [{"action": "sell", "code": "600666.SH", "pct": 1.0, "reason": "清仓"}],
+        [{"code": "600666.SH", "avail": 1000, "day_chg": 1.0, "name": "*ST瑞德"}],
+        1e6, dry_run=True, pool_codes={"600666.SH"})
+    assert [e["action"] for e in out] == ["sell"]
+
+
+def test_hourly_executor_blocks_st_buy_via_names():
+    """真实入口：池内 ST 标的按 names 表识别后拦下（名称来自持仓行则直接用持仓名）。"""
+    import live_hourly_analysis as H
+
+    out = H.execute_intraday_decision(
+        None, "test-agent-policy",
+        [{"action": "buy", "code": "600666.SH", "pct": 0.2, "reason": "追涨"},
+         {"action": "buy", "code": "600309.SH", "pct": 0.2, "reason": "正常"}],
+        [], 1e6, dry_run=True, pool_codes={"600666.SH", "600309.SH"},
+        names={"600666.SH": "*ST瑞德", "600309.SH": "万华化学"})
+    assert [e["code"] for e in out] == ["600309.SH"]

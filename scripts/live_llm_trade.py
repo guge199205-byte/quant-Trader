@@ -236,8 +236,9 @@ def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
         "如果现有持股趋势/基本面仍优于候选池，可以全部 hold 不换股。",
         "2. 需要买入时从候选池选：优先分数高、行业顺大盘方向的；"
         "允许换仓（同轮先 sell 再 buy），以信号分数+板块主线+新闻分子综合权衡，不必拘泥原有持仓。",
-        "3. sell 的 pct = 卖出可卖量的比例（0~1）；buy 的 pct = 使用剩余额度的比例（每票 ≤0.2）。",
-        "4. T+1：可卖量 0 的持仓不能卖。",
+        f"3. sell 的 pct = 卖出可卖量的比例（0~1）；buy 的 pct = 使用剩余额度的比例"
+        f"（每票 ≤{PER_STOCK_PCT:.0%}，当日新开仓 ≤{MAX_NEW_BUYS} 只；超出的会被闸门裁掉）。",
+        "4. T+1：可卖量 0 的持仓不能卖。ST/*ST/退市整理股与黑名单标的**不可买入**（闸门硬拦）。",
         "5. 输出**严格 JSON**（不要 markdown 代码块、不要额外文字），格式：",
         DECISION_SCHEMA,
     ]
@@ -340,10 +341,14 @@ def main() -> int:
             print(f"  🛑 [{agent}] 循环熔断：{halt_reason} → 今日禁止买入（卖出照常）")
         # 买入闸门（纯函数，与整点轮共用同一实现，防两处判定漂移）
         from buy_gate import BuyGate, check_buy
+        from symbol_policy import load_policy
 
         gate = BuyGate(pool_codes=frozenset(p["code"] for p in pool),
                        per_stock_pct=PER_STOCK_PCT, max_new_buys=MAX_NEW_BUYS,
-                       halted=halt, halt_reason=halt_reason)
+                       halted=halt, halt_reason=halt_reason, policy=load_policy())
+        # 标的边界用的名称表：候选池 + 本 agent 持仓（ST/退市识别，见 symbol_policy）
+        nm_by_code = {p["code"]: p.get("name") for p in pool}
+        nm_by_code.update({h["code"]: h.get("name") for h in my_holdings})
         prompt = build_prompt(agent, my_holdings, pool_table, direction, remaining,
                               pool=pool)
         content, usage = "", None
@@ -393,7 +398,8 @@ def main() -> int:
                 print(f"  📉 [{agent}] 卖出 {code} {vol}/{avail}股 "
                       f"({d['pct']:.0%}): {d['reason']}")
             elif d["action"] == "buy":
-                bd = check_buy(code, d["pct"], bool(h), new_buys, opened_today, gate)
+                bd = check_buy(code, d["pct"], bool(h), new_buys, opened_today, gate,
+                               name=(h or {}).get("name") or nm_by_code.get(code))
                 if not bd.ok:
                     print(f"  ⏭️ [{agent}] 买入 {code}: {bd.reason}，跳过")
                     continue

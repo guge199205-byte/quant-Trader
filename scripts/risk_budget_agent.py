@@ -57,26 +57,169 @@ def _equity_drawdown() -> float | None:
         return None
 
 
-def _sentiment() -> tuple[int, int]:
-    """（涨停家数, 最高连板）Fuyao；失败返回 (None,None)。"""
+SENTIMENT_LOG = ROOT / "logs" / "sentiment_zt.jsonl"
+
+
+def _fuyao_get():
+    """Fuyao 客户端 get()（Key 从 .env 补；缺失时调用会返回 code=-1）。"""
+    import os
+
+    sys.path.insert(0, str(ROOT / "dsh/skills/ths-fuyao/scripts"))
+    from ths_fuyao import get
+
+    os.environ.setdefault("THS_FUYAO_KEY", "")
+    env = {}
+    for line in (ROOT / ".env").read_text().splitlines():
+        if line.startswith("THS_FUYAO_KEY="):
+            env["THS_FUYAO_KEY"] = line.split("=", 1)[1].strip().strip('"')
+    os.environ.update({k: v for k, v in env.items() if v})
+    return get
+
+
+def _bj_now() -> datetime:
+    """北京时区当前时间（服务器时区为 JST，窗口/日期判定一律显式换算）。"""
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("Asia/Shanghai"))
+
+
+def pool_count(payload: dict) -> int | None:
+    """涨跌停池家数：**必须读 pagination.total**（market_state 也复用此口径）。
+
+    item 被默认分页截断在 50 条——2026-09-08 实测真实涨停 72 家却被读成 50，
+    且「过热 >90 家」阈值永远够不着（永远是 50）。取不到 → None（≠ 真的 0 家）。
+    """
+    d = (payload or {}).get("data")
+    if not isinstance(d, dict):
+        return None
+    items = d.get("item")
+    if not isinstance(items, list):
+        return None
+    total = (d.get("pagination") or {}).get("total")
+    if isinstance(total, int) and total >= 0:
+        return int(total)
+    # 无分页字段：退回本页条数；**空列表且无分页 = 取数不可用（None）**，
+    # 不能当成"0 家涨停"——真 0 家会带 pagination.total=0（跌停池实测如此）
+    return len(items) if items else None
+
+
+def ladder_max(payload: dict, date: str | None = None) -> int | None:
+    """连板天梯最高板数（默认取响应里最新一天）。
+
+    响应形态（2026-09-08 实测）：item 是**近 30 个交易日**的分组行
+    `[{date, boards:{two_board:[{board_num}...], three_board:[...], ...}}]`——
+    既不是扁平列表，也没有 `continue_day` 字段。旧实现读 `continue_day` → 恒为 0，
+    注入给模型的"最高连板 0"是假数据。若不按日期取，历史某天的高板会串味
+    （实测 09-07 有 6 板、09-08 只有 4 板）。
+    """
+    d = (payload or {}).get("data")
+    if not isinstance(d, dict):
+        return None
+    items = d.get("item")
+    if not isinstance(items, list) or not items:
+        return None
+    rows = [r for r in items if isinstance(r, dict)]
+    if not rows:
+        return None
+    if all("boards" not in r for r in rows):  # 扁平形态兜底（端点若改版）
+        mx = 0
+        for r in rows:
+            try:
+                mx = max(mx, int(r.get("continue_day") or r.get("board_num") or 0))
+            except (TypeError, ValueError):
+                pass
+        return mx
+    if date:
+        picked = [r for r in rows if str(r.get("date") or "") == str(date)]
+        rows = picked or rows
+    else:
+        latest = max(str(r.get("date") or "") for r in rows)
+        rows = [r for r in rows if str(r.get("date") or "") == latest]
+    mx = 0
+    for r in rows:
+        boards = r.get("boards")
+        if not isinstance(boards, dict):
+            continue
+        for lst in boards.values():
+            if not isinstance(lst, list):
+                continue
+            for it in lst:
+                if isinstance(it, dict):
+                    try:
+                        mx = max(mx, int(it.get("board_num") or 0))
+                    except (TypeError, ValueError):
+                        pass
+    return mx
+
+
+def _fuyao_live() -> tuple[int, int | None] | None:
+    """盘中实时（涨停家数, 最高连板）；任何失败 → None。"""
     try:
-        import os
-
-        sys.path.insert(0, str(ROOT / "dsh/skills/ths-fuyao/scripts"))
-        from ths_fuyao import get
-
-        os.environ.setdefault("THS_FUYAO_KEY", "")
-        env = {}
-        for line in (ROOT / ".env").read_text().splitlines():
-            if line.startswith("THS_FUYAO_KEY="):
-                env["THS_FUYAO_KEY"] = line.split("=", 1)[1].strip().strip('"')
-        os.environ.update({k: v for k, v in env.items() if v})
-        zt = ((get("/api/a-share/special-data/limit-up-pool", {}).get("data") or {}).get("item")) or []
-        ld = ((get("/api/a-share/special-data/limit-up-ladder", {}).get("data") or {}).get("item")) or []
-        mx = max([int(x.get("continue_day") or 0) for x in ld] or [0])
-        return len(zt), mx
+        get = _fuyao_get()
+        pool = get("/api/a-share/special-data/limit-up-pool", {})
+        if pool.get("code") != 0:
+            return None
+        zt = pool_count(pool)
+        if zt is None:
+            return None
+        ld = get("/api/a-share/special-data/limit-up-ladder", {})
+        mx = ladder_max(ld) if ld.get("code") == 0 else None
+        return zt, mx
     except Exception:  # noqa: BLE001
-        return 0, 0
+        return None
+
+
+def record_sentiment(zt: int | None, ladder: int | None, ts: str | None = None) -> None:
+    """落盘一次盘中情绪观测（供次日盘前定档引用；写失败不影响主流程）。"""
+    if not isinstance(zt, int):
+        return
+    ts = ts or _bj_now().strftime("%Y-%m-%dT%H:%M:%S")
+    try:
+        SENTIMENT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(SENTIMENT_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": ts, "date": ts[:10], "zt": int(zt),
+                                "max_ladder": ladder}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _last_recorded() -> dict | None:
+    """最近一次盘中情绪观测（倒序取首个合法行）。"""
+    try:
+        lines = SENTIMENT_LOG.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(r, dict) and isinstance(r.get("zt"), int):
+            return r
+    return None
+
+
+def _sentiment(now=None) -> tuple[int | None, int | None, str]:
+    """(涨停家数, 最高连板, 口径说明)。
+
+    盘中 → 同花顺 Fuyao 实时（并落盘）；盘前/盘后 → **最近一次盘中记录**，
+    并如实标注日期。涨停池是盘中时点数据，盘前查必然为空（2026-09-08 前
+    每天 09:10 定档都读到 0 家 → 天天误判"情绪冰点" → 天天谨慎档）。
+    两者都取不到 → (None, None, "")，交给 decide_level 的 fail-safe 降级；
+    **绝不把"取不到数"当成"0 家涨停"**。
+    """
+    now = now or _bj_now()
+    hm = now.hour * 60 + now.minute
+    if now.weekday() < 5 and 9 * 60 + 15 <= hm <= 15 * 60 + 10:
+        live = _fuyao_live()
+        if live:
+            record_sentiment(live[0], live[1], now.strftime("%Y-%m-%dT%H:%M:%S"))
+            return live[0], live[1], "盘中实时（同花顺 Fuyao）"
+    rec = _last_recorded()
+    if rec:
+        return (int(rec["zt"]), rec.get("max_ladder"),
+                f"{rec.get('date', '')} 盘中记录（同花顺 Fuyao，非今日实时）")
+    return None, None, ""
 
 
 LEVELS = {
@@ -91,8 +234,20 @@ LEVELS = {
 
 def decide_level(vol: float | None, dd: float | None,
                 zt: int | None, ladder: int | None) -> tuple[str, list]:
-    """纯判定（P0-3 可测）：波动/回撤/情绪 → (档位, 触发因素)。"""
-    reasons = []
+    """纯判定（P0-3 可测）：波动/回撤/情绪 → (档位, 触发因素)。
+
+    fail-safe（2026-09-08）：风控输入缺失**不允许**落到最松档——数据故障时
+    宁可保守。关键输入缺 ≥2 项 → 防守；缺 1 项 → 至少谨慎。
+    此前行为：波动/回撤取不到时被静默跳过，只剩情绪闸 → 数据故障反而放宽，
+    属 fail-open（违反"风控故障不能跳过风控"）。
+    """
+    reasons, missing = [], []
+    if vol is None:
+        missing.append("指数波动")
+    if dd is None:
+        missing.append("分账回撤")
+    if zt is None:
+        missing.append("情绪温度")
     if vol is not None and vol >= 1.2:
         reasons.append(f"波动 {vol}% 偏高")
     if dd is not None and dd >= 5:
@@ -105,6 +260,10 @@ def decide_level(vol: float | None, dd: float | None,
         reasons.append(f"涨停 {zt} 家情绪过热")
     if dd is not None and dd >= 5:
         return "defensive", reasons
+    if len(missing) >= 2:
+        return "defensive", reasons + [f"风控数据缺失（{'、'.join(missing)}）→ 降级防守"]
+    if missing:
+        reasons.append(f"风控数据缺失（{'、'.join(missing)}）→ 至少谨慎")
     if reasons:
         return "caution", reasons
     return "calm", []
@@ -119,7 +278,7 @@ def main() -> int:
         return 0
     vol = _index_vol()
     dd = _equity_drawdown()
-    zt, ladder = _sentiment()
+    zt, ladder, senti_src = _sentiment()
     state_txt, reasons = decide_level(vol, dd, zt, ladder)
     lvl = LEVELS.get(state_txt)
     today = datetime.now().strftime("%Y-%m-%d")
@@ -139,7 +298,8 @@ def main() -> int:
     DETAIL.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps({"date": today, "level": effective}, ensure_ascii=False), encoding="utf-8")
     doc = {"date": today, "level": effective, "label": lvl["label"],
-           "inputs": {"vol20": vol, "drawdown20": dd, "limit_up": zt, "max_ladder": ladder},
+           "inputs": {"vol20": vol, "drawdown20": dd, "limit_up": zt, "max_ladder": ladder,
+                      "sentiment_source": senti_src or "无可用情绪数据"},
            "budget": {k: lvl[k] for k in ("leverage_max", "per_stock_pct", "max_new_buys",
                                           "leverage_trim_to")},
            "reasons": reasons,
@@ -158,7 +318,8 @@ def main() -> int:
     OUT.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
     (DETAIL / f"{today}.json").write_text(json.dumps(doc, ensure_ascii=False, indent=1),
                                           encoding="utf-8")
-    print(f"✅ 风险预算 → {state_txt}（{lvl['label']}）", "·".join(reasons) if reasons else "(平静)")
+    print(f"✅ 风险预算 → {state_txt}（{lvl['label']}）", "·".join(reasons) if reasons else "(平静)",
+          f"[情绪口径: {senti_src or '无数据'}]")
     return 0
 
 

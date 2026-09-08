@@ -154,28 +154,26 @@ def build_market_state(broker=None) -> str:
             sk = _os.path.expanduser("~/quant-Trader/dsh/skills/ths-fuyao/scripts")
             _sys.path.insert(0, sk)
             from ths_fuyao import get  # noqa: E402
+            # 分页口径复用 risk_budget_agent.pool_count（item 被截断在 50 条）；
+            # 天梯口径复用 ladder_max（item 是 30 日分组行，非扁平列表）
+            from risk_budget_agent import ladder_max, pool_count, record_sentiment  # noqa: E402
 
             def count(path):
                 d = get(path, {})
                 if d.get("code") != 0:
                     return None
-                items = (d.get("data") or {}).get("item")
-                return len(items) if isinstance(items, list) else None
+                return pool_count(d)
             zt, dt_, ladder = count("/api/a-share/special-data/limit-up-pool"), None, None
             dt_ = count("/api/a-share/special-data/limit-down-pool")
             ld = get("/api/a-share/special-data/limit-up-ladder", {})
-            max_lb = 0
-            if ld.get("code") == 0:
-                items = (ld.get("data") or {}).get("item") or []
-                for it in items:
-                    try:
-                        max_lb = max(max_lb, int(it.get("continue_day") or it.get("days") or 0))
-                    except Exception:  # noqa: BLE001
-                        pass
+            max_lb = ladder_max(ld) if ld.get("code") == 0 else None
             if zt is None:
                 return ""
+            # 盘中落盘一次（5 分钟 TTL 去重）：供次日 09:10 盘前定档引用——
+            # 盘前涨停池结构性为空，没有这条记录风控就只能读到 0 家（2026-09-08 修复）
+            record_sentiment(zt, max_lb, now.strftime("%Y-%m-%dT%H:%M:%S"))
             return (f"情绪温度（盘中·同花顺 {now:%H:%M}）：涨停 {zt} · 跌停 {dt_ if dt_ is not None else '—'}"
-                    f" · 最高连板 {max_lb}")
+                    f" · 最高连板 {max_lb if max_lb is not None else '—'}")
         except Exception:  # noqa: BLE001
             return ""
 

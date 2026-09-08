@@ -231,6 +231,33 @@ LEVELS = {
                   "leverage_trim_to": 1.0, "label": "防守"},
 }
 
+LIMIT_KEYS = ("leverage_max", "per_stock_pct", "max_new_buys", "leverage_trim_to")
+
+
+def load_limits(path: Path | None = None) -> dict:
+    """当日风控档位（风险预算输出 → **所有实盘入口共用**的硬约束）。
+
+    2026-09-08 前的漏洞：只有 live_hourly_analysis 读这份预算，09:35 主入口
+    （live_llm_trade）硬编码 1.5/20% 且没有新开仓上限——预算定档"防守"时
+    主入口仍按宽松档下单，风险预算只兑现了一半。统一从本函数取。
+    文件缺失/损坏 → {}（调用方保持各自默认，不阻断）。
+    """
+    try:
+        doc = json.loads((path or OUT).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    lv = doc.get("budget") or {}
+    out: dict = {}
+    for k in LIMIT_KEYS:
+        v = lv.get(k)
+        if v is None:
+            continue
+        try:
+            out[k] = int(v) if k == "max_new_buys" else float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
 
 def decide_level(vol: float | None, dd: float | None,
                 zt: int | None, ladder: int | None) -> tuple[str, list]:

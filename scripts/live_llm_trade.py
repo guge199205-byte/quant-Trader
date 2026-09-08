@@ -11,7 +11,8 @@
   2. 账户 + 分账账本: 现有持仓（成本/现价/盈亏/可卖量 T+1）与额度（¥10 万/agent）
   3. 决策: 每 agent 独立调 LLM，prompt 含持仓表/候选表/大盘方向/额度，
      「现有持股更优 → 全 hold 不换」由模型自行判断
-  4. 校验: 买入不追涨停、单票 ≤ 剩余额度 20%、100 股整数倍、账户现金兜底；
+  4. 校验: 买入走共用闸门 buy_gate（循环熔断 / 单票 ≤ 当日预算比例 / 候选池成员 /
+     新开仓单轮+当日双上限）、不追涨停、100 股整数倍、账户现金兜底；
      卖出只卖可卖量（T+1 当日买入跳过）、不接跌停
   5. 执行: 先卖后买 → 桥限价(±1%) → 分账记账 → 决策全文写模型对话 tab
 
@@ -67,7 +68,30 @@ LEVERAGE_MAX = 1.5
 CN_TZ = ZoneInfo("Asia/Shanghai")
 PICKS_JSON = ROOT / ".." / "projects" / "quantmind" / "data" / "reports" / "stock_picks"
 PER_STOCK_PCT = 0.2   # 单票买入 ≤ 剩余额度 20%
+MAX_NEW_BUYS = 3      # 新开仓上限：单轮 + 当日累计（风险预算 max_new_buys 覆盖）
 SELL_LIMIT_DOWN = -9.9  # 跌停不接
+
+
+def _apply_risk_budget() -> None:
+    """启动时读取当日风控档位覆盖常量（风险预算 meta-agent 输出）。
+
+    2026-09-08 前本文件硬编码 1.5/20% 且**没有新开仓上限**——预算定档"防守"
+    （1.0/10%/1 只）时，09:35 主入口仍按宽松档下单，风险预算只兑现了一半。
+    口径与 live_hourly_analysis 共用 risk_budget_agent.load_limits。
+    """
+    global LEVERAGE_MAX, PER_STOCK_PCT, MAX_NEW_BUYS
+    try:
+        from risk_budget_agent import load_limits
+
+        lim = load_limits()
+    except Exception:  # noqa: BLE001
+        return
+    LEVERAGE_MAX = lim.get("leverage_max", LEVERAGE_MAX)
+    PER_STOCK_PCT = lim.get("per_stock_pct", PER_STOCK_PCT)
+    MAX_NEW_BUYS = lim.get("max_new_buys", MAX_NEW_BUYS)
+
+
+_apply_risk_budget()
 
 
 def _quote_guarded_price(broker, code: str, fp: float) -> tuple[float, bool]:
@@ -295,7 +319,7 @@ def main() -> int:
     pool_table = pool_rows(pool)
     print(f"📋 候选池 {len(pool)} 只  大盘: {direction.get('direction', '—')}")
 
-    from live_hourly_analysis import append_log, call_llm
+    from live_hourly_analysis import append_log, call_llm, daily_buy_codes
 
     agents = [a.strip() for a in args.agents.split(",") if a.strip()] or enabled_agents()
     ledger = load_ledger()
@@ -314,6 +338,12 @@ def main() -> int:
         halt, halt_reason = check_and_trip(agent, persist=bool(args.execute))
         if halt:
             print(f"  🛑 [{agent}] 循环熔断：{halt_reason} → 今日禁止买入（卖出照常）")
+        # 买入闸门（纯函数，与整点轮共用同一实现，防两处判定漂移）
+        from buy_gate import BuyGate, check_buy
+
+        gate = BuyGate(pool_codes=frozenset(p["code"] for p in pool),
+                       per_stock_pct=PER_STOCK_PCT, max_new_buys=MAX_NEW_BUYS,
+                       halted=halt, halt_reason=halt_reason)
         prompt = build_prompt(agent, my_holdings, pool_table, direction, remaining,
                               pool=pool)
         content, usage = "", None
@@ -331,6 +361,8 @@ def main() -> int:
             continue
         # 决策展示 + 校验
         sells, buys, summary = [], [], [f"（模型自主调仓决策，{now_cn():%F %T}）"]
+        new_buys = 0                          # 本轮新开仓计数
+        opened_today = daily_buy_codes(agent)  # 当日已开仓代码（09:35 可能晚于整点轮）
         for d in decisions:
             code = d["code"]
             if d["action"] == "hold":
@@ -361,18 +393,13 @@ def main() -> int:
                 print(f"  📉 [{agent}] 卖出 {code} {vol}/{avail}股 "
                       f"({d['pct']:.0%}): {d['reason']}")
             elif d["action"] == "buy":
-                if code not in {p["code"] for p in pool}:
-                    print(f"  ⚠️ [{agent}] 买入 {code}: 不在候选池，跳过")
+                bd = check_buy(code, d["pct"], bool(h), new_buys, opened_today, gate)
+                if not bd.ok:
+                    print(f"  ⏭️ [{agent}] 买入 {code}: {bd.reason}，跳过")
                     continue
-                pct = min(max(d["pct"], 0), PER_STOCK_PCT)
-                if pct <= 0:
-                    print(f"  ⏭️ [{agent}] 买入 {code}: pct=0，跳过")
-                    continue
-                if halt:
-                    print(f"  🛑 [{agent}] 买入 {code}: 当日已熔断（{halt_reason}），跳过")
-                    continue
-                buys.append((code, pct, d["reason"]))
-                print(f"  📈 [{agent}] 买入 {code} 用剩余额度 {pct:.0%}"
+                new_buys = bd.new_buys
+                buys.append((code, bd.pct, d["reason"]))
+                print(f"  📈 [{agent}] 买入 {code} 用剩余额度 {bd.pct:.0%}"
                       f"（≤{PER_STOCK_PCT:.0%}）: {d['reason']}")
         if not sells and not buys:
             print(f"  ⏸️ [{agent}] 无买卖动作（全 hold）")

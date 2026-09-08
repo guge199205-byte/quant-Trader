@@ -64,18 +64,19 @@ MAX_NEW_BUYS = 3         # 空仓 agent 单轮建仓上限（每只 ≤ 20% 剩�
 
 
 def _apply_risk_budget() -> None:
-    """启动时读取 configs/risk_budget.json 覆盖风控常量（阶段4 meta-agent 输出）。
+    """启动时读取风控档位覆盖常量（阶段4 meta-agent 输出；口径见 risk_budget_agent.load_limits）。
     文件缺失/损坏 → 保持模块默认。cron 每次调用都是新进程 → 每轮即最新预算。"""
     global LEVERAGE_MAX, PER_STOCK_PCT, MAX_NEW_BUYS, LEVERAGE_TRIM_TO
     try:
-        b = json.loads((ROOT / "configs" / "risk_budget.json").read_text(encoding="utf-8"))
-        lv = b.get("budget") or {}
-        LEVERAGE_MAX = float(lv.get("leverage_max", LEVERAGE_MAX))
-        PER_STOCK_PCT = float(lv.get("per_stock_pct", PER_STOCK_PCT))
-        MAX_NEW_BUYS = int(lv.get("max_new_buys", MAX_NEW_BUYS))
-        LEVERAGE_TRIM_TO = float(lv.get("leverage_trim_to", LEVERAGE_TRIM_TO))
-    except (OSError, ValueError, TypeError):
-        pass
+        from risk_budget_agent import load_limits
+
+        lim = load_limits()
+    except Exception:  # noqa: BLE001
+        return
+    LEVERAGE_MAX = lim.get("leverage_max", LEVERAGE_MAX)
+    PER_STOCK_PCT = lim.get("per_stock_pct", PER_STOCK_PCT)
+    MAX_NEW_BUYS = lim.get("max_new_buys", MAX_NEW_BUYS)
+    LEVERAGE_TRIM_TO = lim.get("leverage_trim_to", LEVERAGE_TRIM_TO)
 
 
 _apply_risk_budget()
@@ -1396,6 +1397,12 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
     halt, halt_reason = check_and_trip(agent, persist=not dry_run)
     if halt:
         print(f"  🛑 [{agent}] 循环熔断：{halt_reason} → 今日禁止买入（卖出照常）")
+    # 买入闸门（纯函数，与 09:35 开盘轮共用同一实现，防两处判定漂移）
+    from buy_gate import BuyGate, check_buy
+
+    gate = BuyGate(pool_codes=frozenset(pool_codes or ()),
+                   per_stock_pct=PER_STOCK_PCT, max_new_buys=MAX_NEW_BUYS,
+                   halted=halt, halt_reason=halt_reason)
     for d in decisions:
         code = d["code"]
         h = next((x for x in holdings if x["code"] == code), None)
@@ -1424,36 +1431,22 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
             sells.append((code, vol, d["reason"], raw_vol))
             print(f"  📉 [{agent}] 卖出 {code} {vol}/{avail}股 ({d['pct']:.0%}): {d['reason']}")
         elif d["action"] == "buy":
-            if halt:
-                print(f"  🛑 [{agent}] 买入 {code}: 当日已熔断（{halt_reason}），跳过")
-                continue
             if code in pending_buy:
                 print(f"  ⏭️ [{agent}] 买入 {code}: 已有在途买单未确认，跳过")
                 continue
-            pct = min(max(d["pct"], 0), PER_STOCK_PCT)
-            if pct <= 0:
-                print(f"  ⏭️ [{agent}] 买入 {code}: pct=0，跳过")
+            bd = check_buy(code, d["pct"], bool(h), new_buys, opened_today, gate)
+            if not bd.ok:
+                print(f"  ⏭️ [{agent}] 买入 {code}: {bd.reason}，跳过")
                 continue
+            new_buys = bd.new_buys
             if not h:
-                # 非持仓买入 = 新开仓：必须在候选池内（持仓 agent 也可，兑现"允许换仓"），
-                # 且单轮 + 当日累计都受 MAX_NEW_BUYS 约束（风险预算口径=全天）
-                if not pool_codes or code not in pool_codes:
-                    print(f"  ⚠️ [{agent}] 买入 {code}: 非当前持仓且不在候选池，跳过")
-                    continue
-                if new_buys >= MAX_NEW_BUYS:
-                    print(f"  ⏭️ [{agent}] 买入 {code}: 本轮新开仓已达上限 {MAX_NEW_BUYS} 只，跳过")
-                    continue
-                if code not in opened_today and len(opened_today) >= MAX_NEW_BUYS:
-                    print(f"  ⏭️ [{agent}] 买入 {code}: 当日新开仓已达上限 {MAX_NEW_BUYS} 只"
-                          f"（已开 {'、'.join(sorted(opened_today))}），跳过")
-                    continue
-                new_buys += 1
                 print(f"  🆕 [{agent}] 买入 {code}: 新开仓（候选池内，本轮第 {new_buys} 只）")
             if h and at_limit_up(code, h['day_chg'], h.get('name')):
                 print(f"  ⏭️ [{agent}] 买入 {code}: 涨停（{h['day_chg']:+.2f}%），不追")
                 continue
-            buys.append((code, pct, d["reason"]))
-            print(f"  📈 [{agent}] 买入 {code} 用剩余额度 {pct:.0%}（≤{PER_STOCK_PCT:.0%}）: {d['reason']}")
+            buys.append((code, bd.pct, d["reason"]))
+            print(f"  📈 [{agent}] 买入 {code} 用剩余额度 {bd.pct:.0%}"
+                  f"（≤{PER_STOCK_PCT:.0%}）: {d['reason']}")
 
     if dry_run:
         for code, vol, _reason, _iv in sells:

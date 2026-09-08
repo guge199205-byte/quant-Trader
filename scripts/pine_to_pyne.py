@@ -41,6 +41,9 @@ if _PINE_SITE.is_dir() and str(_PINE_SITE) not in sys.path:
 OUT_DIR = Path(__file__).resolve().parents[1] / "data/pine_transpile"
 LAB_DIR = ROOT / "backend/services/lab_strategies"
 MODEL = "deepseek-v4-flash"
+# 推理模型的 reasoning token 也计入 completion，8k 上限会被思考过程吃掉大半
+# （0001 斐波那契云就是这么被截断的）。max_tokens 是上限不是目标，调大不额外花钱。
+MAX_TOKENS = 32000
 
 # 危险调用黑名单：转写产物是要被执行的，先在静态阶段挡一道。
 BANNED = [
@@ -131,13 +134,13 @@ def call_llm(system: str, user: str, model: str) -> tuple[str, dict | None]:
     payload = {"model": model,
                "messages": [{"role": "system", "content": system},
                             {"role": "user", "content": user}],
-               "temperature": 0.1, "max_tokens": 8000}
+               "temperature": 0.1, "max_tokens": MAX_TOKENS}
     last: Exception | None = None
     for attempt in range(2):
         try:
             resp = requests.post(f"{base}/chat/completions",
                                  headers={"Authorization": f"Bearer {key}"},
-                                 json=payload, timeout=180)
+                                 json=payload, timeout=600)
             resp.raise_for_status()
             break
         except Exception as exc:  # noqa: BLE001
@@ -308,7 +311,12 @@ def main() -> int:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         print(f"复用已有候选：{meta.get('title')}（--force 可重新转写）")
     else:
-        meta = transpile(args.id, model=args.model)
+        try:
+            meta = transpile(args.id, model=args.model)
+        except RuntimeError as exc:
+            # 队列 worker 拿最后一行当界面上的失败原因，所以这里只打一行、不打栈
+            print(f"转写失败：{exc}")
+            return 3
         print(f"转写完成：{meta['title']}（{meta['elapsed_sec']}s，{meta['usage']}）")
     if meta["problems"]:
         print("静态检查未通过：")

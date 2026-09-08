@@ -134,6 +134,35 @@ class TestLock:
             first.close()
 
 
+class TestLastLine:
+    def test_picks_last_non_empty(self):
+        assert w._last_line("a\n\n  b  \n") == "b"
+
+    def test_empty_is_empty(self):
+        assert w._last_line("") == "" and w._last_line(None) == ""
+
+
+class TestFailureDetail:
+    """失败原因要能直接给用户看，不能只剩 exit code。"""
+
+    def test_transpile_failure_surfaces_cli_message(self, out_dir, monkeypatch):
+        def fake_run(argv, timeout):
+            return subprocess.CompletedProcess(
+                argv, 3, stdout="转写失败：模型输出被 max_tokens 截断\n", stderr="")
+
+        monkeypatch.setattr(w, "_run", fake_run)
+        job = w.process({"id": "0001", "symbol": "600309.SH"})
+        assert job["status"] == "failed" and job["stage"] == "transpile"
+        assert job["error"] == "转写失败：模型输出被 max_tokens 截断"
+
+    def test_silent_failure_falls_back_to_exit_code(self, out_dir, monkeypatch):
+        def fake_run(argv, timeout):
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+
+        monkeypatch.setattr(w, "_run", fake_run)
+        assert w.process({"id": "0005", "symbol": "600309.SH"})["error"] == "转写失败（exit 1）"
+
+
 class TestMain:
     def test_consumes_queue_and_clears_request(self, out_dir, monkeypatch):
         (out_dir / "queue/0001.json").write_text(

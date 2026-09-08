@@ -45,6 +45,33 @@ class TestExtractCode:
         assert ptp.extract_code("x = 1") == "x = 1\n"
 
 
+class TestCallLlm:
+    def test_uses_generous_max_tokens(self, monkeypatch):
+        """推理模型的 reasoning token 也计入 completion——8k 上限会把长策略的
+        输出截断（0001 就是这样失败的），这里锁住这个上限别再被调回去。"""
+        import requests
+
+        seen: dict = {}
+
+        class FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"choices": [{"message": {"content": "x"}, "finish_reason": "stop"}]}
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            seen.update(json or {})
+            return FakeResp()
+
+        monkeypatch.setattr(ptp, "_env", lambda: {"OPENAI_API_BASE": "http://x",
+                                                  "OPENAI_API_KEY": "k"})
+        monkeypatch.setattr(requests, "post", fake_post)
+        ptp.call_llm("system", "user", "m")
+        assert seen["max_tokens"] == ptp.MAX_TOKENS
+        assert ptp.MAX_TOKENS >= 16000
+
+
 class TestStaticCheck:
     def test_template_passes(self):
         assert ptp.static_check(GOOD) == []

@@ -38,7 +38,7 @@ QUEUE_DIR = OUT_DIR / "queue"
 LOCK_PATH = OUT_DIR / "worker.lock"
 CLI = ROOT / "scripts/pine_to_pyne.py"
 
-TRANSPILE_TIMEOUT = 300
+TRANSPILE_TIMEOUT = 900      # 推理模型 + 32k 上限，长策略一次转写可能好几分钟
 BACKTEST_TIMEOUT = 180
 LOG_TAIL = 2000
 
@@ -69,6 +69,14 @@ def _write_job(item_id: str, **fields) -> dict:
 def _tail(text: str) -> str:
     text = (text or "").strip()
     return text[-LOG_TAIL:] if len(text) > LOG_TAIL else text
+
+
+def _last_line(text: str) -> str:
+    """最后一行非空输出——CLI 失败时把原因打成一行，界面直接显示它（别只给 exit code）。"""
+    for ln in reversed((text or "").strip().splitlines()):
+        if ln.strip():
+            return ln.strip()[:200]
+    return ""
 
 
 def sandbox_cmd(item_dir: Path, argv: list[str]) -> list[str]:
@@ -118,8 +126,10 @@ def process(req: dict) -> dict:
         return _write_job(item_id, status="failed", stage="transpile",
                           error=f"转写超时（>{TRANSPILE_TIMEOUT}s）")
     if got.returncode not in (0, 2):
+        detail = _last_line(got.stdout + "\n" + got.stderr)
         return _write_job(item_id, status="failed", stage="transpile",
-                          error=f"转写失败（exit {got.returncode}）", log=_tail(got.stderr))
+                          error=detail or f"转写失败（exit {got.returncode}）",
+                          log=_tail(got.stdout + got.stderr))
 
     # ---- 2. 静态闸 ----
     meta = {}
@@ -148,8 +158,9 @@ def process(req: dict) -> dict:
         return _write_job(item_id, status="failed", stage="backtest",
                           error=f"回测超时（>{BACKTEST_TIMEOUT}s）")
     if got.returncode != 0:
+        detail = _last_line(got.stdout + "\n" + got.stderr)
         return _write_job(item_id, status="failed", stage="backtest",
-                          error=f"回测失败（exit {got.returncode}）",
+                          error=detail or f"回测失败（exit {got.returncode}）",
                           log=_tail(got.stdout + got.stderr))
     return _write_job(item_id, status="done", stage="done", error="", problems=[],
                       log=_tail(got.stdout))

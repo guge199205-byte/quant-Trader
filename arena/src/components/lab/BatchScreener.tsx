@@ -39,7 +39,10 @@ export default function BatchScreener({
   const [err, setErr] = useState('');
 
   useEffect(() => {
-    setSid((cur) => cur || (strategies[0]?.id ?? ''));
+    // 换批次后当前策略可能不在新批次里 → 退回第一个，否则下拉框空值、表格空转
+    setSid((cur) =>
+      strategies.some((s) => s.id === cur) ? cur : (strategies[0]?.id ?? ''),
+    );
   }, [strategies]);
 
   useEffect(() => {

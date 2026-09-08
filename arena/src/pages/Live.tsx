@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   BenchPoint,
@@ -27,7 +27,7 @@ import {
   triggerNewsAnalysis,
 } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
-import EquityChart, { toBenchLine, toChartLine, HoldingSpan } from '../components/EquityChart';
+import EquityChart, { toBenchLine, toChartLine, HoldingSpan, ChartLine } from '../components/EquityChart';
 import RealAccountPanel from '../components/RealAccountPanel';
 import ModelCard, { modelColor, shortName } from '../components/ModelCard';
 import ChatStream from '../components/ChatStream';
@@ -326,6 +326,15 @@ export default function Live() {
 
   // 实盘账户净值（A股：每分钟采样，前端 20s 轮询尽量实时）
   const liveEquity = usePolling(() => fetchLiveEquity(), [], 60000, 15000);
+  // 实盘数据成功过一次后保留最后一帧：单轮轮询失败/延迟时仍画实盘旧帧，
+  // 不再整图回退到模拟盘序列（启动后换源闪变的根因之一）
+  const liveEqRef = useRef(liveEquity.data);
+  useEffect(() => {
+    if (liveEquity.data) liveEqRef.current = liveEquity.data;
+  }, [liveEquity.data]);
+  const liveEq = liveEquity.data ?? liveEqRef.current;
+  // 最近一次成功绘制的实盘线帧：轮询空 payload/失败期间保持旧帧，不回退 perfs 模拟盘
+  const liveLinesRef = useRef<ChartLine[] | null>(null);
   // 实盘 LLM 分析 token 累计（30s 刷新，模型卡显示）
   const tokenUsage = usePolling(() => fetchTokenUsage(), [], 30000, 8000);
   // 实盘账本/成交（上移：空仓段反推在 lines memo 里要用）
@@ -333,7 +342,7 @@ export default function Live() {
   const liveTrades = usePolling(() => fetchLiveTradesFor(market), [market], 30000, 7000);
 
   const lines = useMemo(() => {
-    const eq = liveEquity.data;
+    const eq = liveEq;
     // 实盘采样必须用完整时间戳 ts（含时刻），date 只是 YYYY-MM-DD 会把当天所有点挤到零点
     const toEq = (v: number, ts: string) => ({ date: ts, cash: 0, market_value: 0, equity: v });
     // A股实盘优先：每 agent 分账虚拟净值线（¥10 万起，通达信桥实时价）
@@ -383,9 +392,14 @@ export default function Live() {
             )
           : null;
       if (agentLines.length || totalLine) {
-        return [...agentLines, ...(totalLine ? [totalLine] : [])];
+        const liveLines = [...agentLines, ...(totalLine ? [totalLine] : [])];
+        liveLinesRef.current = liveLines; // 留存本帧: 空档期(空仓休息/盘中故障)保持展示
+        return liveLines;
       }
     }
+    // 曾成功画过实盘帧 → 空 payload/请求失败期间保持旧帧（此时后端常回空 agents/total，
+    // 直接回退 perfs 会让图上内容整图换源闪变）。从未有过实盘帧才走模拟盘兜底。
+    if (market === 'cn' && liveLinesRef.current) return liveLinesRef.current;
     return (perfs.data ?? []).map((p) =>
       toChartLine(p.agent, p.agent, modelColor(p.agent), p.points),
     );
@@ -417,11 +431,11 @@ export default function Live() {
 
   // 实盘 5 分钟净值模式（CN 有实盘点）：不画基准线——SSE50 日线会把时间轴拉到 8 月初
   const hasLiveLine = useMemo(() => {
-    const eq = liveEquity.data;
+    const eq = liveEq;
     if (market !== 'cn' || !eq) return false;
     if ((eq.total ?? []).length >= 2) return true;
     return Object.values(eq.agents ?? {}).some((pts) => pts.length >= 2);
-  }, [market, liveEquity.data]);
+  }, [market, liveEq]);
 
   const benchLine = useMemo(
     () =>

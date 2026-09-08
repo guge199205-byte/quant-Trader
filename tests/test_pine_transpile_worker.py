@@ -53,6 +53,7 @@ class TestSandboxCmd:
 
 class TestProcess:
     def test_static_failure_never_reaches_backtest(self, out_dir, monkeypatch):
+        """静态检查没过的候选永远不进沙箱——修不好也只能停在静态阶段。"""
         calls: list[list[str]] = []
 
         def fake_run(argv, timeout):
@@ -70,7 +71,32 @@ class TestProcess:
         job = w.process({"id": "0001", "symbol": "600309.SH"})
         assert job["status"] == "failed" and job["stage"] == "static"
         assert job["problems"] == ["禁止动态执行：eval("]
-        assert len(calls) == 1  # 只有转写那一次
+        # 转写一次 + 修复 MAX_REPAIRS 次；一次回测都没跑
+        assert len(calls) == 1 + w.MAX_REPAIRS
+        assert all(r[0] != "bwrap" for r in calls)
+
+    def test_initial_static_problems_get_repaired_then_backtested(self, out_dir, monkeypatch):
+        """首轮语法错误也要修（30 条抽样里 8 条卡在这），修好再进沙箱。"""
+        runs: list[list[str]] = []
+
+        def fake_run(argv, timeout):
+            runs.append(argv)
+            d = out_dir / "0009"
+            d.mkdir(parents=True, exist_ok=True)
+            if argv[0] == "bwrap":
+                return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+            repaired = any("--repair" in r for r in runs)
+            (d / "meta.json").write_text(json.dumps(
+                {"problems": [] if repaired else ["语法错误：invalid syntax（第 3 行）"]}),
+                encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+        monkeypatch.setattr(w, "_run", fake_run)
+        monkeypatch.setattr(w, "sandbox_cmd", lambda item_dir, argv: ["bwrap", *argv])
+
+        job = w.process({"id": "0009", "symbol": "600309.SH"})
+        assert job["status"] == "done"
+        assert [r[0] for r in runs] == [w.sys.executable, w.sys.executable, "bwrap"]
 
     def test_happy_path_runs_transpile_then_sandboxed_backtest(self, out_dir, monkeypatch):
         calls: list[list[str]] = []
@@ -175,7 +201,10 @@ class TestProcess:
         assert job["error"] == "修复失败：模型输出被 max_tokens 截断"
 
     def test_static_problems_after_repair_reported(self, out_dir, monkeypatch):
-        """修完语法又坏了：报 stage=static 并把 problems 带上，界面才说得清。"""
+        """修完语法又坏了：报 stage=static 并把 problems 带上，界面才说得清。
+
+        repair CLI 此时 exit 2（修了但仍有静态问题）——必须继续下一轮，不能当失败退出。
+        """
         runs: list[list[str]] = []
 
         def fake_run(argv, timeout):
@@ -186,7 +215,8 @@ class TestProcess:
                 return subprocess.CompletedProcess(argv, 2, stdout="静态检查未通过", stderr="")
             problems = (["语法错误：invalid syntax（第 3 行）"] if "--repair" in argv else [])
             (d / "meta.json").write_text(json.dumps({"problems": problems}), encoding="utf-8")
-            return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+            return subprocess.CompletedProcess(argv, 2 if "--repair" in argv else 0,
+                                               stdout="ok", stderr="")
 
         monkeypatch.setattr(w, "_run", fake_run)
         monkeypatch.setattr(w, "sandbox_cmd", lambda item_dir, argv: ["bwrap", *argv])

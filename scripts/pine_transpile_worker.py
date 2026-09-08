@@ -5,8 +5,8 @@
 写一个请求——容器里没有 bwrap，也不该执行模型产出的代码。本脚本在宿主上消费队列：
 
   1. 转写段：调模型把 .pine 翻成 Pyne-Python（要联网，普通子进程）
-  2. 静态闸：meta.json 的 problems 非空 → 直接失败，候选永不进回测
-  3. 回测段：bwrap 沙箱里跑（只读根 + 断网 + 只把该策略目录挂成可写）
+  2. 校验段：静态闸 → bwrap 沙箱回测（只读根 + 断网 + 只把该策略目录挂成可写）；
+     哪一段不过都把原因喂回模型重修，最多 MAX_REPAIRS 轮
 
 沙箱不是可选项：候选是模型产物，静态检查只是速度闸不是沙箱。bwrap 缺失直接拒跑，
 不允许静默降级成裸执行。
@@ -40,7 +40,7 @@ CLI = ROOT / "scripts/pine_to_pyne.py"
 
 TRANSPILE_TIMEOUT = 900      # 推理模型 + 32k 上限，长策略一次转写可能好几分钟
 BACKTEST_TIMEOUT = 180
-MAX_REPAIRS = 2             # 回测报错喂回模型重修的轮数上限
+MAX_REPAIRS = 2             # 报错喂回模型重修的轮数上限（静态闸与回测都算）
 LOG_TAIL = 2000
 
 
@@ -142,44 +142,46 @@ def process(req: dict) -> dict:
                           error=detail or f"转写失败（exit {got.returncode}）",
                           log=_tail(got.stdout + got.stderr))
 
-    # ---- 2. 静态闸 ----
-    problems = _read_meta(item_dir).get("problems") or []
-    if problems:
-        return _write_job(item_id, status="failed", stage="static",
-                          error="静态检查未通过", problems=problems,
-                          log=_tail(got.stdout + got.stderr))
-
-    # ---- 3. 沙箱回测：跑不通就把报错喂回模型重修，最多 MAX_REPAIRS 轮 ----
+    # ---- 2. 静态闸 + 沙箱回测：哪一段不过都把原因喂回模型重修，最多 MAX_REPAIRS 轮 ----
+    # 首次转写的语法错误也走这个循环：实测 30 条抽样里 8 条卡在 Pine 残留语法，
+    # 直接判死太浪费，模型看一眼报错基本能改对。
     for attempt in range(MAX_REPAIRS + 1):
-        _write_job(item_id, status="running", stage="backtest", attempt=attempt + 1)
-        try:
-            argv = sandbox_cmd(item_dir, ["--id", item_id, "--no-transpile",
-                                          "--validate", symbol, "--adj", adj])
-        except RuntimeError as exc:
-            return _write_job(item_id, status="failed", stage="backtest", error=str(exc))
-        try:
-            got = _run(argv, BACKTEST_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            return _write_job(item_id, status="failed", stage="backtest",
-                              error=f"回测超时（>{BACKTEST_TIMEOUT}s）")
-        if got.returncode == 0:
-            return _write_job(item_id, status="done", stage="done", error="", problems=[],
-                              log=_tail(got.stdout))
-
-        # 失败原因：静态闸（修完语法又坏了）优先，否则用 traceback
         problems = _read_meta(item_dir).get("problems") or []
+        got = None
         if problems:
             stage = "static"
             detail = "静态检查未通过：" + "；".join(problems)
             feedback = detail
         else:
-            stage = "backtest"
-            detail = _last_line(got.stdout + "\n" + got.stderr)
-            feedback = _tail(got.stdout + "\n" + got.stderr)
+            _write_job(item_id, status="running", stage="backtest", attempt=attempt + 1)
+            try:
+                argv = sandbox_cmd(item_dir, ["--id", item_id, "--no-transpile",
+                                              "--validate", symbol, "--adj", adj])
+            except RuntimeError as exc:
+                return _write_job(item_id, status="failed", stage="backtest", error=str(exc))
+            try:
+                got = _run(argv, BACKTEST_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                return _write_job(item_id, status="failed", stage="backtest",
+                                  error=f"回测超时（>{BACKTEST_TIMEOUT}s）")
+            if got.returncode == 0:
+                return _write_job(item_id, status="done", stage="done", error="", problems=[],
+                                  log=_tail(got.stdout))
+            # 沙箱里 --no-transpile 会复读 meta.problems，所以这里再读一次
+            problems = _read_meta(item_dir).get("problems") or []
+            if problems:
+                stage = "static"
+                detail = "静态检查未通过：" + "；".join(problems)
+                feedback = detail
+            else:
+                stage = "backtest"
+                detail = _last_line(got.stdout + "\n" + got.stderr)
+                feedback = _tail(got.stdout + "\n" + got.stderr)
+
         if attempt >= MAX_REPAIRS:
             return _write_job(item_id, status="failed", stage=stage,
-                              error=detail or f"回测失败（exit {got.returncode}）",
-                              problems=problems, log=_tail(got.stdout + "\n" + got.stderr))
+                              error=detail or "失败", problems=problems,
+                              log=_tail((got.stdout + "\n" + got.stderr) if got else ""))
 
         # 模型只改代码；执行永远只发生在下一轮沙箱里
         _write_job(item_id, status="running", stage="repair", error=detail)
@@ -189,7 +191,7 @@ def process(req: dict) -> dict:
         except subprocess.TimeoutExpired:
             return _write_job(item_id, status="failed", stage="repair",
                               error=f"修复超时（>{TRANSPILE_TIMEOUT}s）")
-        if fix.returncode != 0:
+        if fix.returncode not in (0, 2):     # 2 = 修完仍有静态问题，留给下一轮继续修
             return _write_job(item_id, status="failed", stage="repair",
                               error=_last_line(fix.stdout + "\n" + fix.stderr)
                               or f"修复失败（exit {fix.returncode}）",

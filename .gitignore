@@ -161,3 +161,6 @@ data/pine_library/
 
 # .pine → Pyne-Python 转写产物（候选脚本 / 提示词 / 回测报告，运行时产物不入库）
 data/pine_transpile/
+
+# 转写链路抽样审计（样本清单 + 汇总报告，运行时产物不入库）
+data/pine_audit/

@@ -187,6 +187,37 @@ class TestRepair:
             ptp.repair("0004", "boom")
 
 
+class TestDepine:
+    """模型连着修两轮仍会漏 `? :` 与 `:=`（0400/0778 就这么挂的），改成机械改写。"""
+
+    def test_ternary_becomes_condition_expression(self):
+        code = "x: Series[float] = candle_range > 0 ? body / candle_range : 0.0\n"
+        got, notes = ptp.depine(code)
+        assert got == "x: Series[float] = (body / candle_range) if (candle_range > 0) else (0.0)\n"
+        assert notes == ["自动改写 1 处 `? :` → `if/else`"]
+
+    def test_nested_ternary_inside_parens(self):
+        code = "s = close > open ? volume : (close < open ? -volume : 0.0)\n"
+        got, _ = ptp.depine(code)
+        assert "?" not in got and got.count("if") == 2
+
+    def test_trailing_comment_survives(self):
+        got, _ = ptp.depine("x = a ? 1 : 2  # 注释里的 ? 不算\n")
+        assert got == "x = (1) if (a) else (2)  # 注释里的 ? 不算\n"
+
+    def test_string_with_question_mark_untouched(self):
+        code = 'msg = "a ? b"\nx = 1\n'
+        assert ptp.depine(code) == (code, [])
+
+    def test_walrus_assign_becomes_equals(self):
+        got, notes = ptp.depine("def main():\n    x = 1\n    x := x + 1\n")
+        assert ":=" not in got and "x = x + 1" in got
+        assert notes == ["自动改写 1 处 `:=` → `=`"]
+
+    def test_clean_code_untouched(self):
+        assert ptp.depine(GOOD) == (GOOD, [])
+
+
 class TestStaticCheck:
     def test_template_passes(self):
         assert ptp.static_check(GOOD) == []
@@ -213,6 +244,76 @@ class TestStaticCheck:
     def test_pynecore_input_is_not_python_input(self):
         """模板里的 input() 是 pynecore.lib 的，不能误判成 Python 内建 input。"""
         assert not any("禁止动态执行" in p for p in ptp.static_check(GOOD))
+
+
+class TestImportChecks:
+    """漏 import 是实测最高频的运行时失败（NameError），必须在静态闸就抓住。"""
+
+    def test_bare_name_without_import_flagged(self):
+        code = GOOD.replace("up: Series[bool] = f > s", "up: Series[bool] = f > s and not na(f)")
+        assert any("用了 na 但没从 pynecore.lib 导入" in p for p in ptp.static_check(code))
+
+    def test_imported_name_passes(self):
+        code = GOOD.replace("from pynecore.lib import close, input, script, strategy, ta",
+                            "from pynecore.lib import close, input, na, script, strategy, ta")
+        code = code.replace("up: Series[bool] = f > s", "up: Series[bool] = f > s and not na(f)")
+        assert not any("没从 pynecore.lib 导入" in p for p in ptp.static_check(code))
+
+    def test_local_variable_is_not_flagged(self):
+        code = GOOD.replace("up: Series[bool] = f > s", "session = 1\n    up: Series[bool] = f > s")
+        assert not any("session" in p for p in ptp.static_check(code))
+
+    def test_comment_mention_is_not_flagged(self):
+        code = GOOD.replace("    f = ta.sma(close, fast)",
+                            "    # 这里要判断 na 但只是注释\n    f = ta.sma(close, fast)")
+        assert not any("用了 na" in p for p in ptp.static_check(code))
+
+    def test_ta_bar_index_namespace_flagged(self):
+        code = GOOD.replace("up: Series[bool] = f > s", "up: Series[bool] = ta.bar_index > 0")
+        assert any("bar_index 不在 ta 下" in p for p in ptp.static_check(code))
+
+    def test_math_isnan_flagged(self):
+        code = GOOD.replace("up: Series[bool] = f > s", "up: Series[bool] = math.isnan(f)")
+        assert any("没有 isnan" in p for p in ptp.static_check(code))
+
+    def test_single_target_for_multi_return_ta(self):
+        """ta.macd 返回元组，赋给单个变量后下标拿到的是「另一个指标」不是历史值。"""
+        code = GOOD.replace("up: Series[bool] = f > s",
+                            "m: Series[float] = ta.macd(close, 12, 26, 9)")
+        assert any("返回元组" in p for p in ptp.static_check(code))
+
+    def test_unpacked_multi_return_passes(self):
+        code = GOOD.replace("up: Series[bool] = f > s",
+                            "m, sig, hist = ta.macd(close, 12, 26, 9)")
+        assert not any("返回元组" in p for p in ptp.static_check(code))
+
+    def test_expression_history_index_flagged(self):
+        code = GOOD.replace("up: Series[bool] = f > s",
+                            "up: Series[bool] = (high + low + close)[1] > f")
+        assert any("对表达式直接取历史" in p for p in ptp.static_check(code))
+
+    def test_list_literal_index_is_not_flagged(self):
+        """`arr[0]` 这种普通下标不能被误伤。"""
+        code = GOOD.replace("up: Series[bool] = f > s", "up: Series[bool] = f[0] > s")
+        assert not any("对表达式直接取历史" in p for p in ptp.static_check(code))
+
+
+class TestSizingCheck:
+    def test_tiny_percent_position_flagged(self):
+        code = GOOD.replace(
+            '@script.strategy("双均线交叉", overlay=True, pyramiding=0)',
+            '@script.strategy("双均线交叉", overlay=True, pyramiding=0,\n'
+            '                 default_qty_type=strategy.percent_of_equity, default_qty_value=1,\n'
+            '                 initial_capital=1000)')
+        assert any("仓位金额过小" in p for p in ptp.static_check(code))
+
+    def test_template_sizing_passes(self):
+        code = GOOD.replace(
+            '@script.strategy("双均线交叉", overlay=True, pyramiding=0)',
+            '@script.strategy("双均线交叉", overlay=True, pyramiding=0,\n'
+            '                 default_qty_type=strategy.percent_of_equity, default_qty_value=95,\n'
+            '                 initial_capital=100000)')
+        assert not any("仓位金额过小" in p for p in ptp.static_check(code))
 
 
 class TestListTranspile:

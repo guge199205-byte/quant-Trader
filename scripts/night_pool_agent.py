@@ -252,6 +252,23 @@ def build_candidates(date: str, top: int = 26) -> list:
     return rows, d0
 
 
+def filter_risk_candidates(cands: list, risk: dict) -> tuple:
+    """候选池 × 风险清单 → (保留列表, [(被剔除候选, 命中条目), ...])。
+
+    风险清单键为 6 位代码（risk_list.load_risk 口径），候选代码可能带 .SH/.SZ 后缀。
+    纯函数：不改入参、不做 IO，供 run() 与单测共用。
+    """
+    kept, dropped = [], []
+    for c in cands or []:
+        code6 = str((c or {}).get("code") or "").split(".")[0]
+        hit = (risk or {}).get(code6)
+        if hit:
+            dropped.append((c, hit))
+            continue
+        kept.append(c)
+    return kept, dropped
+
+
 def run(date: str, dry: bool = False) -> int:
     cands, d0 = build_candidates(date)
     if not cands:
@@ -285,21 +302,15 @@ def run(date: str, dry: bool = False) -> int:
         _risk = load_risk()
         if _risk:
             before = len(cands)
-            kept = []
-            for c in cands:
-                code6 = str(c.get("code") or "").split(".")[0]
-                hit = _risk.get(code6)
-                if hit:
-                    print(f"  ⛔ 剔除风险标的 {c.get('code')} {c.get('name') or ''}："
-                          f"{hit.get('reason')}")
-                    continue
-                kept.append(c)
-            cands = kept
+            cands, dropped = filter_risk_candidates(cands, _risk)
+            for c, hit in dropped:
+                print(f"  ⛔ 剔除风险标的 {c.get('code')} {c.get('name') or ''}："
+                      f"{hit.get('reason')}")
             if not cands:
                 print("❌ 候选全部命中风险清单，本轮不产出池")
                 return 1
-            if before != len(cands):
-                print(f"  候选 {before} → {len(cands)}（风险清单剔除 {before - len(cands)} 只）")
+            if dropped:
+                print(f"  候选 {before} → {len(cands)}（风险清单剔除 {len(dropped)} 只）")
     except Exception as exc:  # noqa: BLE001 风险清单不可用不阻塞研究
         print(f"⚠️ 风险清单不可用: {exc}")
     cand_json = json.dumps(cands, ensure_ascii=False)

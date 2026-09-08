@@ -207,3 +207,57 @@ def test_prompt_block_matches_without_suffix(tmp_path):
     """池内代码无后缀（6 位）也要能命中——数据源后缀口径不统一。"""
     from live_prompt_context import risk_warning_block
     assert "688795" in risk_warning_block(["688795"], path=_risk_file(tmp_path))
+
+
+# ---- 夜间候选池过滤（night_pool_agent.filter_risk_candidates）--------------
+# 用户口径「模型有的话需要毙掉」：风险标的在**候选池生成阶段**就剔除，
+# 模型看不见就不会选，比"选了再被买入闸门毙掉"少一轮无效决策。
+# 闸门仍独立拦一次（夜间过滤失效时兜底）。
+
+def _cands():
+    return [{"code": "600309.SH", "name": "万华化学"},
+            {"code": "688795.SH", "name": "摩尔线程"},
+            {"code": "001312.SZ", "name": "福恩股份"}]
+
+
+def _risk_map():
+    return {"688795": {"reason": "解禁窗口内（09-11 解禁 3.4%）", "expire": "2026-09-11"}}
+
+
+def test_filter_risk_drops_hit_and_keeps_rest():
+    from night_pool_agent import filter_risk_candidates
+    kept, dropped = filter_risk_candidates(_cands(), _risk_map())
+    assert [c["code"] for c in kept] == ["600309.SH", "001312.SZ"]
+    assert len(dropped) == 1
+    c, hit = dropped[0]
+    assert c["code"] == "688795.SH"
+    assert "解禁" in hit["reason"]
+
+
+def test_filter_risk_matches_bare_six_digit_code():
+    """候选代码无后缀（6 位）也要命中——数据源后缀口径不统一。"""
+    from night_pool_agent import filter_risk_candidates
+    kept, dropped = filter_risk_candidates(
+        [{"code": "688795", "name": "摩尔线程"}], _risk_map())
+    assert kept == [] and len(dropped) == 1
+
+
+def test_filter_risk_empty_risk_keeps_all():
+    from night_pool_agent import filter_risk_candidates
+    kept, dropped = filter_risk_candidates(_cands(), {})
+    assert len(kept) == 3 and dropped == []
+
+
+def test_filter_risk_handles_empty_and_bad_input():
+    from night_pool_agent import filter_risk_candidates
+    assert filter_risk_candidates([], _risk_map()) == ([], [])
+    assert filter_risk_candidates(None, None) == ([], [])
+    kept, dropped = filter_risk_candidates([{"name": "无代码"}], _risk_map())
+    assert len(kept) == 1 and dropped == []
+
+
+def test_filter_risk_does_not_mutate_input():
+    from night_pool_agent import filter_risk_candidates
+    cands = _cands()
+    filter_risk_candidates(cands, _risk_map())
+    assert len(cands) == 3

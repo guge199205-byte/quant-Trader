@@ -370,8 +370,11 @@ export default function Live() {
           );
           const groups: [number, number][][] = [emptyTs[name] ?? []];
           if (emptyNowAgents.has(name)) {
-            // 现空仓且无（或已有）事件：净值最后变动点之后 = 空仓尾段
-            const from = trailingFlatFrom(pts.map((e) => e.value));
+            // 现空仓且无（或已有）事件：净值最后变动点之后 = 空仓尾段。
+            // 下标必须在降采样后的 line.points（≤900）上找——line.points 已按
+            // MAX_CHART_POINTS 抽稀，拿全量 pts 的下标会越界取 undefined.t
+            // → render 抛异常整页白屏（2026-09-08 事故：净值 1484 点 > 900）
+            const from = trailingFlatFrom(line.points.map((p) => p.v));
             groups.push([[line.points[from].t, Date.now()]]);
           }
           return {

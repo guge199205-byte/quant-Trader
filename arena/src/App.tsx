@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import Navbar from './components/Navbar';
+import ErrorBoundary from './components/ErrorBoundary';
 import Home from './pages/Home';
 import Live from './pages/Live';
 import Leaderboard from './pages/Leaderboard';
@@ -11,7 +12,7 @@ import About from './pages/About';
 
 export default function App() {
   return (
-    <>
+    <ErrorBoundary>
       <Navbar />
       <Routes>
         <Route path="/" element={<Home />} />
@@ -27,6 +28,6 @@ export default function App() {
         <Route path="/model/:market/:agent" element={<ModelDetail />} />
         <Route path="/about" element={<About />} />
       </Routes>
-    </>
+    </ErrorBoundary>
   );
 }

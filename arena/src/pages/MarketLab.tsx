@@ -45,6 +45,8 @@ export default function MarketLab() {
   const [adj, setAdj] = useState<AdjMode>('unadjusted');
   const [bars, setBars] = useState<Kline[]>([]);
   const [chartBusy, setChartBusy] = useState(false);
+  /** 看盘默认近 600 根；跑完回测自动切全历史，否则 10 年回测的买卖点大多落在图外 */
+  const [fullSpan, setFullSpan] = useState(false);
 
   const [strategies, setStrategies] = useState<LabStrategy[]>([]);
   const [sid, setSid] = useState('');
@@ -70,11 +72,11 @@ export default function MarketLab() {
 
   // ---- K线 ----
   const loadBars = useCallback(
-    async (sym: string, mode: AdjMode) => {
+    async (sym: string, mode: AdjMode, full: boolean) => {
       setChartBusy(true);
       setErr('');
       try {
-        const r = await fetchLabKlines(sym, mode, 600);
+        const r = await fetchLabKlines(sym, mode, full ? 3000 : 600);
         setBars(r.bars);
         setStockName(r.name);
       } catch {
@@ -88,8 +90,8 @@ export default function MarketLab() {
   );
 
   useEffect(() => {
-    if (symbol) void loadBars(symbol, adj);
-  }, [symbol, adj, loadBars]);
+    if (symbol) void loadBars(symbol, adj, fullSpan);
+  }, [symbol, adj, fullSpan, loadBars]);
 
   // ---- 搜索（防抖） ----
   const onQuery = (v: string) => {
@@ -116,6 +118,7 @@ export default function MarketLab() {
     setHits([]);
     setShowHits(false);
     setBt(null);
+    setFullSpan(false);
   };
 
   // ---- 策略参数 ----
@@ -134,8 +137,9 @@ export default function MarketLab() {
     try {
       const r = await runLabBacktest({ strategy: sid, symbol, adj: 'backward', params });
       setBt(r);
-      // 成交点标注要落在同一价格序列上 → 切到后复权（回测口径）
+      // 成交点标注要落在同一价格序列上 → 切到后复权（回测口径）+ 全历史
       if (adj !== 'backward') setAdj('backward');
+      setFullSpan(true);
     } catch (e) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       setErr(msg || '回测失败（后端 PyneCore 运行时或数据不可用）');
@@ -226,6 +230,9 @@ export default function MarketLab() {
           <KLineChart bars={bars} trades={bt?.trades ?? []} height={460} />
           <div className="lab-hint">
             quantdb 日线 · {bars.length} 根 · {bars[0]?.date ?? '—'} ~ {bars[bars.length - 1]?.date ?? '—'}
+            <button className="lab-span" onClick={() => setFullSpan((v) => !v)}>
+              {fullSpan ? '近 600 根' : '全历史'}
+            </button>
           </div>
         </section>
 

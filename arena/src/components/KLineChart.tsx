@@ -62,7 +62,14 @@ export default function KLineChart({
       },
       crosshair: { mode: CrosshairMode.Normal },
       rightPriceScale: { borderColor: '#000000' },
-      timeScale: { borderColor: '#000000', rightOffset: 4, barSpacing: 6 },
+      timeScale: {
+        borderColor: '#000000',
+        rightOffset: 4,
+        barSpacing: 6,
+        // 默认最小 0.5px/根：2595 根全历史在 ~1080px 宽里塞不下（只能看到后 2100 根），
+        // 放宽到 0.2 让「全历史」真的全览（缩略图观感，放大后正常）
+        minBarSpacing: 0.2,
+      },
       localization: {
         locale: 'zh-CN',
         priceFormatter: (p: number) => p.toFixed(2),

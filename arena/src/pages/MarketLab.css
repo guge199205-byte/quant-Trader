@@ -175,11 +175,31 @@
 }
 
 .lab-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 5px 6px 3px;
   font-size: 10px;
   font-family: 'Courier New', monospace;
   color: #666;
   border-top: 1px solid #eee;
+}
+
+.lab-span {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  border: 1.5px solid #000;
+  background: #fff;
+  color: #000;
+  cursor: pointer;
+}
+
+.lab-span:hover {
+  background: #000;
+  color: #fff;
 }
 
 /* ---------- 右侧面板 ---------- */

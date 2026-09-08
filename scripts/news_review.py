@@ -26,7 +26,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from trading_cal import is_trading_day  # noqa: E402
-from news_brief import CN_TZ, HISTORY_FILE, LESSONS_FILE, append_log  # noqa: E402
+from news_brief import (CN_TZ, HISTORY_FILE, LESSONS_FILE,  # noqa: E402
+                        append_log, normalize_event_type)
 
 REVIEW = "news-review"
 AGENT_CN = "晚间复盘"
@@ -65,7 +66,8 @@ def collect_mentions(briefs: list[dict]) -> list[dict]:
                 if code and code not in seen:
                     seen.add(code)
                     out.append({"code": code, "name": str(e.get("name") or ""),
-                                "event": str(e.get("event_type") or "")[:24],
+                                "event": normalize_event_type(
+                                    e.get("event_type"), e.get("note"), e.get("name")),
                                 "sentiment": e.get("sentiment")})
         for h in (b.get("holdings") or []):
             if isinstance(h, dict) and h.get("code"):
@@ -73,7 +75,8 @@ def collect_mentions(briefs: list[dict]) -> list[dict]:
                 if code not in seen:
                     seen.add(code)
                     out.append({"code": code, "name": str(h.get("name") or ""),
-                                "event": str(h.get("event_type") or "")[:24],
+                                "event": normalize_event_type(
+                                    h.get("event_type"), h.get("headline"), h.get("name")),
                                 "sentiment": None})
         for w in (b.get("watch_list") or []):
             if isinstance(w, dict) and w.get("code"):
@@ -106,12 +109,13 @@ def collect_rows(briefs: list[dict]) -> list[dict]:
             return
         if not code or verdict not in ("利好", "利空") or imp == 0:
             return
-        key = (str(code), str(event_type or "")[:24])
+        ev = normalize_event_type(event_type)
+        key = (str(code), ev)
         prev = best.get(key)
         if prev is None or abs(imp) > abs(float(prev.get("impact") or 0)):
             best[key] = {"code": str(code), "name": str(name or ""),
                          "verdict": verdict, "impact": imp,
-                         "event_type": str(event_type or ""),
+                         "event_type": ev,
                          "source": str(source or "")}
 
     for b in briefs:
@@ -198,7 +202,7 @@ def update_lessons(rows: list[dict], moves: dict, path: Path | None = None) -> d
                        float(h.get("impact") or 0), moves.get(str(h.get("code"))))
         if cls == "nodata":
             continue
-        _bump(lessons["by_event_type"], str(h.get("event_type") or "未分类")[:24], cls)
+        _bump(lessons["by_event_type"], normalize_event_type(h.get("event_type")), cls)
         _bump(lessons["by_source"], str(h.get("source") or "未知")[:24], cls)
     lessons["updated"] = datetime.now(CN_TZ).isoformat()
     out_path = path or LESSONS_FILE
@@ -210,10 +214,12 @@ def update_lessons(rows: list[dict], moves: dict, path: Path | None = None) -> d
 
 
 def lessons_text(lessons: dict, top: int = 5) -> str:
-    """lessons → 提示词注入文本（样本≥3 的事件类型才展示，宁缺毋滥）。"""
+    """lessons → 提示词注入文本（样本≥3 的事件类型才展示，宁缺毋滥）。
+    "其他/未分类"是兜底桶，跨类型混装，不作为经验注入。"""
     lines = []
     et = {k: v for k, v in (lessons.get("by_event_type") or {}).items()
-          if v.get("hit", 0) + v.get("reverse", 0) + v.get("flat", 0) >= 3}
+          if k not in ("其他", "未分类")
+          and v.get("hit", 0) + v.get("reverse", 0) + v.get("flat", 0) >= 3}
     for k, v in sorted(et.items(), key=lambda kv: -(kv[1]["hit"] + kv[1]["reverse"] + kv[1]["flat"]))[:top]:
         n = v["hit"] + v["reverse"] + v["flat"]
         lines.append(f"- {k}：信号{n}次，方向兑现 {v['hit']}/{n}"

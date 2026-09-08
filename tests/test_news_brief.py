@@ -141,6 +141,69 @@ def test_parse_gate_lines_clean_and_salvage():
     assert N.parse_gate_lines("") is None
 
 
+def test_parse_gate_lines_blacklist_format():
+    """黑名单式（2026-09-08）：默认全保留 + micro，模型只写例外行；裸序号 = 剔除。"""
+    d = N.parse_gate_lines("12 macro\n33 holdings\n7 skip\n8")
+    assert d["related"] == [{"i": 12, "dir": "macro"},
+                            {"i": 33, "dir": "holdings"},
+                            {"i": 7, "dir": "skip"},
+                            {"i": 8, "dir": "skip"}]
+    # 合法"无例外"回答 → 空 related（不是解析失败，否则整批走规则兜底）
+    assert N.parse_gate_lines("无") == {"related": []}
+    assert N.parse_gate_lines("（无）") == {"related": []}
+    assert N.parse_gate_lines("全部保留") == {"related": []}
+    # 散文里的裸数字不能当序号（行首锚定；救捞只认带方向的）
+    assert N.parse_gate_lines("共 12 条候选，均保留") is None
+
+
+def test_route_by_gate_blacklist_semantics():
+    """未列出 = 保留+micro；skip 真剔除；关注代码命中直达 holdings（不依赖门卫）。"""
+    arts = [{"title": "A"}, {"title": "B"}, {"title": "C"},
+            {"title": "D", "enrichment": {"tickers": ["600309.SH"]}}]
+    macro, micro, hold, skip = N.route_by_gate(
+        arts, {0: "macro", 1: "skip", 3: "holdings"}, {"600309.SH"})
+    assert [a["title"] for a in macro] == ["A"]
+    assert [a["title"] for a in micro] == ["C"]          # 未列出 → 默认保留 + micro
+    assert [a["title"] for a in hold] == ["D"] and skip == 1
+    # 门卫一个字没写（空例外表）→ 全部进 micro；命中关注代码的另投 holdings
+    _m, micro2, hold2, skip2 = N.route_by_gate(arts, {}, {"600309.SH"})
+    assert len(micro2) == 4 and len(hold2) == 1 and skip2 == 0
+
+
+def test_normalize_event_type_taxonomy():
+    """事件类型噪声归一：涨停族此前被拆成 8 个桶，lessons 永远到不了 ≥3 阈值。"""
+    for raw in ("涨停", "2连板", "7连板", "封板", "触及涨停", "连板拉升",
+                "涨停异动", "一字板", "炸板"):
+        assert N.normalize_event_type(raw) == "涨停", raw
+    assert N.normalize_event_type("高开涨超9%") == "大涨异动"
+    assert N.normalize_event_type("培育钻石概念异动拉升") == "大涨异动"
+    assert N.normalize_event_type("跌停") == "跌停"
+    assert N.normalize_event_type("大跌异动") == "大跌异动"
+    # 照抄表头/字段名/空值 → 退回备注、标题兜底
+    assert N.normalize_event_type("事件类型", "限售股解禁") == "解禁"
+    assert N.normalize_event_type("event_type", "", "公司拟回购不超2亿元") == "回购增持"
+    assert N.normalize_event_type("") == "其他"
+    assert N.normalize_event_type("事件类型") == "其他"
+    assert N.normalize_event_type("港股挂牌催化") == "其他"
+
+
+def test_pipe_parse_normalizes_event_type():
+    """落盘前归一：下游 lessons/提示词只见到固定枚举。"""
+    d = N.parse_pipe_lines("E | 300750.SZ | 宁德时代 | 2连板 | 0.6 | 电池板块\n",
+                           "micro")
+    assert d["events"][0]["event_type"] == "涨停"
+    # HOLD 段：事件类型与依据同格（`事件类型：MDI挂牌价上调`，模型照抄表头）
+    d2 = N.parse_pipe_lines(
+        "H | 600309.SH | 万华化学 | 利好 | 1 | 事件类型：MDI挂牌价上调 | 财联社\n",
+        "holdings")
+    assert d2["per_stock"][0]["event_type"] == "涨价"
+    # CHIEF 段：独立 event_type 列，占位符 → headline 兜底
+    d3 = N.parse_pipe_lines(
+        "H | 600309.SH | 万华化学 | 利好 | 1 | 日内 | 事件类型 | MDI挂牌价上调 | 财联社 | 直接\n",
+        "chief")
+    assert d3["holdings"][0]["event_type"] == "涨价"
+
+
 def test_parse_pipe_macro():
     txt = ("V | 中性偏多，政策托底 | 0.2\n"
            "D | 3000亿特别国债 | 利好金融权重\n"
@@ -332,6 +395,19 @@ def test_review_lessons_text_threshold():
     t = R.lessons_text({"by_event_type": {"涨价": {"hit": 3, "reverse": 1, "flat": 0},
                                           "小样本": {"hit": 1, "reverse": 0, "flat": 0}}})
     assert "涨价" in t and "小样本" not in t
+
+
+def test_review_lessons_merges_event_type_noise(tmp_path):
+    """涨停族的多种写法在聚合处合并成一个桶（此前被拆散，永远到不了阈值）。"""
+    rows = [{"code": "300750.SZ", "verdict": "利好", "impact": 1,
+             "event_type": "2连板", "source": "财联社"},
+            {"code": "300750.SZ", "verdict": "利好", "impact": 1,
+             "event_type": "封板", "source": "财联社"}]
+    lessons = R.update_lessons(rows, {"300750.SZ": 5.0}, path=tmp_path / "l.json")
+    assert lessons["by_event_type"]["涨停"]["hit"] == 2
+    # 兜底桶不进提示词（跨类型混装，无解释力）
+    assert "其他" not in R.lessons_text(
+        {"by_event_type": {"其他": {"hit": 9, "reverse": 0, "flat": 0}}})
 
 
 # ---------- 生产级优化：L2 新鲜度/清理、盘中异动关注、竞价防护 ----------

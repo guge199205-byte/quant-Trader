@@ -157,6 +157,24 @@ def rule_direction(art: dict, watch_codes: "set | dict") -> str:
     return "micro"
 
 
+def route_by_gate(arts: list, rel_idx: dict,
+                  watch_codes: "set | dict") -> tuple[list, list, list, int]:
+    """门卫例外表 → (macro, micro, holdings, 剔除数)。
+
+    黑名单式语义（2026-09-08）：rel_idx 只含例外项——`macro`/`holdings` 改向、
+    `skip` 剔除；未列出的条目一律「保留 + micro」。剔除项真正不进下游（此前
+    被兜底塞回 micro，既白烧 token 又推高 micro 段截断率）。
+    """
+    skip_i = {i for i, d in rel_idx.items() if d == "skip"}
+    g_macro = [a for i, a in enumerate(arts) if rel_idx.get(i) == "macro"]
+    g_micro = [a for i, a in enumerate(arts)
+               if i not in skip_i and rel_idx.get(i, "micro") == "micro"]
+    # 确定性持仓命中直达 holdings（标题点名关注公司/代码时不依赖门卫判断）
+    h_art = [a for i, a in enumerate(arts)
+             if rel_idx.get(i) == "holdings" or _hits_watch(a, watch_codes)]
+    return g_macro, g_micro, h_art, len(skip_i)
+
+
 # ---------- 时间与状态 ----------
 
 def _iso(s) -> datetime | None:
@@ -274,12 +292,13 @@ def _system_for(stage: str) -> str:
     if stage == GATE:
         return ("你是 A股实盘『新闻门卫』：从批量标题中挑出对 A股（含港股联动/外围传导）"
                 "可能有影响的条目，剔除无关噪音（社会/体育/娱乐/纯海外与他国市场/广告）。"
-                "每保留条标注方向：macro=宏观/政策/货币/监管/外围(美债/汇率/地缘/大宗)/大盘；"
+                "方向定义：macro=宏观/政策/货币/监管/外围(美债/汇率/地缘/大宗)/大盘；"
                 "micro=行业板块/概念/公司公告/业绩/盘中异动；holdings=直接命中给定关注代码"
                 "或这些标的所属板块的强相关条目。输入带 序号/来源/时间/标签证据(正文级)。"
-                "宁全勿漏：不确定就保留，方向二选一取更可能。"
-                "输出：每行一个保留项 `序号 方向`，如 `12 macro`、`33 micro`、"
-                "`7 holdings`；只输出这些行。")
+                "宁全勿漏：不确定就保留（保留 = 不写）。"
+                "输出黑名单式：**默认全部条目保留且方向 micro**，你只写例外行，每行一个，"
+                "格式 `序号 方向`——方向不是 micro 的写 `12 macro` 或 `7 holdings`；"
+                "确定无关的噪音写 `33 skip`。不要复述保留项，不要解释。")
     if stage == MACRO:
         return ("你是『宏观政策研究』（大方向，只分析不下单）：输入为门卫筛出的宏观/政策/"
                 "监管/外围标题。输出对 A股 大盘/风格/利率的影响判断。只引用输入事实，"
@@ -295,7 +314,8 @@ def _system_for(stage: str) -> str:
                 "股票代码只许来自输入证据，禁止臆造代码。行式输出（每行一条，字段用 | "
                 "分隔，严禁其他文字）：\n"
                 "T | 板块/主题 | 驱动逻辑 | 强度(1..3) | 催化（可多行）\n"
-                "E | 代码(逗号分隔) | 公司 | 事件类型 | sentiment(-1..1) | 备注（可多行）\n"
+                "E | 代码(逗号分隔) | 公司 | 事件类型(短词，如 涨停/业绩/减持/解禁/"
+                "政策监管；勿照抄表头、勿拿标题当类型) | sentiment(-1..1) | 备注（可多行）\n"
                 "O | 轮动观察一句话\nC | confidence(0..1)\n"
                 "示例：T | 存储芯片 | 涨价+需求复苏 | 2 | 三星涨价\n"
                 "E | 688123.SH | 聚辰股份 | 涨停异动 | 0.8 | 板块带动")
@@ -317,7 +337,7 @@ def _system_for(stage: str) -> str:
             "W | 代码 | 名称 | 逻辑 | 触发条件（可多行）\n"
             "R | 开放风险（可多行）\n"
             "H | 代码 | 名称 | verdict(利好/利空/中性) | impact(-2..2) | horizon | "
-            "event_type | headline(截40字) | source | note（≤8行）\n"
+            "event_type(短词，与上游一致) | headline(截40字) | source | note（≤8行）\n"
             "N | 给市场研究的参考\nE | 编辑备注一句话\n"
             "C | confidence(0..1)（示例：C | 0.75）")
 
@@ -336,8 +356,64 @@ def _fix_leading_zero_ints(t: str) -> str:
     return re.sub(r"(?<=[:,\[{])(\s*)-?0+(?=\d)", _rep, t)
 
 
-_GATE_LINE = re.compile(r"(\d{1,3})\s+(macro|micro|holdings)")
+# 门卫例外行（黑名单式，2026-09-08）：`12 macro` / `33 holdings` / `7 skip`；
+# 裸序号 `12` = 剔除。行首锚定——裸数字在散文里很常见，非锚定会误判序号。
+_GATE_LINE_STRICT = re.compile(
+    r"(?m)^\s*(\d{1,3})\s*(macro|micro|holdings|skip)?\s*[.。:：]?\s*$")
+# 散文救捞（旧格式内联）：只认带方向的，裸数字不救（避免散文数字被当剔除）
+_GATE_LINE = re.compile(r"(\d{1,3})\s+(macro|micro|holdings|skip)")
+# 合法"无例外"回答：整段只有这些字/标点（"无" "（无）" "全部保留"）；空串不算
+_GATE_EMPTY_RE = re.compile(r"^[\s（）()【】\[\]{}<>《》无没空—\-—。.、,，;；:：例外均全部保留]*$")
 _PIPE = re.compile(r"\s*\|\s*")
+
+# ---- 事件类型归一（2026-09-08）----
+# 实测噪声：模型照抄字段名（"事件类型"）、把标题当类型（"培育钻石概念异动拉升"）。
+# lessons 按 事件类型×来源 聚合，同一现象被拆成 8 个桶（涨停/封板/2连板/连板拉升…）
+# → 永远到不了 ≥3 的注入阈值。这里收敛到固定枚举，自由文本一律映射进来。
+EVENT_TYPES = ("涨停", "跌停", "大涨异动", "大跌异动", "业绩", "回购增持", "减持",
+               "解禁", "并购重组", "政策监管", "中标订单", "涨价", "股东变动",
+               "问询处罚", "其他")
+# 顺序敏感：先匹配到的胜出（涨停类在前，避免"涨停"被"涨"类规则抢走）
+_EVENT_RULES = (
+    ("跌停", ("跌停", "闪崩", "暴跌", "重挫")),
+    ("涨停", ("涨停", "封板", "连板", "一字板", "首板", "炸板")),
+    ("大跌异动", ("大跌", "跳水", "下挫", "领跌", "跌超", "跌逾")),
+    ("大涨异动", ("大涨", "拉升", "上涨", "涨超", "涨逾", "高开", "异动")),
+    ("业绩", ("业绩", "预增", "预亏", "财报", "净利", "营收", "扭亏", "亏损")),
+    ("回购增持", ("回购", "增持", "举牌")),
+    ("减持", ("减持", "清仓式")),
+    ("解禁", ("解禁", "限售股")),
+    ("并购重组", ("并购", "重组", "收购", "合并", "资产注入", "借壳", "分拆")),
+    ("政策监管", ("政策", "监管", "补贴", "规划", "意见", "通知", "试点",
+                  "关税", "降准", "降息", "央行", "证监会")),
+    ("中标订单", ("中标", "订单", "合同", "签约", "供货", "采购")),
+    ("涨价", ("涨价", "提价", "价上调", "涨价函")),
+    ("股东变动", ("股东", "实控人", "易主", "股权", "要约")),
+    ("问询处罚", ("问询", "处罚", "立案", "警示", "违规", "诉讼", "调查", "整改")),
+)
+# 模型把表头/占位抄成事件类型的几种形态
+_EVENT_PLACEHOLDERS = frozenset((
+    "", "-", "—", "无", "事件", "类型", "事件类型", "event_type", "eventtype",
+    "事件类型：", "事件类型("))
+
+
+def normalize_event_type(raw: str, *extra: str) -> str:
+    """事件类型 → 固定枚举 EVENT_TYPES。
+
+    占位符/字段名/空值 → 退回用 extra（备注、标题）兜底匹配；都匹配不到 → "其他"。
+    例："2连板"/"封板"/"触及涨停" → 涨停；"培育钻石概念异动拉升" → 大涨异动；
+    "事件类型" → 按备注/标题判。
+    """
+    t = str(raw or "").strip().strip("：: 　")
+    hay = t if t.lower() not in _EVENT_PLACEHOLDERS else ""
+    if not hay:
+        hay = " ".join(str(x or "") for x in extra)
+    if not hay.strip():
+        return "其他"
+    for name, kws in _EVENT_RULES:
+        if any(k in hay for k in kws):
+            return name
+    return "其他"
 
 
 def parse_pipe_lines(content: str, kind: str) -> dict | None:
@@ -371,7 +447,10 @@ def parse_pipe_lines(content: str, kind: str) -> dict | None:
             elif tag == "E" and len(f) >= 4:
                 out.setdefault("events", []).append({
                     "tickers": [t for t in f[1].replace("，", ",").split(",") if t],
-                    "name": f[2], "event_type": f[3],
+                    "name": f[2],
+                    # 事件类型归一：模型常照抄表头/拿标题当类型 → 退回备注兜底
+                    "event_type": normalize_event_type(
+                        f[3], f[5] if len(f) > 5 else "", f[2]),
                     "sentiment": _fnum(f[4], 0) if len(f) > 4 else 0,
                     "note": f[5] if len(f) > 5 else ""})
             elif tag == "O":
@@ -395,7 +474,8 @@ def parse_pipe_lines(content: str, kind: str) -> dict | None:
                 out.setdefault("holdings", []).append({
                     "code": f[1], "name": f[2], "verdict": f[3] or "中性",
                     "impact": _fnum(f[4], 0), "horizon": f[5] if len(f) > 5 else "",
-                    "event_type": f[6] if len(f) > 6 else "",
+                    "event_type": normalize_event_type(
+                        f[6] if len(f) > 6 else "", f[7] if len(f) > 7 else "", f[2]),
                     "headline": f[7] if len(f) > 7 else "",
                     "source": f[8] if len(f) > 8 else "",
                     "note": f[9] if len(f) > 9 else ""})
@@ -414,7 +494,8 @@ def parse_pipe_lines(content: str, kind: str) -> dict | None:
                     "code": f[1], "name": f[2], "verdict": f[3] or "中性",
                     "impact": _fnum(f[4], 0),
                     "horizon": "短期" if "短期" in info else ("日内" if "日内" in info else ""),
-                    "event_type": info.split("：")[0][:24] if info else "",
+                    "event_type": normalize_event_type(
+                        info.split("：")[0][:24] if info else "", info, f[2]),
                     "headline": info.split("：", 1)[1] if "：" in info else info,
                     "source": f[6] if len(f) > 6 else "", "note": ""})
             elif tag == "X" and len(f) >= 2:
@@ -429,20 +510,30 @@ def parse_pipe_lines(content: str, kind: str) -> dict | None:
 
 
 def parse_gate_lines(content: str) -> dict | None:
-    """门卫行式输出解析：`12 macro [证据]` 每行一条。模型写散文时整篇
-    findall 救捞（散文里同样会出现 `12 macro` 形态）；无任何命中返回 None。"""
-    hits = _GATE_LINE.findall(str(content or ""))
-    if not hits:
-        return None
-    rel = []
-    seen = set()
-    for idx, direction in hits:
-        i = int(idx)
+    """门卫行式输出解析（黑名单式，2026-09-08）：默认全部保留 + micro，
+    模型只写例外行——`12 macro`/`33 holdings`（方向例外）、`7 skip` 或裸 `7`（剔除）。
+    行首锚定优先（裸序号在散文里会误伤），未命中再走旧的内联救捞。
+    合法"无例外"回答（`无`/`全部保留`）返回空 related；空串/疑似乱码返回 None。"""
+    t = str(content or "")
+    rel: list = []
+    seen: set = set()
+    for m in _GATE_LINE_STRICT.finditer(t):
+        i = int(m.group(1))
         if i in seen:
             continue
         seen.add(i)
-        rel.append({"i": i, "dir": direction})
-    return {"related": rel} if rel else None
+        rel.append({"i": i, "dir": m.group(2) or "skip"})
+    if not rel:
+        for idx, direction in _GATE_LINE.findall(t):
+            i = int(idx)
+            if i in seen:
+                continue
+            seen.add(i)
+            rel.append({"i": i, "dir": direction})
+    if not rel:
+        s = t.strip()
+        return {"related": []} if s and _GATE_EMPTY_RE.match(s) else None
+    return {"related": rel}
 
 
 def parse_llm_json(text: str) -> dict | None:
@@ -863,11 +954,14 @@ def load_watch_codes() -> tuple[dict, list]:
 
 CHUNK = 50           # 单批进门卫的条数（100 条 × 逐条判决行曾必触 max_tokens 截断，
                      # 2026-09-08 午后两期全灭实录 → 批减半 + 预算放宽双保险）
+GATE_SKIP_MAX_RATIO = 0.5   # 单批剔除比例上限：过半 → 判门卫失准，该批剔除作废
 _JSON_TAIL = ("\n\n严格只输出 JSON：不要任何解释/思考过程/分析草稿/markdown 代码块，"
               "回答的首字符必须是 {。")
-_LINE_TAIL = ("\n\n逐行输出保留项（每行一个，格式：`序号 方向`，"
-              "如 `12 macro`；方向限 macro|micro|holdings）。"
-              "只输出这些行，不要任何解释/序号说明/代码块。")
+_LINE_TAIL = ("\n\n黑名单式输出：**默认所有条目保留、方向 micro**，只写例外行，每行一个：\n"
+              "· 方向不是 micro 的保留项 → `序号 macro` 或 `序号 holdings`\n"
+              "· 确定与 A股 无关的噪音 → `序号 skip`\n"
+              "没列出的条目一律视为「保留 + micro」，不要复述它们，"
+              "不要任何解释/标题/代码块。")
 _PIPE_TAIL = ("\n\n严格行式输出：每行一个条目，字段以 | 分隔（示例见上），"
               "不要解释/序号/标题/markdown/JSON，散文与多余文字一律不要。")
 # 各段输出协议：全部行式填表（散文型模型 JSON 遵从率差，填表最稳；
@@ -1050,9 +1144,15 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
             d, _ok = _run_stage(GATE, gate_user)
             if d:
                 base = arts.index(chunk[0])  # 块内序号 → 全局序号
-                return {base + x.get("i"): x.get("dir")
-                        for x in (d.get("related") or [])
-                        if isinstance(x, dict) and isinstance(x.get("i"), int)}
+                got = {base + x.get("i"): x.get("dir")
+                       for x in (d.get("related") or [])
+                       if isinstance(x, dict) and isinstance(x.get("i"), int)}
+                # 安全阀：单批剔除过半 → 判模型失准，该批剔除作废（宁全勿漏）
+                n_skip = sum(1 for v in got.values() if v == "skip")
+                if n_skip > len(chunk) * GATE_SKIP_MAX_RATIO:
+                    print(f"⚠️ 门卫该批剔除 {n_skip}/{len(chunk)} 过半，判失准 → 全部保留")
+                    got = {k: v for k, v in got.items() if v != "skip"}
+                return got
             print("⚠️ 门卫该批失败，本批按规则方向兜底")
             _RUN_STATS["gate_fallback_batches"] += 1
             return {arts.index(a): rule_direction(a, watch_codes) for a in chunk}
@@ -1060,15 +1160,10 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
         with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as ex:
             for got in ex.map(_gate_chunk, chunks):
                 rel_idx.update(got)
-        kept_i = set(rel_idx)
-        g_skip = len(arts) - len(kept_i)
-        g_macro = [a for i, a in enumerate(arts) if rel_idx.get(i) == "macro"]
-        g_micro = [a for i, a in enumerate(arts) if rel_idx.get(i) == "micro"]
-        # 确定性持仓命中直达 holdings（标题点名关注公司/代码时不依赖门卫判断）
-        h_art = [a for i, a in enumerate(arts)
-                 if rel_idx.get(i) == "holdings" or _hits_watch(a, watch_codes)]
-        g_micro = list({id(a): a for a in g_micro + [a for i, a in enumerate(arts)
-                                                     if i not in kept_i]}.values())
+        # 黑名单式（2026-09-08）：rel_idx 只含例外项（macro/holdings 改向、skip 剔除），
+        # 其余一律「保留 + micro」。剔除项**真正不进下游**——此前被兜底塞回 micro，
+        # 既白烧 token 又推高 micro 段截断率（今日 11 次）。
+        g_macro, g_micro, h_art, g_skip = route_by_gate(arts, rel_idx, watch_codes)
         print(f"门卫分流 → macro {len(g_macro)} / micro {len(g_micro)} / "
               f"holdings {len(h_art)} / 剔除 {g_skip}")
     else:
@@ -1161,6 +1256,15 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
         # 主编本期无产出（截断/解析失败）→ 告警与排查依据（兜底轮 last_ok 会照常刷新，
         # 不能再让 state 看起来"一切正常"，2026-09-08 静默 4 小时实录）
         new_st["last_chief_fail"] = now.isoformat()
+    # 事件风险清单重建：本期 micro 负面事件刚落盘，立刻进清单才能影响下一轮买入
+    # （解禁侧由 event_radar 18:00 那轮刷新；这里补的是新闻侧时效，2026-09-08）
+    try:
+        from risk_list import refresh as _risk_refresh
+
+        st_risk = _risk_refresh()
+        print(f"✓ 事件风险清单重建：{st_risk['items']} 只禁买 / {st_risk['warns']} 只质押告警")
+    except Exception as exc:  # noqa: BLE001 清单失败不影响新闻产出
+        print(f"⚠️ 事件风险清单重建失败：{str(exc)[:100]}")
     save_state(new_st)
     return 0
 

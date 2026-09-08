@@ -94,6 +94,32 @@ def test_block_carries_actionable_pricing_note(tmp_path):
     assert "可直接下单的定价依据" in out
 
 
+def test_llm_trade_prompt_injects_pool_quotes(tmp_path, monkeypatch):
+    """09:35 开盘轮（主入口）同样必须拿到池内价——否则整点轮修好了它还在空转。"""
+    import live_llm_trade as T
+
+    (tmp_path / "data").mkdir()
+    # ts 用"现在"：build_prompt 内部不传 now，过期剔除会按真实时钟判（同生产）
+    fresh_ts = datetime.now().astimezone().isoformat(timespec="seconds")
+    (tmp_path / "data" / "l2_factors_live.json").write_text(
+        json.dumps({"600362.SH": _rec(ts=fresh_ts, price=48.53, pre=49.1)}),
+        encoding="utf-8")
+    monkeypatch.setattr(P, "ROOT", tmp_path)
+    out = T.build_prompt("a1", [], ["| 1 | 600362.SH | 江西铜业 | 有色 | 8 | 7 | — |"],
+                         {}, 100000.0, pool=POOL)
+    assert "江西铜业 600362.SH 现价 ¥48.53" in out
+
+
+def test_llm_trade_prompt_without_pool_is_unchanged(tmp_path, monkeypatch):
+    import live_llm_trade as T
+
+    monkeypatch.setattr(P, "ROOT", tmp_path / "empty")
+    out = T.build_prompt("a1", [], ["| 1 | 600362.SH | 江西铜业 | 有色 | 8 | 7 | — |"],
+                         {}, 100000.0)
+    assert "候选池实时行情" not in out
+    assert "江西铜业" in out
+
+
 # ---------------------------------------------------------------- 日级新开仓上限
 
 def _trade_file(tmp_path: Path, recs: list) -> Path:

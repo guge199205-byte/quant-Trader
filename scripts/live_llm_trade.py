@@ -171,7 +171,8 @@ DECISION_SCHEMA = (
 
 
 def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
-                 direction: dict, quota_remaining: float) -> str:
+                 direction: dict, quota_remaining: float,
+                 pool: list | None = None) -> str:
     lines = [
         f"现在是北京时间 {now_cn():%F %T}（开盘后）。你是 {agent} 的 A股实盘调仓决策模型，"
         f"管理 ¥{AGENT_QUOTA:,.0f} 虚拟额度（已用 ¥{agent_used(load_ledger(), agent):,.0f}，"
@@ -197,6 +198,13 @@ def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
                   "| 排名 | 代码 | 名称 | 行业 | 总分 | 融合分 | 备注 |",
                   "|------|------|------|------|------|--------|------|"]
         lines += pool_rows
+        # 池内实时价（桥口径）：候选表只有评分没有价 → 模型无法给新标的定价，
+        # 只能全 hold（2026-09-08 整点轮同款修复；09:35 是本系统主入口，更不能缺）
+        from live_prompt_context import build_pool_quote_block
+
+        qb = build_pool_quote_block(pool or [])
+        if qb:
+            lines += ["", qb]
     lines += [
         "",
         "【决策规则】",
@@ -306,7 +314,8 @@ def main() -> int:
         halt, halt_reason = check_and_trip(agent, persist=bool(args.execute))
         if halt:
             print(f"  🛑 [{agent}] 循环熔断：{halt_reason} → 今日禁止买入（卖出照常）")
-        prompt = build_prompt(agent, my_holdings, pool_table, direction, remaining)
+        prompt = build_prompt(agent, my_holdings, pool_table, direction, remaining,
+                              pool=pool)
         content, usage = "", None
         try:
             content, usage = call_llm(prompt, agent)

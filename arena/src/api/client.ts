@@ -970,8 +970,8 @@ export interface PineReport {
 }
 
 export interface PineJob {
-  status: 'queued' | 'running' | 'done' | 'failed' | '';
-  stage: string;
+  status?: 'queued' | 'running' | 'done' | 'failed' | '';
+  stage?: string;
   error?: string;
   problems?: string[];
   log?: string;
@@ -993,7 +993,12 @@ export const runPineBacktest = (
     }),
   );
 
+/** 任务状态 + 报告。报告缺失时后端可能给 {} / null，统一收敛成 null
+ *  （空对象是 truthy，直接当有报告用会在读 stats 时炸掉）。 */
 export const fetchPineJob = (id: string) =>
-  unwrap<{ job: PineJob; report: PineReport | null }>(
+  unwrap<{ job: PineJob | null; report: PineReport | null }>(
     api.get(`/market-lab/library/${encodeURIComponent(id)}/job`),
-  );
+  ).then((d) => ({
+    job: d.job ?? {},
+    report: d.report?.stats ? d.report : null,
+  }));

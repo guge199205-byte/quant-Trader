@@ -226,9 +226,9 @@ export default function StrategyLibrary() {
   const items = list?.items ?? [];
   const canMore = list ? list.filtered > items.length : false;
   const tp = cur ? transpile[cur.id] : undefined;
-  const stats = report?.stats ?? {};
-  const total = stats['Total trades']?.value;
-  const wins = stats['Winning trades']?.value;
+  const st = report?.stats;
+  const total = st?.['Total trades']?.value;
+  const wins = st?.['Winning trades']?.value;
   const rows = (report?.trade_rows ?? []).slice(-8).reverse();
 
   return (
@@ -390,7 +390,7 @@ export default function StrategyLibrary() {
                 </div>
               )}
 
-              {report ? (
+              {report && st ? (
                 <>
                   <div className="lab-transpile">
                     <span className="tag">
@@ -402,18 +402,18 @@ export default function StrategyLibrary() {
                     </span>
                   </div>
                   <div className="lab-stats">
-                    <div className={`lab-stat ${(report.stats['Net profit']?.pct ?? 0) >= 0 ? 'up' : 'down'}`}>
+                    <div className={`lab-stat ${(st['Net profit']?.pct ?? 0) >= 0 ? 'up' : 'down'}`}>
                       <span className="k">策略收益</span>
-                      <span className="v">{fmtPct(report.stats['Net profit']?.pct)}</span>
+                      <span className="v">{fmtPct(st['Net profit']?.pct)}</span>
                     </div>
                     <div className="lab-stat">
                       <span className="k">买入持有</span>
-                      <span className="v">{fmtPct(report.stats['Buy & hold return']?.pct)}</span>
+                      <span className="v">{fmtPct(st['Buy & hold return']?.pct)}</span>
                     </div>
                     <div className="lab-stat down">
                       <span className="k">最大回撤</span>
                       <span className="v">
-                        {fmtPct(-(report.stats['Max equity drawdown']?.pct ?? 0))}
+                        {fmtPct(-(st['Max equity drawdown']?.pct ?? 0))}
                       </span>
                     </div>
                     <div className="lab-stat">
@@ -424,7 +424,7 @@ export default function StrategyLibrary() {
                       </span>
                     </div>
                   </div>
-                  <Spark points={report.equity} />
+                  <Spark points={report.equity ?? []} />
                   {rows.length > 0 && (
                     <div className="lab-trades">
                       <div className="lab-table-wrap">

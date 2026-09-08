@@ -2116,11 +2116,13 @@ def pine_library_backtest(item_id: str, payload: dict = Body(default={})):
 
 @app.get("/api/market-lab/library/{item_id}/job")
 def pine_library_job(item_id: str):
-    """该策略的转写/回测任务状态 + 回测报告（净值、逐笔）。"""
+    """该策略的转写/回测任务状态 + 回测报告（净值、逐笔）。没跑过 → report 为 null。"""
     try:
         pl = _pine_lib()
         job = pl.job_status(item_id)
-        report = pl.read_report(item_id)
+        # 报告文件不存在时服务层给的是 {}——空对象在 JS 里是 truthy，界面会当成
+        # 「有报告」去读 stats 然后炸掉。这里统一收敛成 null。
+        report = pl.read_report(item_id) or None
         return {"success": True, "data": {"job": job, "report": report}}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -120,23 +120,26 @@ def dedup_articles(arts: list) -> list:
     return out
 
 
-def split_holdings_related(arts: list, watch_codes: set) -> tuple[list, list]:
-    """规则保底分流：enrichment.tickers 命中 watch → holdings；其余 → 其他。"""
+def split_holdings_related(arts: list, watch_codes: "set | dict") -> tuple[list, list]:
+    """规则保底分流：enrichment.tickers 命中 watch → holdings；其余 → 其他。
+    watch_codes 兼容 set 与 {code: name} dict（dict 按键判定）。"""
+    keys = set(watch_codes) if isinstance(watch_codes, dict) else watch_codes
     h, other = [], []
     for a in arts:
         tk = set((a.get("enrichment") or {}).get("tickers") or [])
-        (h if tk & watch_codes else other).append(a)
+        (h if tk & keys else other).append(a)
     return h, other
 
 
 _GLOBAL_RE = re.compile("|".join(GLOBAL_KW))
 
 
-def rule_direction(art: dict, watch_codes: set) -> str:
+def rule_direction(art: dict, watch_codes: "set | dict") -> str:
     """门卫降级时的规则方向：命中关注代码 → holdings；外围/宏观词 → macro；
     其余 → micro。只用于门卫 LLM 失败时的兜底（宁粗勿丢）。"""
+    keys = set(watch_codes) if isinstance(watch_codes, dict) else watch_codes
     tk = set((art.get("enrichment") or {}).get("tickers") or [])
-    if tk & watch_codes:
+    if tk & keys:
         return "holdings"
     title = str(art.get("title") or "")
     if _GLOBAL_RE.search(title):
@@ -452,6 +455,18 @@ def parse_llm_json(text: str) -> dict | None:
     return None
 
 
+class TruncatedOutputError(RuntimeError):
+    """输出被 max_tokens 截断。携带原文落盘供审计，但整轮不作解析——
+    截断轮的"末尾几行"必然残缺，救捞只会把思考草稿里的半成品行捞出来
+    （2026-09-08 实录：名称"(是)"、headline"宏观经济传导..."截尾的 H 行
+    进了交易提示词）。"""
+
+    def __init__(self, content: str, usage: dict | None):
+        super().__init__("输出被 max_tokens 截断，整轮作废")
+        self.content = content
+        self.usage = usage
+
+
 def call_llm(user: str, system: str, stage: str = "") -> tuple[str, dict | None]:
     """v4-flash 直连（重试 1 次，120s 超时）。失败 raise 由调用段降级。"""
     env = {}
@@ -492,10 +507,15 @@ def call_llm(user: str, system: str, stage: str = "") -> tuple[str, dict | None]
     data = resp.json()
     msg = (data.get("choices") or [{}])[0].get("message", {}) or {}
     content = str(msg.get("content") or "").strip() or str(msg.get("reasoning_content") or "").strip()
+    finish = str(((data.get("choices") or [{}])[0].get("finish_reason")) or "")
     usage = data.get("usage") or None
     if usage:
         usage = {k: int(usage.get(k) or 0)
                  for k in ("prompt_tokens", "completion_tokens", "total_tokens")}
+    # max_tokens 截断：最终答案未写完，行式协议末尾几行必然残缺，救捞只会
+    # 把思考草稿里的半成品行捞出来 → 截断轮整体作废（调用侧降级复用上一版）。
+    if finish == "length":
+        raise TruncatedOutputError(content, usage)
     return content, usage
 
 
@@ -573,7 +593,26 @@ def _is_placeholder_row(fields: list) -> bool:
         return True
     # 模型把提示词字段名照抄成数据（如 T | theme | logic、W | name | code | ...）
     body = [x.strip().lower() for x in fields[1:] if x.strip()]
-    return any(x in _PLACEHOLDER_TOKENS for x in body[:2])
+    if any(x in _PLACEHOLDER_TOKENS for x in body[:2]):
+        return True
+    # 截断草稿里的半成品行（2026-09-08 chief 实录）：名称列空/纯符号占位
+    #（"(是)"、"—"、"无"）；headline 截尾"..."；verdict 利空/利好却 impact=0
+    if len(fields) >= 4:
+        name = (fields[2] if len(fields) > 2 else "").strip()
+        if not name or set(name) <= {"(", ")", "是", "—", "-", "无", "?"}:
+            return True
+    if len(fields) > 7:
+        if str(fields[7]).rstrip().endswith("...") or str(fields[7]).strip() in ("", "…"):
+            return True
+    if len(fields) > 4:
+        verdict = (fields[3] or "").strip() if len(fields) > 3 else ""
+        try:
+            impact = float(str(fields[4]).strip())
+        except ValueError:
+            impact = None
+        if impact is not None and impact == 0 and verdict in ("利好", "利空"):
+            return True
+    return False
 
 
 def _maybe_dict(v) -> dict:
@@ -724,6 +763,16 @@ def empty_window_markup(ts: str) -> str:
 
 # ---------- 关注代码（持仓 + 候选池） ----------
 
+def _watch_line(watch_codes: dict) -> str:
+    """关注代码行 → 注入 gate/chief/holdings 提示词。带公司名：
+    次新股代码模型不认识，不给名它就瞎猜（浪费 token 且易截断）。"""
+    if not watch_codes:
+        return "关注代码（命中→holdings 方向）：无"
+    parts = [f"{c} {watch_codes[c]}" if watch_codes.get(c) else c
+             for c in sorted(watch_codes)]
+    return "关注代码（命中→holdings 方向）：" + ",".join(parts)
+
+
 def merge_watch_codes(positions: list | None, pool: list | None,
                       pool_codes: set | None = None) -> set:
     out = set(pool_codes or ())
@@ -738,23 +787,32 @@ def merge_watch_codes(positions: list | None, pool: list | None,
     return out
 
 
-def load_watch_codes() -> tuple[set, list]:
-    """现场取持仓（桥）+ 候选池（live_trade_picks）；各自独立降级。"""
-    codes, warns = set(), []
+def load_watch_codes() -> tuple[dict, list]:
+    """现场取持仓（桥）+ 候选池（live_llm_trade）；各自独立降级。
+    返回 ({code: name}, warns)——名称一并返回：次新股代码模型不认识，
+    不给名称它会花上千 token 瞎猜公司（2026-09-08 chief 截断的诱因）。"""
+    codes: dict = {}
+    warns = []
     try:
         from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
 
         acct = TdxBridgeBroker()._account_query()
         positions = [p for p in (acct.get("positions") or [])
                      if float(p.get("total_volume") or 0) > 0]
-        codes |= {str(p.get("stock_code")) for p in positions if p.get("stock_code")}
+        for p in positions:
+            c = str(p.get("stock_code") or "")
+            if c:
+                codes.setdefault(c, str(p.get("stock_name") or ""))
     except Exception as exc:  # noqa: BLE001
         warns.append(f"持仓获取失败: {str(exc)[:80]}")
     try:
-        from live_trade_picks import load_pool
+        from live_llm_trade import load_pool
 
         pool, _ = load_pool(20)
-        codes |= {str(p.get("code")) for p in (pool or []) if p.get("code")}
+        for p in pool or []:
+            c = str(p.get("code") or "")
+            if c:
+                codes.setdefault(c, str(p.get("name") or ""))
     except Exception as exc:  # noqa: BLE001
         warns.append(f"候选池获取失败: {str(exc)[:80]}")
     return codes, warns
@@ -791,6 +849,12 @@ def _run_stage(stage: str, user: str) -> tuple[dict | None, bool]:
     tail = {"gate": _LINE_TAIL, "json": _JSON_TAIL}.get(mode, _PIPE_TAIL)
     try:
         content, usage = call_llm(user + tail, _system_for(stage), stage=stage)
+    except TruncatedOutputError as exc:
+        # 截断原文照常落盘（前端对话/审计可见），但不做解析救捞 → 上层降级
+        path = append_log(user, exc.content, stage, exc.usage)
+        print(f"⚠️ [{AGENT_CN[stage]}] 输出被截断，整轮作废防草稿行污染"
+              f"（token={exc.usage and exc.usage.get('total_tokens')}）→ {path.relative_to(ROOT)}")
+        return None, False
     except Exception as exc:  # noqa: BLE001
         print(f"⚠️ [{AGENT_CN[stage]}] LLM 失败: {exc}")
         return None, False
@@ -890,8 +954,9 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
         lessons_block = ""
     watch_codes, warns = load_watch_codes()
     _atomic_write(WATCH_FILE, {"ts": now.isoformat(), "codes": sorted(watch_codes),
+                               "names": {k: v for k, v in watch_codes.items() if v},
                                "warns": warns})
-    watch_line = "关注代码（命中→holdings 方向）：" + (",".join(sorted(watch_codes)) or "无")
+    watch_line = _watch_line(watch_codes)
 
     # 3) 门卫（agent 化金融相关 + macro/micro/holdings 方向；分批防超限/防指令丢失）
     g_macro, g_micro, h_art, g_skip = [], [], [], 0
@@ -938,7 +1003,7 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
         if lessons_block:
             user += f"\n{lessons_block}"
         if stage == HOLD:
-            user += "\n当前实盘持仓/关注池代码：" + (",".join(sorted(watch_codes)) or "无")
+            user += "\n" + _watch_line(watch_codes).replace("关注代码", "当前实盘持仓/关注池代码")
         d, ok = _run_chunked(stage, arts_sub, user)
         results[stage] = d if ok else {"skipped": True, "degraded": not d}
 
@@ -1009,13 +1074,19 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
     return 0
 
 
-def cli() -> int:
+def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="新闻 Agent 管线（全 v4-flash）")
     ap.add_argument("--since", default="", help="北京 'YYYY-MM-DD HH:MM'（默认增量游标）")
     ap.add_argument("--until", default="", help="北京 'YYYY-MM-DD HH:MM'（默认 now）")
     ap.add_argument("--stage", default="",
                     help="只跑单段：gate|macro|micro|holdings|chief")
-    a = ap.parse_args()
+    ap.add_argument("--force", action="store_true",
+                    help="跳过节假日闸门强制运行（run_pipeline 的 force 参数）")
+    return ap
+
+
+def cli() -> int:
+    a = build_arg_parser().parse_args()
     stages = ALL_STAGES
     if a.stage:
         stage_map = {}

@@ -190,6 +190,36 @@ def test_parse_pipe_chief():
     assert d["market_notes"].startswith("可深挖") and d["confidence"] == 0.7
 
 
+def test_parse_pipe_rejects_truncated_draft_rows():
+    """回归 2026-09-08 事故：chief 思考被 max_tokens 截断，救捞器把草稿里的
+    半成品 H 行捞进了交易提示词（名称"(是)"、headline 截尾...、利空却 impact+0）。
+    这些特征必须在 _is_placeholder_row 层被丢弃。"""
+    # 09:55 实录的两行垃圾（字段裁剪为 chief H 协议长度）
+    junk = ("H | 001312.SZ | (是) | 中性 | 0.0 | 今日 | 板块轮动联动 | 板块分析 | 无新持仓信号\n"
+            "H | 600309.SH | 万华化学 | 利空 | 0.0 | 1-5日 | 宏观 | 宏观经济传导... | 宏观研究/板块跟踪\n"
+            # 正常行必须保留
+            "H | 600309.SH | 万华化学 | 利好 | 1.0 | 日内 | 涨价 | MDI挂牌价上调 | 财联社\n")
+    d = N.parse_pipe_lines(junk, "chief")
+    assert d is not None
+    names = [h["name"] for h in d["holdings"]]
+    assert names == ["万华化学"]  # (是) 占位行与 ... 截尾行都丢弃
+    verdicts = [(h["verdict"], h["impact"]) for h in d["holdings"]]
+    assert ("利空", 0.0) not in verdicts  # 利空 impact=0 矛盾行丢弃
+
+
+def test_watch_line_carries_names():
+    """回归：关注代码曾裸注入不带公司名 → 模型瞎猜次新股浪费 token 致截断。"""
+    line = N._watch_line({"001312.SZ": "福恩股份", "600309.SH": ""})
+    assert "福恩股份" in line and "600309.SH" in line
+    assert "福恩股份" not in N._watch_line({})  # 空池 → 无
+
+
+def test_truncated_output_error_class():
+    exc = N.TruncatedOutputError("半截草稿", {"total_tokens": 7311})
+    assert "截断" in str(exc)
+    assert exc.content == "半截草稿" and exc.usage == {"total_tokens": 7311}
+
+
 # ---------- 晚间复盘（news_review） ----------
 
 import news_review as R  # noqa: E402
@@ -276,3 +306,14 @@ def test_price_watch_auction_guard():
     assert in_close_auction(_dt.fromisoformat("2026-09-07T14:58:30+08:00"))
     assert not in_close_auction(_dt.fromisoformat("2026-09-07T14:50:00+08:00"))
     assert not in_close_auction(_dt.fromisoformat("2026-09-07T15:01:00+08:00"))
+
+
+def test_cli_parser_exposes_all_run_pipeline_args():
+    """回归：cli 曾访问 a.force 但 parser 未定义 → 每次调用必崩。
+    保护：cli 传给 run_pipeline 的属性必须在 parser 里都能解析出来。"""
+    ns = N.build_arg_parser().parse_args([])
+    for attr in ("since", "until", "stage", "force"):
+        assert hasattr(ns, attr), f"parser 缺少 --{attr}"
+    assert ns.force is False  # 默认不强制
+    assert N.build_arg_parser().parse_args(["--force"]).force is True
+    assert N.build_arg_parser().parse_args(["--stage", "macro"]).stage == "macro"

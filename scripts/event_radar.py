@@ -113,6 +113,15 @@ def collect(day: date | None = None, refresh: bool = False,
             stats["buyback"] = _save("buyback", df)
         except Exception as exc:  # noqa: BLE001
             stats["buyback"] = f"fail: {str(exc)[:80]}"
+
+    # 4) 重建事件风险清单（解禁/负面新闻 → 买入硬拦，见 risk_list）
+    try:
+        from risk_list import refresh as _risk_refresh
+
+        st = _risk_refresh()
+        stats["risk_list"] = f"{st['items']} 只禁买 / {st['warns']} 只质押告警"
+    except Exception as exc:  # noqa: BLE001 清单重建失败不影响采集结果
+        stats["risk_list"] = f"fail: {str(exc)[:80]}"
     return stats
 
 
@@ -186,8 +195,10 @@ def tag_events(codes: list, horizon: int = HORIZON_DEFAULT,
         try:
             rows = _read_cache(f)
             prog = next((c for c in rows[0] if "进度" in c), None) if rows else None
-            ann = next((c for c in df.columns if "公告日期" in c), None)
-            amt = next((c for c in df.columns if "已回购金额" in c), None)
+            # 修复（2026-09-08）：原写 df.columns——df 是 collect() 里的局部变量，
+            # 这里 NameError 被 except 吞掉，导致"公告 ≤30 日"过滤从未生效。
+            ann = next((c for c in rows[0] if "公告日期" in c), None) if rows else None
+            amt = next((c for c in rows[0] if "已回购金额" in c), None) if rows else None
             for r in rows:
                 c6 = _norm6(r.get("股票代码") or "")
                 if c6 not in six:

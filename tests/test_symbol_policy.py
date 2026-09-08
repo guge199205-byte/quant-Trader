@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from buy_gate import BuyGate, check_buy  # noqa: E402
 from symbol_policy import (SymbolPolicy, check_symbol, is_risky_name,  # noqa: E402
-                           load_policy)
+                           load_policy, load_policy_with_risk)
 
 DEFAULT = SymbolPolicy()
 
@@ -163,3 +163,52 @@ def test_hourly_executor_blocks_st_buy_via_names():
         [], 1e6, dry_run=True, pool_codes={"600666.SH", "600309.SH"},
         names={"600666.SH": "*ST瑞德", "600309.SH": "万华化学"})
     assert [e["code"] for e in out] == ["600309.SH"]
+
+
+# ---------------------------------------------------------------- 事件风险清单
+
+def _risk_policy(*pairs) -> SymbolPolicy:
+    return SymbolPolicy(risk=tuple(pairs))
+
+
+def test_risk_code_blocked_with_reason():
+    p = _risk_policy(("688795", "09/10解禁3.4%流通盘（首发原股东限售股份）"))
+    r = check_symbol("688795.SH", "摩尔线程", p)
+    assert "事件风险" in r and "解禁" in r and "688795.SH" in r
+
+
+def test_risk_matching_ignores_exchange_suffix_and_case():
+    """风险表按 6 位代码匹配：数据源后缀口径不统一（.SH/.SZ/无后缀）也要拦得住。"""
+    p = _risk_policy(("688795", "解禁"))
+    assert check_symbol("688795", "摩尔线程", p)
+    assert check_symbol(" 688795.sh ", "摩尔线程", p)
+
+
+def test_risk_unrelated_code_passes():
+    p = _risk_policy(("688795", "解禁"))
+    assert check_symbol("600309.SH", "万华化学", p) == ""
+
+
+def test_gate_blocks_risk_listed_buy():
+    p = _risk_policy(("600309", "负面新闻：高管处罚"))
+    d = check_buy("600309.SH", 0.2, False, 0, set(), _gate(policy=p), name="万华化学")
+    assert not d.ok and "事件风险" in d.reason
+
+
+def test_load_policy_with_risk_merges_risk_file(tmp_path):
+    conf = tmp_path / "live_symbols.json"
+    conf.write_text(json.dumps({"block_buy": ["600666.SH"]}), encoding="utf-8")
+    risk = tmp_path / "risk_block.json"
+    risk.write_text(json.dumps({"items": {
+        "688795": {"reason": "解禁跌停", "kind": "news", "expire": "2099-01-01"},
+    }}), encoding="utf-8")
+    p = load_policy_with_risk(conf, risk)
+    assert p.block_buy == frozenset({"600666.SH"})
+    assert "解禁跌停" in check_symbol("688795.SH", None, p)
+
+
+def test_load_policy_with_risk_missing_risk_file_is_operator_policy(tmp_path):
+    conf = tmp_path / "live_symbols.json"
+    conf.write_text(json.dumps({"block_buy": ["600666.SH"]}), encoding="utf-8")
+    p = load_policy_with_risk(conf, tmp_path / "nope.json")
+    assert p.block_buy == frozenset({"600666.SH"}) and p.risk == ()

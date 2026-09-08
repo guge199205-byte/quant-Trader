@@ -1,5 +1,15 @@
 {
-  "_note": "实盘标的边界（scripts/symbol_policy.py 读取）。block_buy 为操作员黑名单：这些代码一律禁止买入（卖出不受限），改完立即生效，无需重启。allow_st=true 才放行 ST/*ST/退市整理股（默认 false）。文件缺失或损坏 → 仍禁 ST，仅黑名单为空。",
+  "_note": "实盘标的边界（scripts/symbol_policy.py 读取）。block_buy 为操作员黑名单：这些代码一律禁止买入（卖出不受限），改完立即生效，无需重启。allow_st=true 才放行 ST/*ST/退市整理股（默认 false）。文件缺失或损坏 → 仍禁 ST，仅黑名单为空。risk 段是事件风险清单参数（scripts/risk_list.py 每日刷新 data/risk_block.json）：解禁窗口内/近期负面新闻个股自动禁买，见 _risk_note。",
   "block_buy": [],
-  "allow_st": false
+  "allow_st": false,
+  "risk": {
+    "_risk_note": "enabled=false 关闭整条风险清单（只留 ST/黑名单）。unlock_days=解禁前多少自然日内禁买；unlock_ratio_min=解禁占流通市值百分比阈值（源数据是小数，此处填百分数）。news_days=负面新闻回溯天数；news_sentiment_max=情绪阈值（-1..1，≤该值算负面）；news_max_tickers=事件涉及标的数上限，超过视为板块级不拦。pledge_warn_ratio=质押比例告警线（只告警不拦买）。",
+    "enabled": true,
+    "unlock_days": 10,
+    "unlock_ratio_min": 1.0,
+    "news_days": 3,
+    "news_sentiment_max": -0.5,
+    "news_max_tickers": 3,
+    "pledge_warn_ratio": 50.0
+  }
 }

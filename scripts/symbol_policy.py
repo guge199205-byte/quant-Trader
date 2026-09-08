@@ -7,15 +7,20 @@
 有 blacklist，但只作用于 MCP 路径，实盘循环读不到。本模块把"哪些标的
 **绝对不许买**"从提示词挪进代码：模型说什么都不放行。
 
+2026-09-08 扩展：除 ST/黑名单外，接入 `risk_list` 的事件风险清单（解禁窗口内 /
+近期负面新闻个股）。用户口径「解禁这种就是要告警跑的、负面新闻股票也要避坑掉，
+模型有的话需要毙掉」——同一处硬拦，实盘两条买入路径自动生效。
+
 边界：
 - **只拦买入**。卖出永远放行——否则被套的仓位出不来，这是比"买错"更糟的故障。
 - 名称取不到 → **放行**（fail-open）。宁可漏拦一只，也不能因为名称表拉不到
-  就把当天所有买入停掉（同 live_breaker 的取舍）。代码黑名单不依赖名称，
-  任何时候都生效。
+  就把当天所有买入停掉（同 live_breaker 的取舍）。代码黑名单与风险清单不依赖
+  名称，任何时候都生效。
 - 默认禁 ST（`allow_st=False`）：调用方忘读配置也不会丢掉这条底线。
+- 风险清单文件缺失/损坏 → 只有操作员边界生效（同样 fail-open）。
 """
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,10 +39,13 @@ class SymbolPolicy:
     block_buy：操作员黑名单（代码精确匹配，大小写不敏感），随时可改
     `configs/live_symbols.json` 生效，无需改代码。
     allow_st：显式放行 ST（默认否）。
+    risk：事件风险清单（((6位代码, 原因), ...)，由 risk_list 每日刷新）。
+      按 6 位前缀匹配——数据源后缀口径不统一（.SH/.SZ/无后缀）。
     """
 
     block_buy: frozenset = frozenset()
     allow_st: bool = False
+    risk: tuple = ()
 
 
 def is_risky_name(name) -> bool:
@@ -53,6 +61,11 @@ def check_symbol(code: str, name, policy: SymbolPolicy) -> str:
     c = str(code or "").strip().upper()
     if c in policy.block_buy:
         return f"{code} 在操作员黑名单（configs/live_symbols.json）"
+    if policy.risk:
+        c6 = c.split(".")[0]
+        for code6, reason in policy.risk:
+            if code6 == c6:
+                return f"{code} 事件风险：{reason}"
     if not policy.allow_st and is_risky_name(name):
         return f"{code} {name} 属 ST/*ST/退市整理股（默认禁买）"
     return ""
@@ -76,3 +89,23 @@ def load_policy(path: Path | None = None) -> SymbolPolicy:
               if isinstance(c, str) and c.strip()}
              if isinstance(raw, list) else set())
     return SymbolPolicy(block_buy=frozenset(codes), allow_st=bool(doc.get("allow_st")))
+
+
+def load_policy_with_risk(path: Path | None = None,
+                          risk_path: Path | None = None) -> SymbolPolicy:
+    """操作员边界 + 事件风险清单（data/risk_block.json，risk_list 每交易日刷新）。
+
+    实盘买入路径用这个（而不是 load_policy）：解禁/负面新闻个股与 ST 一样硬拦。
+    risk_list 不可用 → 退回纯操作员边界（fail-open，不阻塞交易）。
+    """
+    p = load_policy(path)
+    try:
+        from risk_list import load_risk
+
+        items = load_risk(risk_path)
+    except Exception:  # noqa: BLE001 风险清单缺失不阻塞买入判定
+        return p
+    if not items:
+        return p
+    return replace(p, risk=tuple(sorted((str(k), str((v or {}).get("reason") or ""))
+                                        for k, v in items.items())))

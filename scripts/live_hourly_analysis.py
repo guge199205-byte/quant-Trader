@@ -614,6 +614,19 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
         "买卖/换仓依据 = 信号分数 + 大盘盘面 + 板块主线 + 新闻分子综合判断，"
         "任何 HOLD/BUY 侧标签一律不作为依据。",
     ]
+    # 事件风险警示（解禁窗口内/近期负面新闻）：持仓提示退出，候选提示别选
+    # （闸门已硬拦买入，这里省一轮无效决策；2026-09-08 用户口径）
+    try:
+        from live_prompt_context import risk_warning_block
+
+        _nm = {r["code"]: r.get("name") for r in rows}
+        _nm.update({p.get("code"): p.get("name") for p in (pool or [])})
+        rb = risk_warning_block([r["code"] for r in rows],
+                                [p.get("code") for p in (pool or [])], _nm)
+        if rb:
+            lines += [rb]
+    except Exception:  # noqa: BLE001 风险清单不可用不阻塞提示词
+        pass
     # 候选池实时行情（非持仓）：换仓/新开仓的定价依据。此前持仓 agent 既拿不到
     # 池内价格、闸门也不放行非持仓买入 → "允许换仓"实际无法执行（2026-09-08 修复）
     if pool:
@@ -813,11 +826,16 @@ def build_flat_content(pool: list, direction: dict, cash: float, agent: str,
     else:
         lines += pool_rows(pool)
     # 池内实时价（桥口径）：无价 → 模型无法定价 → 只能空转/挂 watch（哨兵不执行买单）
-    from live_prompt_context import build_pool_quote_block
+    from live_prompt_context import build_pool_quote_block, risk_warning_block
 
     qb = build_pool_quote_block(pool)
     if qb:
         lines += ["", qb]
+    # 事件风险警示：候选池里命中解禁/负面新闻的标的一律别选（闸门会毙掉）
+    rb = risk_warning_block(None, [p.get("code") for p in pool],
+                            {p.get("code"): p.get("name") for p in pool})
+    if rb:
+        lines += [rb]
     if direction:
         lines += ["", f"大盘方向：{direction}", ""]
     ctx = load_market_context()
@@ -1405,11 +1423,12 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
         print(f"  🛑 [{agent}] 循环熔断：{halt_reason} → 今日禁止买入（卖出照常）")
     # 买入闸门（纯函数，与 09:35 开盘轮共用同一实现，防两处判定漂移）
     from buy_gate import BuyGate, check_buy
-    from symbol_policy import load_policy
+    from symbol_policy import load_policy_with_risk
 
     gate = BuyGate(pool_codes=frozenset(pool_codes or ()),
                    per_stock_pct=PER_STOCK_PCT, max_new_buys=MAX_NEW_BUYS,
-                   halted=halt, halt_reason=halt_reason, policy=load_policy())
+                   halted=halt, halt_reason=halt_reason,
+                   policy=load_policy_with_risk())  # 含解禁/负面新闻事件风险清单
     for d in decisions:
         code = d["code"]
         h = next((x for x in holdings if x["code"] == code), None)

@@ -224,11 +224,24 @@ def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
         lines += pool_rows
         # 池内实时价（桥口径）：候选表只有评分没有价 → 模型无法给新标的定价，
         # 只能全 hold（2026-09-08 整点轮同款修复；09:35 是本系统主入口，更不能缺）
-        from live_prompt_context import build_pool_quote_block
+        from live_prompt_context import build_pool_quote_block, risk_warning_block
 
         qb = build_pool_quote_block(pool or [])
         if qb:
             lines += ["", qb]
+    # 事件风险警示（解禁窗口内/近期负面新闻）：持仓提示退出，候选提示别选
+    # （闸门已硬拦买入，这里省一轮无效决策；2026-09-08 用户口径）
+    try:
+        from live_prompt_context import risk_warning_block
+
+        _nm = {h["code"]: h.get("name") for h in holdings}
+        _nm.update({p.get("code"): p.get("name") for p in (pool or [])})
+        rb = risk_warning_block([h["code"] for h in holdings],
+                                [p.get("code") for p in (pool or [])], _nm)
+        if rb:
+            lines += [rb]
+    except Exception:  # noqa: BLE001 风险清单不可用不阻塞提示词
+        pass
     lines += [
         "",
         "【决策规则】",
@@ -341,11 +354,12 @@ def main() -> int:
             print(f"  🛑 [{agent}] 循环熔断：{halt_reason} → 今日禁止买入（卖出照常）")
         # 买入闸门（纯函数，与整点轮共用同一实现，防两处判定漂移）
         from buy_gate import BuyGate, check_buy
-        from symbol_policy import load_policy
+        from symbol_policy import load_policy_with_risk
 
         gate = BuyGate(pool_codes=frozenset(p["code"] for p in pool),
                        per_stock_pct=PER_STOCK_PCT, max_new_buys=MAX_NEW_BUYS,
-                       halted=halt, halt_reason=halt_reason, policy=load_policy())
+                       halted=halt, halt_reason=halt_reason,
+                       policy=load_policy_with_risk())  # 含解禁/负面新闻事件风险清单
         # 标的边界用的名称表：候选池 + 本 agent 持仓（ST/退市识别，见 symbol_policy）
         nm_by_code = {p["code"]: p.get("name") for p in pool}
         nm_by_code.update({h["code"]: h.get("name") for h in my_holdings})

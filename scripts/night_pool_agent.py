@@ -276,6 +276,32 @@ def run(date: str, dry: bool = False) -> int:
                 c["事件"] = "；".join(ev)
     except Exception as exc:  # noqa: BLE001
         print(f"⚠️ 事件标签不可用: {exc}")
+    # 风险清单（解禁窗口内 / 近期负面新闻个股）直接从候选里剔除：
+    # 模型看不见就不会选，比"选了再被闸门毙掉"少一轮无效决策（2026-09-08 用户口径）。
+    # 闸门仍会独立拦一次（夜间过滤失效时兜底）。
+    try:
+        from risk_list import load_risk
+
+        _risk = load_risk()
+        if _risk:
+            before = len(cands)
+            kept = []
+            for c in cands:
+                code6 = str(c.get("code") or "").split(".")[0]
+                hit = _risk.get(code6)
+                if hit:
+                    print(f"  ⛔ 剔除风险标的 {c.get('code')} {c.get('name') or ''}："
+                          f"{hit.get('reason')}")
+                    continue
+                kept.append(c)
+            cands = kept
+            if not cands:
+                print("❌ 候选全部命中风险清单，本轮不产出池")
+                return 1
+            if before != len(cands):
+                print(f"  候选 {before} → {len(cands)}（风险清单剔除 {before - len(cands)} 只）")
+    except Exception as exc:  # noqa: BLE001 风险清单不可用不阻塞研究
+        print(f"⚠️ 风险清单不可用: {exc}")
     cand_json = json.dumps(cands, ensure_ascii=False)
     news = _news_block(d0)                      # 休市窗口新闻简报（平日晚间为空）
     time_box = 150 if news else 90              # 有简报时放宽思考时间盒

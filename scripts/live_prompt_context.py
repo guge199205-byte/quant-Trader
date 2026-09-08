@@ -459,6 +459,43 @@ def build_gap_note(start_iso: str, end_iso: str, holdings: list,
     return "\n".join(lines)
 
 
+def risk_warning_block(held_codes=None, pool_codes=None, names=None,
+                       max_items: int = 10, path=None) -> str:
+    """【事件风险警示】：持仓/候选池里命中事件风险清单的标的（解禁窗口内 / 近期负面新闻）。
+
+    用户口径（2026-09-08）：「解禁这种就是要告警跑的、负面新闻股票也要避坑掉，
+    模型有的话需要毙掉」——持仓命中要评估退出（卖出不受闸门限制），候选命中禁止买入。
+    闸门（symbol_policy + risk_list）已硬拦买入，这里让模型**先知道**，
+    省一轮"提了买、被毙掉"的无效决策；持仓侧则补上闸门管不到的退出提示。
+    清单缺失 → 返回 ""（fail-open，不阻塞提示词构建）。
+    """
+    try:
+        from risk_list import load_risk
+
+        risk = load_risk(path)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not risk:
+        return ""
+    nm = names or {}
+    lines: list = []
+
+    def _add(codes, tail):
+        for code in codes or []:
+            it = risk.get(str(code).split(".")[0])
+            if not it:
+                continue
+            name = nm.get(code) or nm.get(str(code).split(".")[0]) or ""
+            lines.append(f"- {code} {name}：{it.get('reason')}{tail}")
+
+    _add(held_codes, " —— 持仓命中：优先评估减仓/退出，禁止加仓")
+    _add(pool_codes, " —— 候选命中：禁止买入（闸门硬拦）")
+    if not lines:
+        return ""
+    return "\n".join(["", "【事件风险警示（系统风险清单，硬约束）】", *lines[:max_items],
+                      "（持仓可卖、不可加仓；未持仓一律不许买——闸门会直接毙掉。）"])
+
+
 def load_news_brief(max_age_min: int = 180) -> str:
     """『新闻分子』（新闻主编 latest.json → text）注入交易提示词。
     新鲜度闸门：分子缺失或 age>max_age_min 分钟 → 返回带滞后标注的空壳

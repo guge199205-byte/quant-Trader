@@ -46,19 +46,17 @@ class TestExtractCode:
 
 
 class TestCallLlm:
-    def test_uses_generous_max_tokens(self, monkeypatch):
-        """推理模型的 reasoning token 也计入 completion——8k 上限会把长策略的
-        输出截断（0001 就是这样失败的），这里锁住这个上限别再被调回去。"""
+    @staticmethod
+    def _patch(monkeypatch, seen: dict, finish: str = "stop"):
         import requests
-
-        seen: dict = {}
 
         class FakeResp:
             def raise_for_status(self):
                 pass
 
             def json(self):
-                return {"choices": [{"message": {"content": "x"}, "finish_reason": "stop"}]}
+                return {"choices": [{"message": {"content": "x"}, "finish_reason": finish}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}}
 
         def fake_post(url, headers=None, json=None, timeout=None):
             seen.update(json or {})
@@ -67,9 +65,126 @@ class TestCallLlm:
         monkeypatch.setattr(ptp, "_env", lambda: {"OPENAI_API_BASE": "http://x",
                                                   "OPENAI_API_KEY": "k"})
         monkeypatch.setattr(requests, "post", fake_post)
+
+    def test_default_disables_thinking(self, monkeypatch):
+        """转写是照模板的机械活：开思考会把 completion 额度烧光——0001 烧 23755 token，
+        0004 直接 32k 截断。默认必须关思考。"""
+        seen: dict = {}
+        self._patch(monkeypatch, seen)
         ptp.call_llm("system", "user", "m")
+        assert seen["thinking"] == {"type": "disabled"}
+        assert seen["max_tokens"] == ptp.MAX_TOKENS_FAST
+
+    def test_think_mode_keeps_generous_cap(self, monkeypatch):
+        seen: dict = {}
+        self._patch(monkeypatch, seen)
+        ptp.call_llm("system", "user", "m", think=True)
+        assert "thinking" not in seen
         assert seen["max_tokens"] == ptp.MAX_TOKENS
         assert ptp.MAX_TOKENS >= 16000
+
+    def test_truncation_returned_not_raised(self, monkeypatch):
+        """截断要能回传给 transpile 做「开思考重试」，不能在底层就抛掉。"""
+        seen: dict = {}
+        self._patch(monkeypatch, seen, finish="length")
+        content, usage, truncated = ptp.call_llm("system", "user", "m")
+        assert truncated is True
+        assert content == "x" and usage["completion_tokens"] == 2
+
+
+class TestTranspileLadder:
+    """关思考优先、截断才开思考重试。"""
+
+    @staticmethod
+    def _fake_pine(monkeypatch, tmp_path):
+        monkeypatch.setattr(ptp, "OUT_DIR", tmp_path)
+        monkeypatch.setattr(ptp, "_load_pine", lambda _: {
+            "title": "甲", "category": "c", "version": 5, "source": "//@version=5\n"})
+
+    def test_clean_run_does_not_think(self, tmp_path, monkeypatch):
+        self._fake_pine(monkeypatch, tmp_path)
+        calls: list[bool] = []
+
+        def fake(system, user, model, think=False):
+            calls.append(think)
+            return f"```python\n{GOOD}```", {"completion_tokens": 9}, False
+
+        monkeypatch.setattr(ptp, "call_llm", fake)
+        meta = ptp.transpile("0004")
+        assert calls == [False]
+        assert meta["think"] is False and meta["problems"] == []
+
+    def test_truncation_retries_with_thinking(self, tmp_path, monkeypatch):
+        self._fake_pine(monkeypatch, tmp_path)
+        calls: list[bool] = []
+
+        def fake(system, user, model, think=False):
+            calls.append(think)
+            return f"```python\n{GOOD}```", None, not think
+
+        monkeypatch.setattr(ptp, "call_llm", fake)
+        meta = ptp.transpile("0004")
+        assert calls == [False, True]
+        assert meta["think"] is True and meta["problems"] == []
+
+    def test_double_truncation_raises(self, tmp_path, monkeypatch):
+        self._fake_pine(monkeypatch, tmp_path)
+        monkeypatch.setattr(ptp, "call_llm", lambda *a, **k: ("", None, True))
+        with pytest.raises(RuntimeError, match="截断"):
+            ptp.transpile("0004")
+
+
+class TestRepair:
+    """回测报错 → 让模型改一版。只写文件，执行永远归沙箱。"""
+
+    @staticmethod
+    def _setup(tmp_path, monkeypatch):
+        d = tmp_path / "0004"
+        d.mkdir(parents=True)
+        (d / "candidate.py").write_text("旧代码\n", encoding="utf-8")
+        (d / "meta.json").write_text(json.dumps({"title": "甲", "problems": []}),
+                                     encoding="utf-8")
+        monkeypatch.setattr(ptp, "OUT_DIR", tmp_path)
+        monkeypatch.setattr(ptp, "_load_pine", lambda _: {
+            "title": "甲", "category": "c", "version": 5, "source": "//@version=5\n"})
+        return d
+
+    def test_rewrites_candidate_and_records_history(self, tmp_path, monkeypatch):
+        d = self._setup(tmp_path, monkeypatch)
+        seen: dict = {}
+
+        def fake_chat(messages, model, think=False):
+            seen["messages"] = messages
+            seen["think"] = think
+            return f"```python\n{GOOD}```", {"completion_tokens": 7}, False
+
+        monkeypatch.setattr(ptp, "_chat", fake_chat)
+        meta = ptp.repair("0004", "TypeError: 'float' object is not subscriptable")
+
+        assert (d / "candidate.py").read_text(encoding="utf-8").strip() == GOOD.strip()
+        assert meta["problems"] == []
+        assert len(meta["repairs"]) == 1
+        assert "TypeError" in meta["repairs"][0]["error"]
+        assert seen["think"] is False                      # 修复同样关思考
+        assert "TypeError" in seen["messages"][-1]["content"]   # 报错进了提示词
+
+    def test_static_problems_recorded(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(ptp, "_chat",
+                            lambda *a, **k: ("```python\ndef main():\n    pass\n```", None, False))
+        meta = ptp.repair("0004", "boom")
+        assert any("缺少必需结构" in p for p in meta["problems"])
+
+    def test_truncated_repair_raises(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(ptp, "_chat", lambda *a, **k: ("", None, True))
+        with pytest.raises(RuntimeError, match="截断"):
+            ptp.repair("0004", "boom")
+
+    def test_missing_candidate_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ptp, "OUT_DIR", tmp_path / "nope")
+        with pytest.raises(RuntimeError, match="没有候选可修"):
+            ptp.repair("0004", "boom")
 
 
 class TestStaticCheck:

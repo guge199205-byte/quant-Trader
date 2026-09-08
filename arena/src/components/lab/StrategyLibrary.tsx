@@ -56,6 +56,7 @@ const STAGE_LABEL: Record<string, string> = {
   transpile: '转写中：调模型翻成 Pyne-Python…',
   static: '静态检查未通过',
   backtest: '沙箱回测中（bwrap：只读根 + 断网）…',
+  repair: '回测报错，让模型修一版再重跑…',
   done: '完成',
   worker: 'worker 异常',
 };
@@ -376,7 +377,7 @@ export default function StrategyLibrary() {
                 <div className="lab-transpile">
                   <span className="tag">{STAGE_LABEL[job?.stage ?? ''] ?? job?.stage}</span>
                   <span className="lab-transpile-stats">
-                    宿主上转写 + 沙箱回测，约 30–60 秒
+                    宿主上转写 + 沙箱回测，通常 10–30 秒（报错会自动修，最多 2 轮）
                   </span>
                 </div>
               )}

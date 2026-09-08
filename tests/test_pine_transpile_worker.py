@@ -109,19 +109,92 @@ class TestProcess:
         with pytest.raises(ValueError):
             w.process({"symbol": "600309.SH"})
 
-    def test_backtest_exit_code_marks_failed(self, out_dir, monkeypatch):
+    def test_backtest_failure_feeds_traceback_back_to_model(self, out_dir, monkeypatch):
+        """回测炸了不能只报 exit code——把 traceback 喂回模型修，最多 MAX_REPAIRS 轮。"""
+        runs: list[list[str]] = []
+
         def fake_run(argv, timeout):
+            runs.append(argv)
             d = out_dir / "0003"
             d.mkdir(parents=True, exist_ok=True)
             (d / "meta.json").write_text(json.dumps({"problems": []}), encoding="utf-8")
-            return subprocess.CompletedProcess(argv, 1 if argv[0] == "bwrap" else 0,
-                                               stdout="", stderr="boom")
+            if argv[0] == "bwrap":
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="Traceback...\nTypeError: 'float' object")
+            return subprocess.CompletedProcess(argv, 0, stdout="修复完成", stderr="")
 
         monkeypatch.setattr(w, "_run", fake_run)
         monkeypatch.setattr(w, "sandbox_cmd", lambda item_dir, argv: ["bwrap", *argv])
+
         job = w.process({"id": "0003", "symbol": "600309.SH"})
         assert job["status"] == "failed" and job["stage"] == "backtest"
-        assert "boom" in job["log"]
+        assert job["error"] == "TypeError: 'float' object"
+        repairs = [r for r in runs if "--repair" in r]
+        assert len(repairs) == w.MAX_REPAIRS          # 修复次数有上限
+        assert "TypeError" in repairs[0][repairs[0].index("--repair") + 1]
+
+    def test_repair_recovers_to_done(self, out_dir, monkeypatch):
+        runs: list[list[str]] = []
+
+        def fake_run(argv, timeout):
+            runs.append(argv)
+            d = out_dir / "0006"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "meta.json").write_text(json.dumps({"problems": []}), encoding="utf-8")
+            if argv[0] == "bwrap":
+                second = sum(1 for r in runs if r[0] == "bwrap") > 1
+                return subprocess.CompletedProcess(argv, 0 if second else 1,
+                                                   stdout="ok" if second else "",
+                                                   stderr="" if second else "TypeError: boom")
+            return subprocess.CompletedProcess(argv, 0, stdout="修复完成", stderr="")
+
+        monkeypatch.setattr(w, "_run", fake_run)
+        monkeypatch.setattr(w, "sandbox_cmd", lambda item_dir, argv: ["bwrap", *argv])
+
+        job = w.process({"id": "0006", "symbol": "600309.SH"})
+        assert job["status"] == "done"
+        assert sum(1 for r in runs if "--repair" in r) == 1
+
+    def test_repair_cli_failure_marks_failed(self, out_dir, monkeypatch):
+        def fake_run(argv, timeout):
+            d = out_dir / "0007"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "meta.json").write_text(json.dumps({"problems": []}), encoding="utf-8")
+            if argv[0] == "bwrap":
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="boom")
+            if "--repair" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 3, stdout="修复失败：模型输出被 max_tokens 截断", stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout="复用已有候选", stderr="")
+
+        monkeypatch.setattr(w, "_run", fake_run)
+        monkeypatch.setattr(w, "sandbox_cmd", lambda item_dir, argv: ["bwrap", *argv])
+
+        job = w.process({"id": "0007", "symbol": "600309.SH"})
+        assert job["status"] == "failed" and job["stage"] == "repair"
+        assert job["error"] == "修复失败：模型输出被 max_tokens 截断"
+
+    def test_static_problems_after_repair_reported(self, out_dir, monkeypatch):
+        """修完语法又坏了：报 stage=static 并把 problems 带上，界面才说得清。"""
+        runs: list[list[str]] = []
+
+        def fake_run(argv, timeout):
+            runs.append(argv)
+            d = out_dir / "0008"
+            d.mkdir(parents=True, exist_ok=True)
+            if argv[0] == "bwrap":
+                return subprocess.CompletedProcess(argv, 2, stdout="静态检查未通过", stderr="")
+            problems = (["语法错误：invalid syntax（第 3 行）"] if "--repair" in argv else [])
+            (d / "meta.json").write_text(json.dumps({"problems": problems}), encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+        monkeypatch.setattr(w, "_run", fake_run)
+        monkeypatch.setattr(w, "sandbox_cmd", lambda item_dir, argv: ["bwrap", *argv])
+
+        job = w.process({"id": "0008", "symbol": "600309.SH"})
+        assert job["status"] == "failed" and job["stage"] == "static"
+        assert job["problems"] == ["语法错误：invalid syntax（第 3 行）"]
+        assert sum(1 for r in runs if "--repair" in r) == w.MAX_REPAIRS
 
 
 class TestLock:

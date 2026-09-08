@@ -41,9 +41,12 @@ if _PINE_SITE.is_dir() and str(_PINE_SITE) not in sys.path:
 OUT_DIR = Path(__file__).resolve().parents[1] / "data/pine_transpile"
 LAB_DIR = ROOT / "backend/services/lab_strategies"
 MODEL = "deepseek-v4-flash"
-# 推理模型的 reasoning token 也计入 completion，8k 上限会被思考过程吃掉大半
-# （0001 斐波那契云就是这么被截断的）。max_tokens 是上限不是目标，调大不额外花钱。
-MAX_TOKENS = 32000
+# 推理模型的 reasoning token 也计入 completion：0001 开思考烧掉 23755 token / 180s 才
+# 勉强塞进 32k，0004 同样 32k 直接截断（策略还更短）。转写是照模板的机械活，不需要长
+# 思考——默认 thinking=disabled，输出只剩代码，8k 富余。真截断了再回退开思考重试。
+MAX_TOKENS = 32000          # 开思考时的上限
+MAX_TOKENS_FAST = 8000      # 关思考时只出代码
+NO_THINKING = {"thinking": {"type": "disabled"}}
 
 # 危险调用黑名单：转写产物是要被执行的，先在静态阶段挡一道。
 BANNED = [
@@ -92,6 +95,9 @@ def main(fast=input(5, "快线周期"), slow=input(20, "慢线周期")):
 4. 禁止画图 / 告警 / 表格 / 标签（plot、alert、table、label、line、box 一律不用）。
 5. 禁止 `request.security`（多时间框架）、`request.*` 数据请求——取不到就退化成单周期逻辑。
 6. 序列变量必须显式标注类型，例如 `up: Series[bool] = f > s`；上一根用 `x[1]`。
+   **凡是要用 `[n]` 取历史的值（包括 `ta.*` 的返回值）都必须先赋给带 `Series[...]`
+   标注的变量**（`r: Series[float] = ta.rsi(close, n)` 才能写 `r[3]`），
+   否则运行时只是普通 float，`[n]` 会抛 TypeError。
 7. 不加未来函数：判断与开平仓只用当前及历史 bar。
 8. 保持策略原意，宁可简化也不要臆造新逻辑；简化处在文件头注释里写清楚。
 9. 输出**只有一个 python 代码块**，不要解释文字。
@@ -122,8 +128,12 @@ def _env() -> dict:
     return env
 
 
-def call_llm(system: str, user: str, model: str) -> tuple[str, dict | None]:
-    """直连 OpenAI 兼容接口（重试 1 次）。"""
+def _chat(messages: list[dict], model: str,
+          think: bool = False) -> tuple[str, dict | None, bool]:
+    """直连 OpenAI 兼容接口（重试 1 次）。返回 (文本, usage, 是否被截断)。
+
+    ``think=False``（默认）关掉推理：转写产物是照模板的代码，长思考只会把额度烧光。
+    """
     env = _env()
     base = env.get("OPENAI_API_BASE", "").rstrip("/")
     key = env.get("OPENAI_API_KEY", "")
@@ -131,10 +141,11 @@ def call_llm(system: str, user: str, model: str) -> tuple[str, dict | None]:
         raise RuntimeError("OPENAI_API_BASE/OPENAI_API_KEY 缺失（.env）")
     import requests
 
-    payload = {"model": model,
-               "messages": [{"role": "system", "content": system},
-                            {"role": "user", "content": user}],
-               "temperature": 0.1, "max_tokens": MAX_TOKENS}
+    payload = {"model": model, "messages": messages,
+               "temperature": 0.1,
+               "max_tokens": MAX_TOKENS if think else MAX_TOKENS_FAST}
+    if not think:
+        payload.update(NO_THINKING)
     last: Exception | None = None
     for attempt in range(2):
         try:
@@ -157,9 +168,14 @@ def call_llm(system: str, user: str, model: str) -> tuple[str, dict | None]:
     if usage:
         usage = {k: int(usage.get(k) or 0)
                  for k in ("prompt_tokens", "completion_tokens", "total_tokens")}
-    if choice.get("finish_reason") == "length":
-        raise RuntimeError("模型输出被 max_tokens 截断")
-    return content, usage
+    return content, usage, choice.get("finish_reason") == "length"
+
+
+def call_llm(system: str, user: str, model: str,
+             think: bool = False) -> tuple[str, dict | None, bool]:
+    """单轮 system+user 调用。"""
+    return _chat([{"role": "system", "content": system},
+                  {"role": "user", "content": user}], model, think=think)
 
 
 def extract_code(text: str) -> str:
@@ -190,29 +206,92 @@ def _load_pine(item_id: str) -> dict:
     return pl.get_source(item_id)
 
 
-def transpile(item_id: str, model: str = MODEL) -> dict:
-    got = _load_pine(item_id)
-    user = (f"策略标题：{got.get('title') or got.get('file')}\n"
+def _pine_prompt(got: dict) -> str:
+    return (f"策略标题：{got.get('title') or got.get('file')}\n"
             f"分类：{got.get('category')}\n"
             f"Pine 版本：v{got.get('version') or '?'}\n\n"
             f"```pine\n{got['source']}\n```")
+
+
+REPAIR_PROMPT = """你上一次的转写跑回测时报了下面的错。请只做最小修改修好它，仍然遵守之前的全部硬性规则（只做多、只用 pynecore.lib/types、不画图、不加未来函数），输出完整脚本（一个 python 代码块，不要解释）。
+
+## 报错 / 静态检查问题
+
+```
+{error}
+```
+
+## 当前脚本
+
+```python
+{code}
+```
+
+重点检查：Pine 里 `x[n]` 是「n 根之前的值」。PyneCore 里只有标注成 `Series[...]`
+的变量才能这样取历史——`ta.*` 的返回值也要先赋给带标注的变量再索引，否则运行时只是
+普通 float，`[n]` 会抛 TypeError。
+"""
+
+
+def transpile(item_id: str, model: str = MODEL) -> dict:
+    got = _load_pine(item_id)
+    user = _pine_prompt(got)
     out = OUT_DIR / item_id
     out.mkdir(parents=True, exist_ok=True)
     (out / "prompt.md").write_text(
         f"# system\n\n{SYSTEM_PROMPT}\n\n# user\n\n{user}\n", encoding="utf-8")
 
     t0 = time.time()
-    raw, usage = call_llm(SYSTEM_PROMPT, user, model)
+    think_used = False
+    raw, usage, truncated = call_llm(SYSTEM_PROMPT, user, model, think=False)
+    if truncated:
+        # 关思考还截断（罕见）→ 开思考重来一次：慢得多但保真度更高
+        print("  ⚠️ 关思考输出被截断，改用思考模式重试")
+        think_used = True
+        raw, usage, truncated = call_llm(SYSTEM_PROMPT, user, model, think=True)
+    if truncated:
+        raise RuntimeError("模型输出被 max_tokens 截断（关思考与开思考都试过了）")
     code = extract_code(raw)
     (out / "candidate.py").write_text(code, encoding="utf-8")
     problems = static_check(code)
     meta = {"id": item_id, "title": got.get("title"), "category": got.get("category"),
             "pine_version": got.get("version"), "pine_indent_ok": got.get("indent_ok"),
-            "model": model, "elapsed_sec": round(time.time() - t0, 1), "usage": usage,
+            "model": model, "think": think_used,
+            "elapsed_sec": round(time.time() - t0, 1), "usage": usage,
             "problems": problems,
             "generated": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2),
                                    encoding="utf-8")
+    return meta
+
+
+def repair(item_id: str, error: str, model: str = MODEL) -> dict:
+    """把回测报错喂回模型，改一版候选（只写文件，不执行——执行归沙箱）。"""
+    out = OUT_DIR / item_id
+    cand = out / "candidate.py"
+    meta_path = out / "meta.json"
+    if not cand.exists() or not meta_path.exists():
+        raise RuntimeError(f"没有候选可修：{cand}（先转写一次）")
+    code = cand.read_text(encoding="utf-8")
+    user = _pine_prompt(_load_pine(item_id))
+    t0 = time.time()
+    raw, usage, truncated = _chat(
+        [{"role": "system", "content": SYSTEM_PROMPT},
+         {"role": "user", "content": user},
+         {"role": "user", "content": REPAIR_PROMPT.format(error=error[-2000:], code=code)}],
+        model, think=False)
+    if truncated:
+        raise RuntimeError("修复输出被 max_tokens 截断")
+    new_code = extract_code(raw)
+    cand.write_text(new_code, encoding="utf-8")
+    problems = static_check(new_code)
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["problems"] = problems
+    meta.setdefault("repairs", []).append({
+        "error": error[-500:], "usage": usage, "problems": problems,
+        "elapsed_sec": round(time.time() - t0, 1),
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
 
 
@@ -287,6 +366,8 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="已有候选时强制重新转写")
     ap.add_argument("--no-transpile", action="store_true",
                     help="只校验已有候选（不调模型）。队列 worker 的沙箱回测段走这个。")
+    ap.add_argument("--repair", metavar="ERROR",
+                    help="用回测报错修一版候选（需已有 candidate.py；只写文件不执行）")
     ap.add_argument("--list", action="store_true")
     args = ap.parse_args()
 
@@ -302,7 +383,15 @@ def main() -> int:
 
     cand = OUT_DIR / args.id / "candidate.py"
     meta_path = OUT_DIR / args.id / "meta.json"
-    if args.no_transpile:
+    if args.repair:
+        try:
+            meta = repair(args.id, args.repair, model=args.model)
+        except RuntimeError as exc:
+            print(f"修复失败：{exc}")
+            return 3
+        last = meta["repairs"][-1]
+        print(f"修复完成（{last['elapsed_sec']}s，{last['usage']}）")
+    elif args.no_transpile:
         if not cand.exists() or not meta_path.exists():
             print(f"没有候选文件：{cand}（先转写一次）")
             return 2

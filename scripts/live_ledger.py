@@ -112,6 +112,19 @@ def find_holder(ledger: dict, code: str) -> str | None:
     return None
 
 
+def sane_fill_price(fp: float, ref: float) -> tuple[float, bool]:
+    """成交/行情价护栏：|fp/ref-1| > 40% 视为坏 tick（全市场最大涨跌停 ±30%，
+    留余量）。越界返回 (ref, True) 供 approx 记账，正常返回 (fp, False)。
+    ref <= 0 时不判断。2026-09-08 实录：001312 桥报成交价 4.789 vs 实时 17.5，
+    坏成本入账虚增 pro 虚拟净值 ~1.4 万。"""
+    if fp <= 0 or ref <= 0:
+        return fp, False
+    ratio = fp / ref
+    if 0.6 <= ratio <= 1.4:
+        return fp, False
+    return round(ref, 2), True
+
+
 # ---------- 延期单（拒单补执行）：桥行情断开被拒的决策，恢复后自动重放 ----------
 
 def load_deferred(ledger: dict) -> list:

@@ -12,6 +12,7 @@ from live_ledger import (  # noqa: E402
     find_holder,
     record_buy,
     record_sell,
+    sane_fill_price,
 )
 
 EMPTY = {"version": 1, "agents": {}}
@@ -115,3 +116,22 @@ def test_agents_isolated():
     assert agent_used(ledger, "pro") == 30000.0
     assert find_holder(ledger, "600183.SH") == "flash"
     assert find_holder(ledger, "300750.SZ") == "pro"
+
+
+def test_sane_fill_price_rejects_bad_tick():
+    """回归 2026-09-08 事故：桥报成交价 4.789 vs 实时 17.5（K线脏数据），
+    成本错记虚增净值——越界必须回退实时价并 approx 标记。"""
+    # 坏 tick：偏离 >40% → 回退实时价
+    px, approx = sane_fill_price(4.789, 17.5)
+    assert approx and px == 17.5
+    # 正常价原样返回
+    px2, approx2 = sane_fill_price(131.69, 131.84)
+    assert (not approx2) and px2 == 131.69
+    # 边界：±40% 以内不触发（北交所 ±30% 合法行情）
+    px3, approx3 = sane_fill_price(10.0 * 0.7, 10.0)
+    assert (not approx3) and px3 == 7.0
+    # ref 无效/价格非正 → 不判断
+    px4, approx4 = sane_fill_price(4.789, 0)
+    assert (not approx4) and px4 == 4.789
+    px5, approx5 = sane_fill_price(0, 17.5)
+    assert (not approx5) and px5 == 0

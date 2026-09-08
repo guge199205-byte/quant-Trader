@@ -55,6 +55,7 @@ from live_ledger import (  # noqa: E402
     load_ledger,
     record_buy,
     record_sell,
+    sane_fill_price,
     save_ledger,
 )
 from live_fills import add_pending, reconcile, wait_fill, round_sell_qty  # noqa: E402
@@ -67,6 +68,17 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 PICKS_JSON = ROOT / ".." / "projects" / "quantmind" / "data" / "reports" / "stock_picks"
 PER_STOCK_PCT = 0.2   # 单票买入 ≤ 剩余额度 20%
 SELL_LIMIT_DOWN = -9.9  # 跌停不接
+
+
+def _quote_guarded_price(broker, code: str, fp: float) -> tuple[float, bool]:
+    """用实时行情护栏校验价格：K 线脏数据/桥回报坏价（偏离实时价>40%）时
+    回退实时价并 approx 标记；取不到行情原样返回。"""
+    try:
+        quote = broker.get_quote(code, "")
+        ref = float((quote or {}).get("close") or 0)
+    except Exception:  # noqa: BLE001
+        return fp, False
+    return sane_fill_price(fp, ref)
 
 
 # ---------- 候选池 ----------
@@ -283,7 +295,9 @@ def main() -> int:
     for agent in agents:
         # 账本 positions 是 {code: {volume, cost_price, ...}} 字典（live_ledger 内部结构）
         mine = set((ledger.get("agents") or {}).get(agent, {}).get("positions", {}))
-        my_holdings = [h for h in holdings if h["code"] in mine] if mine else holdings
+        # 空账本 = 无持仓。2026-09-08 事故：曾有 `if mine else holdings` 兜底把
+        # 共享桥账户全量持仓当"你名下"喂给空账本 agent → pro 卖了 flash 的生益电子
+        my_holdings = [h for h in holdings if h["code"] in mine]
         remaining = agent_remaining(ledger, agent)
         prompt = build_prompt(agent, my_holdings, pool_table, direction, remaining)
         content, usage = "", None
@@ -306,8 +320,9 @@ def main() -> int:
             if d["action"] == "hold":
                 print(f"  🟢 [{agent}] 持有 {code}: {d['reason']}")
                 continue
-            h = next((x for x in holdings if x["code"] == code), None)
+            h = next((x for x in my_holdings if x["code"] == code), None)
             if d["action"] == "sell":
+                # 卖出只能动自己名下的持仓（my_holdings 按分账账本裁剪，防跨 agent 卖仓）
                 if not h:
                     print(f"  ⚠️ [{agent}] 卖出 {code}: 非持仓，跳过")
                     continue
@@ -380,6 +395,10 @@ def main() -> int:
             price = float(bars[-1].get("close") or 0)
             if price <= 0:
                 continue
+            price, bad_kl = _quote_guarded_price(broker, code, price)
+            if bad_kl:
+                print(f"  ⚠️ [{agent}] 卖出 {code}: K线价与实时价偏差>40%（脏数据），"
+                      f"按实时价 {price} 计算限价")
             try:
                 result = broker.sell(None, None, code, vol, price=round(price * 0.99, 2))
                 print(f"  ✅ [{agent}] 卖出 {code} 已受理: {result}")
@@ -387,6 +406,10 @@ def main() -> int:
                 if fill and int(fill.get("filled_volume") or 0) > 0:
                     fv = int(fill["filled_volume"])
                     fp = float(fill.get("filled_price") or round(price * 0.99, 2))
+                    fp, approx = _quote_guarded_price(broker, code, fp)
+                    if approx:
+                        print(f"  ⚠️ [{agent}] 卖出 {code}: 桥回报成交价偏离实时价>40%，"
+                              f"按实时价 {fp} 记账（approx）")
                     ledger = load_ledger()
                     cost_p = float((((ledger.get("agents") or {}).get(agent) or {})
                                     .get("positions") or {}).get(code, {}).get("cost_price") or 0)
@@ -396,6 +419,7 @@ def main() -> int:
                     log_line({"ts": now_cn().isoformat(), "mode": "execute",
                               "agent": agent, "code": code, "side": "sell",
                               "volume": fv, "price": fp, "cost_price": cost_p,
+                              "approx": approx,
                               "fill": {"order_id": fill.get("order_id"),
                                        "filled_price": fp, "filled_volume": fv}})
                 else:
@@ -426,6 +450,11 @@ def main() -> int:
             if not o["ok"]:
                 print(f"  ⏭️ [{agent}] 买入 {code}: {o['reason']}")
                 continue
+            _opx, bad_kl = _quote_guarded_price(broker, code, o["price"])
+            if bad_kl:
+                print(f"  ⏭️ [{agent}] 买入 {code}: K线价 {o['price']} 与实时价偏差>40%"
+                      f"（脏数据），跳过防超量下单（2026-09-08 福恩股份事故）")
+                continue
             # 分账额度红线：子 agent 买入不能超自己 ¥10 万虚拟子账户的现金
             # （remaining 是额度口径、cash 是桥总账户真实现金，都拦不住已实现
             #   亏损造成的透支——虚拟现金才是子账户真正买得起的钱）
@@ -453,12 +482,16 @@ def main() -> int:
                 if fill and int(fill.get("filled_volume") or 0) > 0:
                     fv = int(fill["filled_volume"])
                     fp = float(fill.get("filled_price") or o["price"])
+                    fp, approx = _quote_guarded_price(broker, code, fp)
+                    if approx:
+                        print(f"  ⚠️ [{agent}] 买入 {code}: 桥回报成交价偏离实时价>40%，"
+                              f"按实时价 {fp} 记账（approx）")
                     ledger = record_buy(load_ledger(), agent, code, fv, fp,
                                         now_cn().isoformat())
                     save_ledger(ledger)
                     log_line({"ts": now_cn().isoformat(), "mode": "execute",
                               "agent": agent, "code": code, "side": "buy",
-                              "volume": fv, "price": fp,
+                              "volume": fv, "price": fp, "approx": approx,
                               "fill": {"order_id": fill.get("order_id"),
                                        "filled_price": fp, "filled_volume": fv}})
                 else:

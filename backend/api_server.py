@@ -1904,6 +1904,68 @@ def local_klines(symbol: str, market: str = "us", days: int = Query(60, ge=5, le
         return {"success": False, "error": f"本地K线查询失败: {e}"}
 
 
+# ---------- 行情实验室（/api/market-lab：quantdb K线 + 策略回测） ----------
+# 数据源 = quantdb（容器 /data/quantdb 只读挂载）；回测 = PyneCore 运行时
+# （与 pyne compile 产物同一引擎）。pynecore 缺失时回测报错、K线照常。
+
+def _lab():
+    from backend.services import market_lab as ml
+
+    return ml
+
+
+@app.get("/api/market-lab/symbols")
+def lab_symbols(q: str = "", limit: int = Query(30, ge=1, le=200)):
+    try:
+        return {"success": True, "data": _lab().search_symbols(q, limit)}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"标的搜索失败: {e}"}
+
+
+@app.get("/api/market-lab/klines")
+def lab_klines(symbol: str, adj: str = "unadjusted",
+               limit: int = Query(600, ge=60, le=3000),
+               start: str = "", end: str = ""):
+    """日线（adj=unadjusted|forward|backward）。看盘默认不复权，回测默认后复权。"""
+    try:
+        ml = _lab()
+        bars = ml.load_klines(symbol, adj=adj, limit=limit, start=start, end=end)
+        return {"success": True, "data": {"symbol": ml.normalize_code(symbol),
+                                          "name": ml.stock_name(symbol), "adj": adj,
+                                          "count": len(bars), "bars": bars}}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"K线查询失败: {e}"}
+
+
+@app.get("/api/market-lab/strategies")
+def lab_strategies():
+    try:
+        return {"success": True, "data": _lab().list_strategies()}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"策略列表失败: {e}"}
+
+
+@app.post("/api/market-lab/backtest")
+def lab_backtest(payload: dict = Body(...)):
+    """{strategy, symbol, adj?, start?, end?, params?} → 统计/逐笔/净值。"""
+    try:
+        ml = _lab()
+        data = ml.run_backtest(
+            strategy_id=str(payload.get("strategy") or ""),
+            symbol=str(payload.get("symbol") or ""),
+            adj=str(payload.get("adj") or "backward"),
+            start=str(payload.get("start") or ""),
+            end=str(payload.get("end") or ""),
+            params=payload.get("params") or {},
+        )
+        return {"success": True, "data": data}
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("market-lab backtest failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"回测失败: {e}"}
+
+
 def main():
     import uvicorn
 

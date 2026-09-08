@@ -75,7 +75,7 @@ interface View { offsetPx: number; scale: number }
 interface DisplayLines { lines: ChartLine[]; bench: BenchLine | null }
 
 /** 断轴序号窗口内点数 → 刻度文本精度 */
-type TickFmt = 'HH:mm' | 'MM-DD HH:mm' | 'MM-DD';
+type TickFmt = 'HH:mm' | 'MM-DD HH:mm' | 'MM-DD' | 'YYYY-MM';
 
 type NumScale = ReturnType<typeof scaleLinear<number>>;
 
@@ -88,8 +88,12 @@ const tsToText = (t: number, tickFmt: TickFmt): string => {
     return `${d.toISOString().slice(5, 10)} ${d.toISOString().slice(11, 16)}`;
   }
   if (tickFmt === 'HH:mm') return d.toISOString().slice(11, 16);
+  if (tickFmt === 'YYYY-MM') return d.toISOString().slice(0, 7);
   return dayjs(t).format('MM-DD');
 };
+
+/** tooltip 用全精度：轴刻度跨年时省略年份（YYYY-MM），浮层不能省 */
+const tsToFull = (t: number): string => new Date(t + 8 * 3600000).toISOString().slice(0, 10);
 
 /** 静态图表层（memo）：网格/三向轴/渐变 defs/面积垫层/折线/末端标签。
  *  悬停只把 hoverId 传进来（换线高亮才需要重建整层）；
@@ -332,7 +336,7 @@ function HoverTip({
   names?: Record<string, string>;
   priceMap?: Record<string, number>;
 }) {
-  const fmtTs = (t: number) => tsToText(t, tickFmt);
+  const fmtTs = (t: number) => (tickFmt === 'YYYY-MM' ? tsToFull(t) : tsToText(t, tickFmt));
   const hl = display.lines.find((l) => l.id === hover.id);
   const base = hl && hl.points.length ? hl.points[0].v : null;
   const chg = base ? ((hover.v - base) / base) * 100 : null;
@@ -586,7 +590,9 @@ const ChartInner = memo(function ChartInner({
     const spanMs = Math.max(1, (tHi ?? 0) - (tLo ?? 0));
     const avgStepMs = spanMs / Math.max(1, winPoints - 1);
     const tickFmt: TickFmt =
-      avgStepMs >= 12 * 3600000 ? 'MM-DD'
+      avgStepMs >= 12 * 3600000
+        // 日线：跨年窗口只显示 MM-DD 会分不清年份（回测 10 年净值曲线），改 YYYY-MM
+        ? (spanMs >= 365 * 86400000 ? 'YYYY-MM' : 'MM-DD')
       : avgStepMs >= 90 * 60000 ? 'MM-DD HH:mm'
       : winPoints <= 240 ? 'HH:mm'
       : winPoints <= 1920 ? 'MM-DD HH:mm'

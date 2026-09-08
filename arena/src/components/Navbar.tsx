@@ -54,6 +54,8 @@ export default function Navbar() {
           <li className="separator">|</li>
           <li><NavLink to="/harness" className={({ isActive }) => (isActive ? 'active' : '')}>交易智能体</NavLink></li>
           <li className="separator">|</li>
+          <li><NavLink to="/market-lab" className={({ isActive }) => (isActive ? 'active' : '')}>行情回测</NavLink></li>
+          <li className="separator">|</li>
           <li><NavLink to="/about" className={({ isActive }) => (isActive ? 'active' : '')}>关于</NavLink></li>
         </ul>
       </div>

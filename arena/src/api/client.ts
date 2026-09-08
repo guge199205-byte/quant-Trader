@@ -717,3 +717,92 @@ export interface BrokerMarketInfo {
 export const fetchBrokerMarket = () => unwrap<BrokerMarketInfo>(api.get('/broker-market'));
 export const saveBrokerMarket = (values: Record<string, string>) =>
   unwrap<BrokerMarketInfo>(api.put('/broker-market', { values }));
+
+// ---------- 行情实验室（quantdb K线 + 策略回测） ----------
+// 后端：/api/market-lab/*（backend/services/market_lab.py，PyneCore 运行时）
+
+export interface LabSymbol {
+  code: string;
+  name: string;
+}
+
+export interface Kline {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export type AdjMode = 'unadjusted' | 'forward' | 'backward';
+
+export interface LabStrategyParam {
+  k: string;
+  label: string;
+  default: number;
+}
+
+export interface LabStrategy {
+  id: string;
+  name: string;
+  desc: string;
+  params: LabStrategyParam[];
+}
+
+export interface BtStat {
+  value: number | null;
+  pct: number | null;
+}
+
+export interface BtTrade {
+  entry_time: string;
+  entry_price: number | null;
+  qty: number | null;
+  signal: string;
+  exit_time: string | null;
+  exit_price: number | null;
+  profit: number | null;
+  profit_pct: number | null;
+}
+
+export interface BtEquityPoint {
+  date: string;
+  value: number;
+}
+
+export interface BtResult {
+  stats: Record<string, BtStat>;
+  trades: BtTrade[];
+  equity: BtEquityPoint[];
+  meta: {
+    strategy: string;
+    name: string;
+    symbol: string;
+    name_cn: string;
+    adj: string;
+    start: string;
+    end: string;
+    bars: number;
+    params: Record<string, number>;
+  };
+}
+
+export const searchLabSymbols = (q: string, limit = 30) =>
+  unwrap<LabSymbol[]>(api.get('/market-lab/symbols', { params: { q, limit } }));
+
+export const fetchLabKlines = (symbol: string, adj: AdjMode = 'unadjusted', limit = 600) =>
+  unwrap<{ symbol: string; name: string; adj: string; count: number; bars: Kline[] }>(
+    api.get('/market-lab/klines', { params: { symbol, adj, limit } }),
+  );
+
+export const fetchLabStrategies = () => unwrap<LabStrategy[]>(api.get('/market-lab/strategies'));
+
+export const runLabBacktest = (payload: {
+  strategy: string;
+  symbol: string;
+  adj?: AdjMode;
+  start?: string;
+  end?: string;
+  params?: Record<string, number>;
+}) => unwrap<BtResult>(api.post('/market-lab/backtest', payload));

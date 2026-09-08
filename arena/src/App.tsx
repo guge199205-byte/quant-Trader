@@ -7,6 +7,7 @@ import Leaderboard from './pages/Leaderboard';
 import Control from './pages/Control';
 import DataPlatform from './pages/DataPlatform';
 import Harness from './pages/Harness';
+import MarketLab from './pages/MarketLab';
 import ModelDetail from './pages/ModelDetail';
 import About from './pages/About';
 
@@ -25,6 +26,7 @@ export default function App() {
         <Route path="/trading" element={<Navigate to="/control?view=exchange" replace />} />
         <Route path="/data-platform" element={<DataPlatform />} />
         <Route path="/harness" element={<Harness />} />
+        <Route path="/market-lab" element={<MarketLab />} />
         <Route path="/model/:market/:agent" element={<ModelDetail />} />
         <Route path="/about" element={<About />} />
       </Routes>

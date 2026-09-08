@@ -4,3 +4,6 @@ langchain-mcp-adapters>=0.1.0
 fastmcp==2.12.5
 
 tushare
+
+# 行情实验室：Pine Script 运行时（回测用，纯 Python 零依赖）
+pynesys-pynecore==6.9.2

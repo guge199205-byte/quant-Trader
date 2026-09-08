@@ -38,8 +38,14 @@ fi
 # ---------- 后端 ----------
 if [ "$API" = 1 ]; then
   echo "==> 部署后端…"
-  python3 -m py_compile backend/api_server.py
+  python3 -m py_compile backend/api_server.py backend/services/market_lab.py
   docker exec -i baymax-api sh -c 'cat > /app/backend/api_server.py' < backend/api_server.py
+  # 行情实验室：服务模块 + 策略模板（Pyne 代码，运行时直接读文件）
+  docker exec -i baymax-api sh -c 'cat > /app/backend/services/market_lab.py' < backend/services/market_lab.py
+  docker exec -i baymax-api sh -c 'mkdir -p /app/backend/services/lab_strategies'
+  for f in backend/services/lab_strategies/*.py; do
+    docker exec -i baymax-api sh -c "cat > /app/backend/services/lab_strategies/$(basename "$f")" < "$f"
+  done
   docker restart baymax-api >/dev/null
   echo -n "==> 等待 api…"
   for i in $(seq 1 12); do

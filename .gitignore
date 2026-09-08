@@ -149,3 +149,6 @@ logs/live_trade_us_*.jsonl
 data/agent_data_us/
 config/broker_market.json
 data/us_picks.json
+
+# PyneCore 运行时自动生成的脚本配置（inputs 元数据，随脚本重生成）
+backend/services/lab_strategies/*.toml

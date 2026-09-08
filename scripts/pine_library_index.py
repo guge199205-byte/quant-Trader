@@ -37,22 +37,39 @@ CSV_NAME = "分类清单.csv"
 VERSION_RE = re.compile(r"//@version=(\d+)")
 URL_RE = re.compile(r"^//\s*来源:\s*(\S+)", re.MULTILINE)
 ID_RE = re.compile(r"^(\d{1,4})_")
+# 真正需要缩进体的行：if/for/while/switch/else 以及函数定义的 =>
+BLOCK_RE = re.compile(r"^\s*(?:if|for|while|switch|else)\b|=>\s*$")
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def _indent_ok(lines: list[str]) -> bool:
+    """缩进是否完整——只看真正需要缩进的块。
+
+    旧判据「存在缩进行」两头都错：没有块语句的短脚本（0970 全用 ``when=``）一行不缩进
+    也是合法 Pine，会被误标缩进异常；块体被拍平但恰好有续行缩进的文件又会漏判。
+    """
+    for i, ln in enumerate(lines):
+        if not BLOCK_RE.search(ln.rstrip()):
+            continue
+        for nxt in lines[i + 1:]:
+            if not nxt.strip() or nxt.lstrip().startswith("//"):
+                continue
+            return nxt[:1] in (" ", "\t")
+    return True
+
+
 def _meta(text: str) -> dict:
     """版本 / 行数 / 是否保留块缩进（旧版爬虫把缩进拍平了，Pine 编译不了）。"""
     m = VERSION_RE.search(text)
     lines = text.splitlines()
-    indented = sum(1 for ln in lines if ln[:1] in (" ", "\t"))
     return {
         "version": int(m.group(1)) if m else 0,
         "lines": len(lines),
         "bytes": len(text.encode("utf-8")),
-        "indent_ok": indented > 0,
+        "indent_ok": _indent_ok(lines),
         "has_strategy": bool(re.search(r"^\s*strategy\s*\(", text, re.MULTILINE)),
     }
 

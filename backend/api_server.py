@@ -2032,6 +2032,71 @@ def lab_batch_run(run_id: str, strategy: str = "", sort: str = "net",
         return {"success": False, "error": f"批次读取失败: {e}"}
 
 
+# ---------- Pine 策略库（桌面 TradingView 语料 + 重爬结果） ----------
+# 索引由 scripts/pine_library_index.py 生成到 data/pine_library/index.json；
+# 源码副本在 data/pine_library/source/，界面编辑写入 edited/（优先级最高）。
+
+def _pine_lib():
+    from backend.services import pine_library as pl
+
+    return pl
+
+
+@app.get("/api/market-lab/library")
+def pine_library_list(category: str = "", q: str = "",
+                      limit: int = Query(200, ge=1, le=2000),
+                      offset: int = Query(0, ge=0)):
+    """分类 + 关键词过滤的策略列表（不含源码）。"""
+    try:
+        return {"success": True, "data": _pine_lib().list_items(category, q, limit, offset)}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"策略库读取失败: {e}"}
+
+
+@app.get("/api/market-lab/library/{item_id}")
+def pine_library_get(item_id: str):
+    """单条策略：元数据 + 源码全文。"""
+    try:
+        return {"success": True, "data": _pine_lib().get_source(item_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("pine library get failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"策略读取失败: {e}"}
+
+
+@app.put("/api/market-lab/library/{item_id}")
+def pine_library_save(item_id: str, payload: dict = Body(...)):
+    """保存编辑（写 data/pine_library/edited/，不动桌面原语料）。"""
+    try:
+        return {"success": True, "data": _pine_lib().save_source(item_id, payload.get("source", ""))}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("pine library save failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"保存失败: {e}"}
+
+
+@app.delete("/api/market-lab/library/{item_id}")
+def pine_library_reset(item_id: str):
+    """丢弃编辑，回到索引构建时的版本。"""
+    try:
+        return {"success": True, "data": _pine_lib().reset_source(item_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"重置失败: {e}"}
+
+
+@app.get("/api/market-lab/transpile")
+def pine_transpile_list():
+    """AI 转写产物一览（宿主上跑 scripts/pine_to_pyne.py 生成，页面只读）。"""
+    try:
+        return {"success": True, "data": _pine_lib().list_transpile()}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"转写产物读取失败: {e}"}
+
+
 def main():
     import uvicorn
 

@@ -155,3 +155,9 @@ backend/services/lab_strategies/*.toml
 
 # 批量回测结果（每池一份，几百 KB，跑批产物不入库；界面直接读本地文件）
 data/lab_batch/
+
+# Pine 策略库（桌面语料索引 + 重爬副本 + 界面编辑，运行时产物不入库）
+data/pine_library/
+
+# .pine → Pyne-Python 转写产物（候选脚本 / 提示词 / 回测报告，运行时产物不入库）
+data/pine_transpile/

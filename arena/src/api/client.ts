@@ -878,3 +878,71 @@ export const fetchLabBatchRun = (runId: string, strategy = '', sort = 'net', lim
       params: { strategy, sort, limit },
     }),
   );
+
+// ---------- Pine 策略库（桌面 TradingView 语料） ----------
+
+export interface PineItem {
+  id: string;
+  category: string;
+  title: string;
+  title_en: string;
+  file: string;
+  url: string;
+  version: number;
+  lines: number;
+  bytes: number;
+  indent_ok: boolean;
+  has_strategy: boolean;
+  source_kind: 'desktop' | 'recrawl' | 'edited' | 'missing';
+  mtime: string;
+}
+
+export interface PineListItem extends PineItem {
+  edited?: boolean;
+  source?: string;
+}
+
+export interface PineList {
+  generated: string;
+  total: number;
+  usable: number;
+  filtered: number;
+  categories: { name: string; count: number }[];
+  items: PineItem[];
+}
+
+export const fetchPineList = (category = '', q = '', limit = 200, offset = 0) =>
+  unwrap<PineList>(
+    api.get('/market-lab/library', { params: { category, q, limit, offset } }),
+  );
+
+export const fetchPineSource = (id: string) =>
+  unwrap<PineListItem>(api.get(`/market-lab/library/${encodeURIComponent(id)}`));
+
+export const savePineSource = (id: string, source: string) =>
+  unwrap<{ id: string; saved: string; bytes: number; lines: number; indent_ok: boolean }>(
+    api.put(`/market-lab/library/${encodeURIComponent(id)}`, { source }),
+  );
+
+export const resetPineSource = (id: string) =>
+  unwrap<{ id: string; removed: boolean }>(
+    api.delete(`/market-lab/library/${encodeURIComponent(id)}`),
+  );
+
+export interface PineTranspile {
+  title: string;
+  model: string;
+  generated: string;
+  problems: string[];
+  has_candidate: boolean;
+  has_report: boolean;
+  symbol: string;
+  trades: number | null;
+  net_pct: number | null;
+  dd_pct: number | null;
+  bh_pct: number | null;
+}
+
+/** 转写产物一览，key = 策略库 id */
+export const fetchPineTranspile = () =>
+  unwrap<Record<string, PineTranspile>>(api.get('/market-lab/transpile'));

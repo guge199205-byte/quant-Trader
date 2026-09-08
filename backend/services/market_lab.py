@@ -340,12 +340,28 @@ def _run_strategy_on_bars(strategy_id: str, bars: list[dict], symbol: str, adj: 
     spec = STRATEGIES.get(strategy_id)
     if not spec:
         raise ValueError(f"未知策略: {strategy_id}")
-    _require_pyne()
-    from pynecore.core.script_runner import ScriptRunner
-
     script = STRATEGY_DIR / spec["file"]
     if not script.is_file():
         raise FileNotFoundError(f"策略文件缺失: {script}")
+    return _run_script(script, strategy_id, spec["name"], bars, symbol, adj,
+                       overrides, want_trades)
+
+
+def run_script_file(script: Path, symbol: str, adj: str = "backward", start: str = "",
+                    end: str = "", overrides: dict | None = None) -> dict:
+    """跑任意 Pyne 脚本文件（不进策略注册表）。AI 转写候选的验证走这条路。"""
+    script = Path(script)
+    if not script.is_file():
+        raise FileNotFoundError(f"脚本文件缺失: {script}")
+    bars = load_klines(symbol, adj=adj, limit=0, start=start, end=end)
+    return _run_script(script, script.stem, script.stem, bars, symbol, adj,
+                       overrides, want_trades=True)
+
+
+def _run_script(script: Path, strategy_id: str, name: str, bars: list[dict], symbol: str,
+                adj: str, overrides: dict | None, want_trades: bool) -> dict:
+    _require_pyne()
+    from pynecore.core.script_runner import ScriptRunner
 
     code = normalize_code(symbol)
     with tempfile.TemporaryDirectory(prefix="lab_bt_") as td:
@@ -377,7 +393,7 @@ def _run_strategy_on_bars(strategy_id: str, bars: list[dict], symbol: str, adj: 
         "stats": stats,
         "trades": trades,
         "equity": equity,
-        "meta": {"strategy": strategy_id, "name": spec["name"], "symbol": code,
+        "meta": {"strategy": strategy_id, "name": name, "symbol": code,
                  "name_cn": stock_name(symbol), "adj": adj,
                  "start": bars[0]["date"], "end": bars[-1]["date"], "bars": len(bars),
                  "params": overrides or {}},

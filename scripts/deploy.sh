@@ -38,12 +38,14 @@ fi
 # ---------- 后端 ----------
 if [ "$API" = 1 ]; then
   echo "==> 部署后端…"
-  python3 -m py_compile backend/api_server.py backend/services/market_lab.py backend/services/lab_batch.py
+  python3 -m py_compile backend/api_server.py backend/services/market_lab.py backend/services/lab_batch.py backend/services/pine_library.py
   docker exec -i baymax-api sh -c 'cat > /app/backend/api_server.py' < backend/api_server.py
   # 行情实验室：服务模块 + 策略模板（Pyne 代码，运行时直接读文件）
   docker exec -i baymax-api sh -c 'cat > /app/backend/services/market_lab.py' < backend/services/market_lab.py
   # 批量回测：只读 data/lab_batch/*.json（宿主跑批产物，/app/data 已 rw 挂载）
   docker exec -i baymax-api sh -c 'cat > /app/backend/services/lab_batch.py' < backend/services/lab_batch.py
+  # Pine 策略库：读 data/pine_library/index.json + source/（宿主 scripts/pine_library_index.py 生成）
+  docker exec -i baymax-api sh -c 'cat > /app/backend/services/pine_library.py' < backend/services/pine_library.py
   docker exec -i baymax-api sh -c 'mkdir -p /app/backend/services/lab_strategies'
   # 清掉 PyneCore 自动生成的 <策略>.toml：里面的 value= 会在运行时覆盖 input 默认值，
   # 是「同一策略两次回测结果不同」的隐患源（market_lab 已设 PYNE_SAVE_SCRIPT_TOML=0）

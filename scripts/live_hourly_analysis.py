@@ -1368,7 +1368,8 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
               新开仓 单轮 ≤ MAX_NEW_BUYS 且**当日累计** ≤ MAX_NEW_BUYS、
               涨停不追、单票 ≤ 剩余额度 PER_STOCK_PCT、子账户虚拟现金不透支
               （分账额度红线）、加仓后杠杆 ≤ LEVERAGE_MAX×权益、账户现金兜底、
-              已有在途买单不再重复下
+              已有在途买单不再重复下、**循环熔断**（当日已实现亏损 ≥5% 日初权益或
+              日内权益回撤 ≥6% → 该 agent 当日禁买，卖出照常；见 live_breaker）
     - 成交回报：wait_fill 轮询桥当日委托，按真实 filled_price/filled_volume 记账；
       超时未确认挂 pending（live_fills.reconcile 兜底 ≤1 分钟）
     返回已执行/将执行的动作列表 [{action, code, volume, price, reason}]。
@@ -1388,6 +1389,13 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
     sells, buys = [], []
     new_buys = 0
     opened_today = daily_buy_codes(agent)  # 当日已开仓代码（日级上限口径）
+    # 循环熔断（第二道防线）：当日已实现亏损/日内权益回撤超限 → 该 agent 当日禁买。
+    # 上面六道闸门都是"单笔/单轮"口径，没有一条盯"今天已经亏了多少"（2026-09-08 补）
+    from live_breaker import check_and_trip
+
+    halt, halt_reason = check_and_trip(agent, persist=not dry_run)
+    if halt:
+        print(f"  🛑 [{agent}] 循环熔断：{halt_reason} → 今日禁止买入（卖出照常）")
     for d in decisions:
         code = d["code"]
         h = next((x for x in holdings if x["code"] == code), None)
@@ -1416,6 +1424,9 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
             sells.append((code, vol, d["reason"], raw_vol))
             print(f"  📉 [{agent}] 卖出 {code} {vol}/{avail}股 ({d['pct']:.0%}): {d['reason']}")
         elif d["action"] == "buy":
+            if halt:
+                print(f"  🛑 [{agent}] 买入 {code}: 当日已熔断（{halt_reason}），跳过")
+                continue
             if code in pending_buy:
                 print(f"  ⏭️ [{agent}] 买入 {code}: 已有在途买单未确认，跳过")
                 continue

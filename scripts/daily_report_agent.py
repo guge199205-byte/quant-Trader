@@ -88,6 +88,13 @@ def collect(date: str | None = None) -> dict:
         out["system"]["budget"] = {"level": b.get("level"), "label": b.get("label")}
     except (OSError, ValueError):
         pass
+    # 循环熔断（当日亏损/回撤超限 → 禁买）：有则进日报，让用户看到风控真的拦过
+    try:
+        from live_breaker import load_trips
+
+        out["system"]["breaker"] = load_trips(today)
+    except Exception:  # noqa: BLE001
+        pass
     pool_files = sorted((ROOT.parent / "projects/quantmind/data/reports/stock_picks")
                         .glob(f"{today.replace('-', '')}*_agent_picks.json"))
     out["system"]["night_pool"] = bool(pool_files)

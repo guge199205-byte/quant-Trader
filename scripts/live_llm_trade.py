@@ -299,6 +299,13 @@ def main() -> int:
         # 共享桥账户全量持仓当"你名下"喂给空账本 agent → pro 卖了 flash 的生益电子
         my_holdings = [h for h in holdings if h["code"] in mine]
         remaining = agent_remaining(ledger, agent)
+        # 循环熔断（第二道防线）：当日已实现亏损/日内权益回撤超限 → 该 agent 当日禁买。
+        # 卖出照常放行（降风险不受限）；dry-run 只评估不落盘。
+        from live_breaker import check_and_trip
+
+        halt, halt_reason = check_and_trip(agent, persist=bool(args.execute))
+        if halt:
+            print(f"  🛑 [{agent}] 循环熔断：{halt_reason} → 今日禁止买入（卖出照常）")
         prompt = build_prompt(agent, my_holdings, pool_table, direction, remaining)
         content, usage = "", None
         try:
@@ -351,6 +358,9 @@ def main() -> int:
                 pct = min(max(d["pct"], 0), PER_STOCK_PCT)
                 if pct <= 0:
                     print(f"  ⏭️ [{agent}] 买入 {code}: pct=0，跳过")
+                    continue
+                if halt:
+                    print(f"  🛑 [{agent}] 买入 {code}: 当日已熔断（{halt_reason}），跳过")
                     continue
                 buys.append((code, pct, d["reason"]))
                 print(f"  📈 [{agent}] 买入 {code} 用剩余额度 {pct:.0%}"

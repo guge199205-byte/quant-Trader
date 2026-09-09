@@ -205,59 +205,57 @@ if [ -n "$STUCK" ]; then
 fi
 
 # 2d. 实时行情源降级检测（rt_probe 每5分钟写 logs/rt_status.json）
-RT_DOWN=$(python3 - logs/rt_status.json <<'PY'
-import json, os, sys
-p = sys.argv[1]
-if not os.path.isfile(p):
-    raise SystemExit(0)
-try:
-    d = json.load(open(p, encoding="utf-8"))
-except (OSError, ValueError):
-    raise SystemExit(0)
-bad = []
-for k in ("bridge", "fuyao", "aidata"):
-    v = d.get(k) or {}
-    if not v.get("ok"):
-        bad.append(k)
-if bad:
-    print(",".join(bad))
-PY
-)
+#     fuyao 单点抖动多（一天十几次、5-10 分钟自愈）→ 需连续失败 ≥2 次才报；
+#     aidata 是静态文件存在性检查（缺了就一直是缺，去抖无效）→ 按天去重；
+#     bridge 是主源 → 立即报 + 自动投重启信号。
+RT_OUT=$(/usr/bin/python3 scripts/alert_checks.py rt_down logs/rt_status.json 2>/dev/null)
+RT_DOWN=$(printf '%s\n' "$RT_OUT" | sed -n 1p)
+RT_BYDAY=$(printf '%s\n' "$RT_OUT" | sed -n 2p)
 if [ -n "$RT_DOWN" ]; then
     ALERTS="$ALERTS
-🔴 实时行情源降级：${RT_DOWN} 不可用（桥/Fuyao/TdxAiData）——主交易数据以桥为准，Fuyao 为全市场实时备胎，TdxAiData 仅分钟特征"
+🔴 实时行情源降级：${RT_DOWN} 不可用——主交易数据以桥为准，Fuyao 为全市场实时备胎"
     if echo "$RT_DOWN" | grep -q bridge && [ -d /mnt/tdx-shared/bridge-windows ]; then
         touch /mnt/tdx-shared/bridge-windows/restart_bridge.flag
         ALERTS="$ALERTS
 🔧 桥掉线 → 已投递重启信号"
     fi
 fi
+if [ -n "$RT_BYDAY" ]; then
+    AIDATA_SEEN="/tmp/.baymax_aidata_alerted_$(date +%F)"
+    if [ ! -f "$AIDATA_SEEN" ]; then
+        touch "$AIDATA_SEEN"
+        ALERTS="$ALERTS
+🟡 行情备胎降级：${RT_BYDAY}（TdxAiData 仅分钟特征，桥/Fuyao 正常时不阻塞交易）"
+    fi
+fi
 
 # 2e. 新闻分子新鲜度（盘中每小时一期，>75 分钟无新刊 = 门卫/主编批量截断的
 #      静默故障；2026-09-08 实录：latest.json 停在 10:55，交易 agent 吃 230 分钟
 #      旧新闻，兜底轮把 state last_ok 照常刷新导致零告警）
-NEWS_STALE=$(python3 - data/news_brief/latest.json <<'PY'
-import os, sys, datetime
-BJ = datetime.timezone(datetime.timedelta(hours=8))
-now = datetime.datetime.now(BJ)
-if now.weekday() >= 5:
-    raise SystemExit(0)
-m = now.hour * 60 + now.minute
-if not ((9 * 60 + 30 <= m < 11 * 60 + 30) or (13 * 60 <= m < 15 * 60)):
-    raise SystemExit(0)
-if (10 * 60 + 45) > m:            # 早盘前两刊（09:25/09:55）未齐，不判定
-    raise SystemExit(0)
-try:
-    age = (now.timestamp() - os.path.getmtime(sys.argv[1])) / 60
-except OSError:
-    raise SystemExit(0)
-if age > 75:
-    print(int(age))
-PY
-)
+#      2026-09-09 修两处误报：下午首判 13:00→13:20（12:55 那期实测 13:08 才落盘，
+#      13:00/13:05 看到的是 11:04 旧刊 → 误报 115/120 分钟）；news_brief 进程在跑时不判。
+NEWS_RUNNING=""
+pgrep -f "scripts/news_brief.py" >/dev/null 2>&1 && NEWS_RUNNING="running"
+NEWS_STALE=$(/usr/bin/python3 scripts/alert_checks.py news_stale \
+    data/news_brief/latest.json $NEWS_RUNNING 2>/dev/null)
 if [ -n "$NEWS_STALE" ]; then
     ALERTS="$ALERTS
 🟡 新闻分子停更 ${NEWS_STALE} 分钟（盘中应每小时一期）——查 logs/news_brief.log 门卫/主编是否批量截断，必要时手动跑 news_brief.py；交易侧当前引用的是过期新闻"
+fi
+
+# 2g. 新闻抓取桶失败（news_brief 每期把 folder_failures 写进 state.last_run）：
+#     ≥3 个桶抓取失败说明上游大面积故障，即便主编兜底出了刊也该报。
+#     按（日期 + 失败桶集合）去重——同一个坏桶每期都报会一天刷 5 条。
+FOLDER_FAIL=$(/usr/bin/python3 scripts/alert_checks.py folder_failures \
+    data/news_brief/state.json 2>/dev/null)
+if [ -n "$FOLDER_FAIL" ]; then
+    FF_SEEN="/tmp/.baymax_folderfail_seen_$(date +%F)"
+    FF_KEY=$(echo "$FOLDER_FAIL" | md5sum | cut -c1-12)
+    if ! grep -q "^$FF_KEY$" "$FF_SEEN" 2>/dev/null; then
+        echo "$FF_KEY" >> "$FF_SEEN"
+        ALERTS="$ALERTS
+🟡 新闻抓取降级：$FOLDER_FAIL —— 查 news 上游/网络，交易侧新闻覆盖可能不全"
+    fi
 fi
 
 # 2c. 因子库新鲜度：alpha_library 分区滞后日K ≥5 自然日 → 提醒重跑
@@ -325,6 +323,28 @@ if [ -f data/risk_block.json ]; then
     if [ "$RISK_AGE_D" -ge 3 ]; then
         ALERTS="$ALERTS
 🟡 事件风险清单已 ${RISK_AGE_D} 天未重建（应每交易日刷新）——查 event_radar/news_brief 是否正常，或手动跑 scripts/risk_list.py refresh"
+    fi
+fi
+
+# 2h. 09:35 主入口执行状态（2026-09-09 实录：桥断线 → BrokerError 裸崩退出，
+#     全天 0 笔调仓，日志只有 traceback、零告警；09-07 同样）。
+#     判据见 scripts/alert_checks.py::llm_trade_tier：北京 10:00 后 state 仍非 ok:true，
+#     且**没有班正在跑**（flock 被占则不判）。两级各报一次/天。
+if flock -n /home/zbox/baymax/logs/live_llm_trade.lock -c true 2>/dev/null; then
+    LLM_TIER=$(/usr/bin/python3 scripts/alert_checks.py llm_tier logs/live_llm_trade_state.json 2>/dev/null)
+    if [ -n "$LLM_TIER" ]; then
+        LLM_SEEN="/tmp/.baymax_llm_trade_alerted_$(date +%F)"
+        LLM_KEY="${LLM_TIER%%|*}"; LLM_WHY="${LLM_TIER#*|}"
+        if ! grep -q "^$LLM_KEY$" "$LLM_SEEN" 2>/dev/null; then
+            echo "$LLM_KEY" >> "$LLM_SEEN"
+            if [ "$LLM_KEY" = "t2" ]; then
+                ALERTS="$ALERTS
+🔴 当日调仓两班补跑均未成功：$LLM_WHY —— 今日可能一单未动，请人工确认"
+            else
+                ALERTS="$ALERTS
+🔴 09:35 调仓未正常完成：$LLM_WHY —— 需人工确认是否已下单（10:05/11:05 自动补跑）"
+            fi
+        fi
     fi
 fi
 

@@ -14,11 +14,26 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "logs" / "rt_status.json"
 
 
+def _env_kv(prefix: str = "") -> dict:
+    """读 .env 键值。读失败返回空 dict——探针不能因为 .env 不可读就整个停更
+    （rt_status.json 停更时 alert.sh 的 2d 会静默跳过 = fail-open）。"""
+    out: dict = {}
+    try:
+        text = (ROOT / ".env").read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        if prefix and not line.startswith(prefix):
+            continue
+        k, _, v = line.partition("=")
+        if k.strip():
+            out[k.strip()] = v.strip().strip('"')
+    return out
+
+
 def _bridge_urls() -> list:
     """候选桥地址：运行时覆盖（config/tdx_bridge.json，broker 断线自动发现
     会写这里）优先，其次 .env 声明地址——IP 变动自愈后看板不误报 DOWN。"""
-    import os
-
     out: list = []
     try:
         ov = json.loads((ROOT / "config" / "tdx_bridge.json").read_text(encoding="utf-8"))
@@ -27,28 +42,18 @@ def _bridge_urls() -> list:
             out.append(u)
     except (OSError, json.JSONDecodeError):
         pass
-    env = {}
-    for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
-        if line.startswith("TDX_BRIDGE_"):
-            k, _, v = line.partition("=")
-            env[k] = v.strip().strip('"')
-    u = str(env.get("TDX_BRIDGE_URL", "")).rstrip("/") or "http://192.168.31.13:8550"
+    u = str(_env_kv("TDX_BRIDGE_").get("TDX_BRIDGE_URL", "")).rstrip("/") \
+        or "http://192.168.31.13:8550"
     if u not in out:
         out.append(u)
     return out
 
 
 def probe_bridge() -> dict:
-    import os
-
-    env = {}
-    for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
-        if line.startswith("TDX_BRIDGE_"):
-            k, _, v = line.partition("=")
-            env[k] = v.strip().strip('"')
-    token = env.get("TDX_BRIDGE_TOKEN", "")
+    token = _env_kv("TDX_BRIDGE_").get("TDX_BRIDGE_TOKEN", "")
     import urllib.request
 
+    last_err = "无候选桥地址"
     for url in _bridge_urls():
         try:
             req = urllib.request.Request(
@@ -120,20 +125,62 @@ def probe_quantdb() -> dict:
     return {"ok": False, "error": "quantdb 目录缺失"}
 
 
+SOURCES = ("bridge", "fuyao", "tencent", "aidata", "quantdb")
+
+
+def _prev_board() -> dict:
+    try:
+        d = json.loads(OUT.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def apply_streaks(board: dict, prev: dict, ts: str) -> dict:
+    """把「连续失败次数 / 首次失败时刻」并进看板（纯函数，便于测试）。
+
+    单点 DOWN 多为 5-10 分钟自愈的抖动（fuyao 一天十几次），告警侧据此去抖；
+    没有 streak 就只能「一次失败就报」→ 刷屏，或者不报 → 漏真故障。
+    """
+    for k in SOURCES:
+        v = board.get(k)
+        if not isinstance(v, dict):
+            continue
+        p = prev.get(k) if isinstance(prev.get(k), dict) else {}
+        if v.get("ok"):
+            v["fail_streak"] = 0
+            v.pop("first_fail_ts", None)
+        else:
+            v["fail_streak"] = int(p.get("fail_streak") or 0) + 1
+            v["first_fail_ts"] = p.get("first_fail_ts") or ts
+    return board
+
+
+def _cell(board: dict, key: str, label: str) -> str:
+    v = board.get(key) or {}
+    if v.get("ok"):
+        return f"{label}=OK"
+    err = str(v.get("error") or "").strip()
+    detail = f"{v.get('fail_streak') or 0}次" + (f"/{err[:60]}" if err else "")
+    return f"{label}=DOWN({detail})"
+
+
 def main() -> int:
+    ts = datetime.now().isoformat(timespec="seconds")
     board = {
-        "ts": datetime.now().isoformat(timespec="seconds"),
+        "ts": ts,
         "bridge": probe_bridge(), "fuyao": probe_fuyao(), "tencent": probe_tencent(),
         "aidata": probe_aidata(), "quantdb": probe_quantdb(),
     }
-    OUT.write_text(json.dumps(board, ensure_ascii=False, indent=1), encoding="utf-8")
-    bad = [k for k, v in board.items() if k != "ts" and not v.get("ok")]
-    print("✅ 行情源: 桥={} Fuyao={} AI数据={} quantdb={}{}".format(
-        "OK" if board["bridge"]["ok"] else "DOWN",
-        "OK" if board["fuyao"]["ok"] else "DOWN",
-        "OK" if board["aidata"]["ok"] else "DOWN",
-        "OK" if board["quantdb"]["ok"] else "DOWN",
-        f"  ⚠️ 降级: {','.join(bad)}" if bad else ""))
+    apply_streaks(board, _prev_board(), ts)
+    tmp = OUT.with_name(OUT.name + ".tmp")   # 原子写：alert.sh 可能正在读
+    tmp.write_text(json.dumps(board, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(OUT)
+    bad = [k for k in SOURCES if not (board.get(k) or {}).get("ok")]
+    cells = " ".join(_cell(board, k, lab) for k, lab in
+                     (("bridge", "桥"), ("fuyao", "Fuyao"), ("tencent", "腾讯"),
+                      ("aidata", "AI数据"), ("quantdb", "quantdb")))
+    print(f"✅ 行情源: {cells}" + (f"  ⚠️ 降级: {','.join(bad)}" if bad else ""))
     return 0
 
 

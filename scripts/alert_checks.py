@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""alert.sh 用的判定函数（**只用标准库**）。
+
+alert.sh 调的是系统 `/usr/bin/python3`（不是项目 venv），不能 import 本项目模块，
+所以判定逻辑单独放这里，而不是继续往 alert.sh 里塞内联 heredoc——内联的东西
+没法 pytest，出过一次「逻辑对但阈值/窗口写错」就只能靠线上误报发现。
+
+每个函数都接收 `now` 参数（便于测试），CLI 里取当前北京时间。
+
+CLI（alert.sh 调用）：
+  /usr/bin/python3 scripts/alert_checks.py llm_tier        logs/live_llm_trade_state.json
+  /usr/bin/python3 scripts/alert_checks.py news_stale      data/news_brief/latest.json [running]
+  /usr/bin/python3 scripts/alert_checks.py folder_failures data/news_brief/state.json
+  /usr/bin/python3 scripts/alert_checks.py rt_down        logs/rt_status.json
+
+有告警 → stdout 一行文本；无告警 → 不输出，退出码 0（alert.sh 按空串判定）。
+`rt_down` 例外：固定输出两行（立即报 / 按天报），调用方按行取。
+"""
+import json
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+
+BJ = timezone(timedelta(hours=8))
+
+# 新闻停更：盘中每小时一期，>75 分钟无新刊判停更
+NEWS_STALE_MIN = 75
+NEWS_MORNING_START = 10 * 60 + 45     # 早盘前两刊（09:25/09:55）未齐，不判定
+NEWS_AFTERNOON_START = 13 * 60 + 20   # 下午首判 13:20：12:55 那期实测 13:08 才落盘，
+                                      # 13:00/13:05 检查到的是 11:04 旧刊 → 误报 115/120 分钟
+NEWS_MORNING_END = 11 * 60 + 30
+NEWS_AFTERNOON_END = 15 * 60
+
+# 09:35 主入口执行状态
+LLM_T1_START = 10 * 60                # 10:00 起判「主入口未收尾」
+LLM_T2_START = 11 * 60 + 10           # 11:10 起判「两班补跑均未成功」
+LLM_END = 15 * 60
+
+FOLDER_FAIL_MIN = 3                   # 抓取桶失败 ≥3 才值得打扰
+
+# 行情源降级（rt_probe 每 5 分钟写 logs/rt_status.json）
+RT_SOURCES = ("bridge", "fuyao", "aidata")
+RT_DEBOUNCE = {"fuyao": 2}            # 抖动源：连续失败 ≥2 次才报（一天十几次单点抖动）
+RT_BYDAY = ("aidata",)                # 静态文件存在性检查：缺失即长期缺失，去抖无效 → 按天
+
+
+def rt_down(doc: dict | None) -> tuple[str, str]:
+    """行情源降级 → (立即报的源, 按天去重报的源)，均为逗号分隔描述串。
+
+    `fail_streak` 由 rt_probe 写；老格式（无该字段）按 1 次算，不改变原有立即报行为。
+    """
+    d = doc if isinstance(doc, dict) else {}
+    immediate: list[str] = []
+    byday: list[str] = []
+    for k in RT_SOURCES:
+        v = d.get(k)
+        if not isinstance(v, dict) or v.get("ok"):
+            continue          # 缺该路（老看板/探针停更）不报——停更由别的检查兜
+        streak = int(v.get("fail_streak") or 1)
+        if streak < RT_DEBOUNCE.get(k, 1):
+            continue
+        ts = str(v.get("first_fail_ts") or "")[11:16]
+        label = f"{k}(连续{streak}次{'自' + ts if ts else ''})"
+        (byday if k in RT_BYDAY else immediate).append(label)
+    return ",".join(immediate), ",".join(byday)
+
+
+def news_stale_minutes(now: datetime, mtime: float | None,
+                       running: bool = False) -> int | None:
+    """盘中新闻停更分钟数；不该判定时返回 None。
+
+    running=True（news_brief 进程正在跑）时不判定——覆盖手动补跑与超时晚落盘。
+    """
+    if running or now.weekday() >= 5:
+        return None
+    m = now.hour * 60 + now.minute
+    in_morning = NEWS_MORNING_START <= m < NEWS_MORNING_END
+    in_afternoon = NEWS_AFTERNOON_START <= m < NEWS_AFTERNOON_END
+    if not (in_morning or in_afternoon):
+        return None
+    if mtime is None:
+        return None
+    age = (now.timestamp() - mtime) / 60
+    return int(age) if age > NEWS_STALE_MIN else None
+
+
+def llm_trade_tier(now: datetime, doc: dict | None) -> str | None:
+    """09:35 主入口当日执行状态 → "t1|原因" / "t2|原因" / None。
+
+    t1 = 主入口未正常收尾（需人工确认是否已下单）；t2 = 两班补跑（10:05/11:05）也未成功。
+    `ok is True` 才算完成——`ok: null`（启动了但没走完）与缺文件都算异常。
+    """
+    if now.weekday() >= 5:
+        return None
+    m = now.hour * 60 + now.minute
+    if not (LLM_T1_START <= m < LLM_END):
+        return None
+    d = doc if isinstance(doc, dict) else {}
+    today = now.date().isoformat()
+    same_day = str(d.get("day") or "") == today
+    if same_day and d.get("ok") is True:
+        return None
+    note = str(d.get("note") or "无说明")
+    if not same_day:
+        why = "当日无执行记录（09:35 未运行或未落状态）"
+    elif d.get("orders_attempted"):
+        why = f"已下过单但未正常收尾（{note}）"
+    else:
+        why = f"下单前失败、一单未动（{note}）"
+    return ("t2|" if m >= LLM_T2_START else "t1|") + why
+
+
+def folder_failures(doc: dict | None) -> list[tuple[int, str]]:
+    """news_brief state.last_run.folder_failures → [(folder_id, err)]。
+
+    落库形状：`fails.append((fid, str(exc)[:100]))`，JSON 序列化后是二元列表。
+    """
+    lr = (doc or {}).get("last_run") or {}
+    out: list[tuple[int, str]] = []
+    for x in lr.get("folder_failures") or []:
+        if isinstance(x, (list, tuple)) and len(x) >= 2:
+            try:
+                out.append((int(x[0]), str(x[1])))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def folder_failure_line(doc: dict | None) -> str | None:
+    """≥FOLDER_FAIL_MIN 桶失败 → 一行告警文案，否则 None。"""
+    fails = folder_failures(doc)
+    if len(fails) < FOLDER_FAIL_MIN:
+        return None
+    detail = "、".join(f"桶{i}:{err[:60]}" for i, err in fails)
+    return f"{len(fails)} 个新闻抓取桶失败（{detail}）"
+
+
+def _load(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print("usage: alert_checks.py <llm_tier|news_stale|folder_failures|rt_down>"
+              " <path> [running]", file=sys.stderr)
+        return 2
+    check, path = argv[0], argv[1]
+    now = datetime.now(BJ)
+    out = None
+    if check == "llm_tier":
+        out = llm_trade_tier(now, _load(path))
+    elif check == "news_stale":
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = None
+        mins = news_stale_minutes(now, mtime,
+                                  running=(len(argv) > 2 and argv[2] == "running"))
+        out = f"{mins}" if mins is not None else None
+    elif check == "folder_failures":
+        out = folder_failure_line(_load(path))
+    elif check == "rt_down":
+        immediate, byday = rt_down(_load(path))
+        out = f"{immediate}\n{byday}"      # 固定两行：调用方按行取
+    else:
+        print(f"unknown check: {check}", file=sys.stderr)
+        return 2
+    if out:
+        print(out)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

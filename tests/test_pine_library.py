@@ -295,3 +295,79 @@ class TestNotes:
         pl.save_note("0001", {"note": "重建后还得在"})
         pli.build(source=_corpus(tmp_path), lib_dir=lib)
         assert pl.get_note("0001")["note"] == "重建后还得在"
+
+
+@pytest.fixture()
+def chat(lib, tmp_path, monkeypatch):
+    """对话目录指到临时库（与转写队列各自独立）。"""
+    d = tmp_path / "chat"
+    monkeypatch.setattr(pl, "CHAT_DIR", d)
+    monkeypatch.setattr(pl, "CHAT_QUEUE", d / "queue")
+    monkeypatch.setattr(pl, "CHAT_JOBS", d / "jobs")
+    return d
+
+
+class TestChatQueue:
+    def test_enqueue_writes_request_and_reads_back_as_queued(self, chat):
+        got = pl.enqueue_chat("0001", "这个策略适合震荡市吗？")
+        job_id = got["job_id"]
+        assert pl.JOB_ID_RE.match(job_id)
+        req = json.loads((chat / "queue" / f"{job_id}.json").read_text(encoding="utf-8"))
+        assert req["message"] == "这个策略适合震荡市吗？" and req["mode"] == "ask"
+        # worker 还没取走 → 界面看到 queued
+        assert pl.chat_job("0001", job_id)["status"] == "queued"
+
+    def test_second_message_rejected_while_pending(self, chat):
+        pl.enqueue_chat("0001", "第一条")
+        with pytest.raises(ValueError, match="还在处理"):
+            pl.enqueue_chat("0001", "第二条")
+
+    def test_other_strategy_not_blocked_by_pending(self, chat):
+        pl.enqueue_chat("0001", "甲")
+        assert pl.enqueue_chat("0002", "乙")["job_id"].startswith("0002-")
+
+    def test_done_job_returned_and_scoped_to_strategy(self, chat):
+        job_id = pl.enqueue_chat("0001", "问")["job_id"]
+        (chat / "jobs").mkdir(parents=True)
+        (chat / "jobs" / f"{job_id}.json").write_text(
+            json.dumps({"job_id": job_id, "id": "0001", "status": "done",
+                        "stage": "done", "reply": "适合趋势市"}), encoding="utf-8")
+        assert pl.chat_job("0001", job_id)["reply"] == "适合趋势市"
+        with pytest.raises(ValueError, match="不属于该策略"):
+            pl.chat_job("0002", job_id)
+
+    def test_unknown_job_rejected(self, chat):
+        with pytest.raises(ValueError, match="任务不存在"):
+            pl.chat_job("0001", "0001-20260909T120000-abcdef")
+
+    @pytest.mark.parametrize("bad", ["../x", "0001", "0001-2026-abcdef", ""])
+    def test_bad_job_id_rejected(self, chat, bad):
+        with pytest.raises(ValueError):
+            pl.chat_job("0001", bad)
+
+    def test_empty_oversize_and_bad_mode_rejected(self, chat):
+        with pytest.raises(ValueError, match="不能为空"):
+            pl.enqueue_chat("0001", "   ")
+        with pytest.raises(ValueError, match="过长"):
+            pl.enqueue_chat("0001", "字" * (pl.MAX_MESSAGE_CHARS + 1))
+        with pytest.raises(ValueError, match="未知模式"):
+            pl.enqueue_chat("0001", "问", mode="chat")
+
+    def test_unknown_strategy_rejected(self, chat):
+        with pytest.raises(ValueError):
+            pl.enqueue_chat("0099", "问")
+
+    def test_thread_reads_jsonl_and_skips_broken_lines(self, chat):
+        d = chat / "0001"
+        d.mkdir(parents=True)
+        (d / "thread.jsonl").write_text(
+            json.dumps({"role": "user", "content": "问"}, ensure_ascii=False) + "\n"
+            + '{"role": "assistant", "content": "半截' + "\n"      # 写一半的坏行
+            + json.dumps({"role": "assistant", "content": "答"}, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        got = pl.chat_thread("0001")
+        assert got["count"] == 2
+        assert [m["content"] for m in got["messages"]] == ["问", "答"]
+
+    def test_empty_thread_is_empty(self, chat):
+        assert pl.chat_thread("0001") == {"id": "0001", "count": 0, "messages": []}

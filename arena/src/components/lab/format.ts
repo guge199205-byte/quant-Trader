@@ -28,13 +28,16 @@ export const KIND_LABEL: Record<string, string> = {
   missing: '缺失',
 };
 
-/** Pine 转写任务的阶段文案 */
+/** 转写 / 对话任务的阶段文案（两套阶段的 key 不重叠，共用一张表） */
 export const STAGE_LABEL: Record<string, string> = {
   queued: '已入队，等宿主 worker 取（每分钟一轮）',
   transpile: '转写中：调模型翻成 Pyne-Python…',
   static: '静态检查未通过',
   backtest: '沙箱回测中（bwrap：只读根 + 断网）…',
   repair: '回测报错，让模型修一版再重跑…',
+  context: '读取策略上下文…',
+  llm: '模型思考中…',
+  mode: '该模式还没上线',
   done: '完成',
   worker: 'worker 异常',
 };

@@ -983,6 +983,50 @@ export const saveNote = (id: string, payload: NoteInput) =>
 export const fetchNoteIds = () =>
   unwrap<{ ids: string[]; count: number }>(api.get('/market-lab/notes'));
 
+// ---------- 策略对话（宿主 worker 消费队列，界面只投递 + 轮询） ----------
+// 模型调用与沙箱回测都在宿主上发生（容器里没有 bwrap，也不执行模型产出的代码），
+// API 只写请求文件、读结果文件。
+
+export type ChatRole = 'user' | 'assistant';
+/** ask = 只问答；edit = 产出候选 Pine（P3 才上线） */
+export type ChatMode = 'ask' | 'edit';
+export type ChatStatus = 'queued' | 'running' | 'done' | 'failed';
+
+export interface ChatMessage {
+  role: ChatRole;
+  content: string;
+  timestamp?: string;
+  job_id?: string;
+  mode?: ChatMode;
+  /** 界面本地的乐观消息：worker 还没把它落进 thread.jsonl */
+  pending?: boolean;
+}
+
+export interface ChatJob {
+  job_id: string;
+  id?: string;
+  status: ChatStatus;
+  stage?: string;
+  reply?: string;
+  error?: string;
+  truncated?: boolean;
+}
+
+export const fetchChatThread = (id: string, limit = 100) =>
+  unwrap<{ id: string; count: number; messages: ChatMessage[] }>(
+    api.get(`/market-lab/library/${encodeURIComponent(id)}/chat`, { params: { limit } }),
+  );
+
+export const sendChat = (id: string, message: string, mode: ChatMode = 'ask') =>
+  unwrap<{ job_id: string; queued: boolean }>(
+    api.post(`/market-lab/library/${encodeURIComponent(id)}/chat`, { message, mode }),
+  );
+
+export const fetchChatJob = (id: string, jobId: string) =>
+  unwrap<ChatJob>(
+    api.get(`/market-lab/library/${encodeURIComponent(id)}/chat/${encodeURIComponent(jobId)}`),
+  );
+
 export interface PineTradeRow {
   entry_time: string;
   entry_price: number | null;

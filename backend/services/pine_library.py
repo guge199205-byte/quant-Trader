@@ -297,3 +297,86 @@ def enqueue_backtest(item_id: str, symbol: str, adj: str = "backward",
     tmp.write_text(json.dumps(req, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(qpath)                        # 原子落地，worker 不会读到半截
     return {"queued": True, "request": req}
+
+
+# ---------- 策略对话（队列 + 宿主 worker：scripts/pine_chat_worker.py） ----------
+# 与转写队列同构，但**独立目录、独立锁**：问答/改策略不该被转写任务堵住，反之亦然。
+# 模型调用与沙箱回测都只在宿主上发生，API 只落请求、读结果。
+
+CHAT_DIR = LIB_DIR / "chat"
+CHAT_QUEUE = CHAT_DIR / "queue"
+CHAT_JOBS = CHAT_DIR / "jobs"
+CHAT_MODES = ("ask", "edit")
+CHAT_MODEL = "deepseek-v4-flash"     # 与 Pine 转写同源：改策略产出的代码要被同一条链路读懂
+MAX_MESSAGE_CHARS = 4000
+JOB_ID_RE = re.compile(r"^[a-z0-9_]{1,32}-\d{8}T\d{6}-[0-9a-f]{6}$")
+
+
+def _check_job_id(job_id: str) -> str:
+    job_id = (job_id or "").strip()
+    if not JOB_ID_RE.match(job_id):
+        raise LibraryError(f"无效的任务 id: {job_id!r}")
+    return job_id
+
+
+def chat_thread(item_id: str, limit: int = 100) -> dict:
+    """对话历史（最近的在后）。没聊过 → 空线程。"""
+    item_id = _check_id(item_id)
+    path = CHAT_DIR / item_id / "thread.jsonl"
+    rows: list[dict] = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue          # worker 正在追加的半截行，跳过而不是炸掉整个线程
+    return {"id": item_id, "count": len(rows), "messages": rows[-limit:]}
+
+
+def chat_job(item_id: str, job_id: str) -> dict:
+    """单个对话任务的状态与回复。"""
+    item_id = _check_id(item_id)
+    job_id = _check_job_id(job_id)
+    job = _read_json(CHAT_JOBS / f"{job_id}.json")
+    if not job:
+        if _read_json(CHAT_QUEUE / f"{job_id}.json"):
+            return {"job_id": job_id, "id": item_id, "status": "queued",
+                    "stage": "queued", "reply": ""}
+        raise LibraryError(f"任务不存在: {job_id}")
+    if job.get("id") != item_id:   # 别让 A 策略的 job_id 读到 B 策略的结果
+        raise LibraryError(f"任务不属于该策略: {job_id}")
+    return job
+
+
+def _pending_chat(item_id: str) -> bool:
+    if not CHAT_QUEUE.is_dir():
+        return False
+    return any(p.stem.startswith(f"{item_id}-") for p in CHAT_QUEUE.glob("*.json"))
+
+
+def enqueue_chat(item_id: str, message: str, mode: str = "ask") -> dict:
+    """投递一条对话消息，由宿主 worker 消费。"""
+    item_id = _check_id(item_id)
+    get_source(item_id)                        # 对话是围绕源码的，策略必须存在
+    message = (message or "").strip()
+    if not message:
+        raise LibraryError("消息不能为空")
+    if len(message) > MAX_MESSAGE_CHARS:
+        raise LibraryError(f"消息过长（>{MAX_MESSAGE_CHARS} 字）")
+    if mode not in CHAT_MODES:
+        raise LibraryError(f"未知模式: {mode!r}")
+    if _pending_chat(item_id):
+        raise LibraryError("上一条还在处理，等它回答完再发")
+
+    now = datetime.now(timezone.utc)
+    job_id = f"{item_id}-{now.strftime('%Y%m%dT%H%M%S')}-{os.urandom(3).hex()}"
+    req = {"job_id": job_id, "id": item_id, "message": message, "mode": mode,
+           "model": CHAT_MODEL, "requested": now.isoformat(timespec="seconds")}
+    CHAT_QUEUE.mkdir(parents=True, exist_ok=True)
+    tmp = CHAT_QUEUE / f"{job_id}.json.tmp"
+    tmp.write_text(json.dumps(req, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(CHAT_QUEUE / f"{job_id}.json")
+    return {"job_id": job_id, "queued": True, "request": req}

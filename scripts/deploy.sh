@@ -53,6 +53,14 @@ if [ "$API" = 1 ]; then
   for f in backend/services/lab_strategies/*.py; do
     docker exec -i baymax-api sh -c "cat > /app/backend/services/lab_strategies/$(basename "$f")" < "$f"
   done
+  # 宿主 worker 与容器共写的目录：容器以 root 建目录、写文件，而 unlink/rename 只看
+  # **目录**写权限——目录若被容器建成 root:755，宿主 worker 连摘牌都做不到
+  # （2026-09-09 对话队列实翻车：job 卡在 running，worker 只剩 PermissionError）。
+  for d in data/pine_library/chat/queue data/pine_library/chat/jobs \
+           data/pine_library/notes data/pine_transpile/queue; do
+    mkdir -p "$d"
+    chmod 777 "$d" 2>/dev/null || echo "!! $d 属主非当前用户，宿主 worker 可能摘不了牌（docker exec baymax-api chown 1000:1000 /app/${d#data/} 修）"
+  done
   docker restart baymax-api >/dev/null
   echo -n "==> 等待 api…"
   for i in $(seq 1 12); do

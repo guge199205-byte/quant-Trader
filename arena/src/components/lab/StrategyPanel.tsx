@@ -1,11 +1,13 @@
 /** 右栏：当前策略的详情、运行入口、备注/对话，以及可折叠的 Pine 源码编辑器。 */
 import { useState } from 'react';
+import AgentChatPanel from './AgentChatPanel';
 import NotePanel from './NotePanel';
 import { fmt, fmtPct, KIND_LABEL, STAGE_LABEL } from './format';
 import type { Workbench } from './useWorkbench';
 
 function SubTabs({ wb }: { wb: Workbench }) {
   const [sub, setSub] = useState<'note' | 'chat'>('note');
+  const isPine = wb.sel?.kind === 'pine';
   return (
     <section className="lab-panel-block">
       <div className="lab-subtabs">
@@ -18,12 +20,11 @@ function SubTabs({ wb }: { wb: Workbench }) {
       </div>
       {sub === 'note' ? (
         <NotePanel wb={wb} />
+      ) : isPine ? (
+        <AgentChatPanel wb={wb} />
       ) : (
         <p className="lab-note">
-          问策略逻辑 / 让 agent 改参数，产出先落候选、只在 bwrap 沙箱里回测，
-          点「采用」才写回正式源码，随时可回滚。
-          <br />
-          <span className="lab-soon">P2 / P3 上线</span>
+          对话只针对策略库里的条目——内置模板不在库里，先在左栏选一条 Pine 策略。
         </p>
       )}
     </section>

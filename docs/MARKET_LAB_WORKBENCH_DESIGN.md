@@ -9,14 +9,21 @@
 | 期 | 状态 | 落点 |
 |---|---|---|
 | P0 | ✅ 2026-09-09 已上线（commit `04eb38a`，已 deploy --ui） | `Workbench.tsx` / `StrategyList.tsx` / `ResultView.tsx` / `StrategyPanel.tsx` / `useWorkbench.ts` / `labResult.ts`(+test) |
-| P1 | 待做 | 备注存储 + 3 端点 + 右栏编辑 + 左栏 💬 角标 |
-| P2 | 待做 | `pine_chat_worker.py` + `AgentChatPanel.tsx` |
+| P1 | ✅ 2026-09-09 已上线（commit `611cffb`，已 deploy --api） | `pine_library.py` 备注段 + 3 端点 + `NotePanel.tsx` + 左栏 💬 角标（11 单测） |
+| P2 | ✅ 2026-09-09 已上线（`ask` 问答；`edit` 留 P3） | `pine_chat_worker.py` + `AgentChatPanel.tsx` + 对话端点 + cron（24 单测） |
 | P3 | 待做 | `pine_to_pyne.py` 加 `--source/--scratch` + `versions/` |
 
 P0 落地时顺带发现（未修，待定）：静态闸 `pine_to_pyne.py:1005-1015` 只检查
 `initial_capital` / `default_qty_value` / `default_qty_type` **存在**，不校验**取值**，
 于是 `0001` 的候选写了 `initial_capital=10000` + `default_qty_value=100`（提示词要求
 100000 / 95）也能过闸——同一策略与模板回测不同口径，跨策略比较会失真。
+（界面已按每条链路真实本金显示，见 `labResult.ts` 的 `capital` / `unit`。）
+
+P2 上线时踩到的坑（已修，`deploy.sh` 已加护栏）：容器以 root 在 bind mount 里建目录，
+而 unlink/rename 只看**目录**写权限——`chat/queue` 被容器建成 `root:755` 后，宿主 worker
+连自己的请求文件都摘不了牌，job 永远卡在 running。`deploy.sh` 现在会
+`mkdir -p` + `chmod 777` 这几个两侧共写的目录；worker 侧 `_drop_request()` 也会把
+「目录属主不对」翻成人话写进 job.error。
 
 ---
 

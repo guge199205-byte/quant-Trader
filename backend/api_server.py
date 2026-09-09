@@ -2121,6 +2121,46 @@ def pine_library_note_save(item_id: str, payload: dict = Body(...)):
         return {"success": False, "error": f"备注保存失败: {e}"}
 
 
+@app.post("/api/market-lab/library/{item_id}/chat")
+def pine_library_chat_send(item_id: str, payload: dict = Body(...)):
+    """投递一条对话消息（宿主 worker 消费，见 scripts/pine_chat_worker.py）。
+
+    这里只写请求文件：模型调用与候选回测都在宿主上做，容器不执行模型产物。
+    """
+    try:
+        return {"success": True, "data": _pine_lib().enqueue_chat(
+            item_id, payload.get("message", ""), payload.get("mode", "ask"))}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("pine chat enqueue failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"投递失败: {e}"}
+
+
+@app.get("/api/market-lab/library/{item_id}/chat")
+def pine_library_chat_thread(item_id: str, limit: int = Query(100, ge=1, le=500)):
+    """该策略的对话历史（给界面回放）。"""
+    try:
+        return {"success": True, "data": _pine_lib().chat_thread(item_id, limit)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("pine chat thread failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"对话历史读取失败: {e}"}
+
+
+@app.get("/api/market-lab/library/{item_id}/chat/{job_id}")
+def pine_library_chat_job(item_id: str, job_id: str):
+    """轮询单条消息的处理状态 / 回复。"""
+    try:
+        return {"success": True, "data": _pine_lib().chat_job(item_id, job_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("pine chat job failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"对话任务读取失败: {e}"}
+
+
 @app.get("/api/market-lab/transpile")
 def pine_transpile_list():
     """AI 转写产物一览（宿主上跑 scripts/pine_to_pyne.py 生成，页面只读）。"""

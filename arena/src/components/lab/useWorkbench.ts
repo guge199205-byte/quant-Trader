@@ -5,6 +5,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import {
+  fetchChatJob,
+  fetchChatThread,
   fetchLabKlines,
   fetchLabStrategies,
   fetchNote,
@@ -19,8 +21,11 @@ import {
   saveNote as putNote,
   savePineSource,
   searchLabSymbols,
+  sendChat as postChat,
   type AdjMode,
   type BtResult,
+  type ChatJob,
+  type ChatMessage,
   type Kline,
   type LabStrategy,
   type LabSymbol,
@@ -98,6 +103,16 @@ export interface Workbench {
   noteErr: string;
   saveNote: (patch: NoteInput) => void;
   noteIds: Set<string>;
+
+  // 对话
+  chat: ChatMessage[];
+  /** 已发出、worker 还没落进线程的那条（乐观显示，避免点完没反应） */
+  chatPending: ChatMessage | null;
+  /** 队列/模型阶段标签；空闲时为空串 */
+  chatStage: string;
+  chatBusy: boolean;
+  chatErr: string;
+  sendChat: (message: string) => void;
 
   // 源码编辑
   draft: string;
@@ -196,6 +211,67 @@ export function useWorkbench(symbol: string, setSymbol: (code: string) => void):
       })
       .catch((e) => setNoteErr(errText(e) || '备注保存失败'))
       .finally(() => setNoteBusy(false));
+  };
+
+  // ---- 对话 ----
+  const [chat, setChat] = useState<ChatMessage[]>([]);
+  const [chatPending, setChatPending] = useState<ChatMessage | null>(null);
+  const [chatJob, setChatJob] = useState<ChatJob | null>(null);
+  const [chatSending, setChatSending] = useState(false);
+  const [chatErr, setChatErr] = useState('');
+
+  const loadChat = useCallback((id: string) => {
+    fetchChatThread(id)
+      .then((d) => setChat(d.messages))
+      .catch(() => setChat([]));
+  }, []);
+
+  useEffect(() => {
+    setChat([]);
+    setChatPending(null);
+    setChatJob(null);
+    setChatSending(false);
+    setChatErr('');
+    if (sel?.kind !== 'pine') return;      // 对话只针对策略库条目（模板不在库里）
+    loadChat(sel.id);
+  }, [sel, loadChat]);
+
+  const chatRunning = chatJob?.status === 'queued' || chatJob?.status === 'running';
+  const chatJobId = chatJob?.job_id ?? '';
+
+  // 轮询任务：worker 由 cron 每分钟起一次，答完才写 done
+  useEffect(() => {
+    if (!sel || !chatJobId || !chatRunning) return;
+    const itemId = sel.id;
+    const tick = () => {
+      fetchChatJob(itemId, chatJobId)
+        .then((j) => {
+          setChatJob(j);
+          if (j.status === 'queued' || j.status === 'running') return;
+          setChatPending(null);
+          setChatSending(false);
+          if (j.status === 'done') loadChat(itemId);
+          else setChatErr(j.error || '回答失败');
+        })
+        .catch(() => undefined);           // 单次轮询失败不打断，下一拍再来
+    };
+    const t = window.setInterval(tick, POLL_MS);
+    return () => window.clearInterval(t);
+  }, [sel, chatJobId, chatRunning, loadChat]);
+
+  const sendChat = (message: string) => {
+    const text = message.trim();
+    if (!sel || sel.kind !== 'pine' || !text || chatSending) return;
+    setChatErr('');
+    setChatSending(true);
+    setChatPending({ role: 'user', content: text, pending: true });
+    postChat(sel.id, text)
+      .then((r) => setChatJob({ job_id: r.job_id, status: 'queued', stage: 'queued' }))
+      .catch((e) => {
+        setChatPending(null);
+        setChatSending(false);
+        setChatErr(errText(e) || '发送失败');
+      });
   };
 
   // ---- 内置模板列表 ----
@@ -483,6 +559,13 @@ export function useWorkbench(symbol: string, setSymbol: (code: string) => void):
     noteErr,
     saveNote,
     noteIds,
+
+    chat,
+    chatPending,
+    chatStage: chatRunning ? chatJob?.stage || 'queued' : '',
+    chatBusy: chatSending,
+    chatErr,
+    sendChat,
 
     draft,
     setDraft: (v: string) => {

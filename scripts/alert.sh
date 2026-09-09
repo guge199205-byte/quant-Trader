@@ -259,7 +259,8 @@ if [ -n "$FOLDER_FAIL" ]; then
 fi
 
 # 2c. 因子库新鲜度：alpha_library 分区滞后日K ≥5 自然日 → 提醒重跑
-#     （alpha_library_factors.py 为手动批处理，quantdb 日K 每日同步会领先它）
+#     （alpha_library_factors.py 已进夜间 cron：scripts/alpha_library_refresh.sh，
+#      北京 01:30 增量刷新；仍滞后说明 cron 没跑成/内存闸门连续跳过，查 cron_run.log）
 if [ $((NOW % 1800)) -lt 300 ]; then   # ~每 30 分钟检查一次，防刷屏
     KL_DT=$(ls /home/zbox/projects/quantmind/data/quantdb/1_kline_data/daily_backward 2>/dev/null \
         | grep -oE '[0-9]{8}' | sort | tail -1)
@@ -269,8 +270,12 @@ if [ $((NOW % 1800)) -lt 300 ]; then   # ~每 30 分钟检查一次，防刷屏
         LAG=$(( ( $(date -d "${KL_DT:0:4}-${KL_DT:4:2}-${KL_DT:6:2}" +%s) \
                 - $(date -d "${AL_DT:0:4}-${AL_DT:4:2}-${AL_DT:6:2}" +%s) ) / 86400 ))
         if [ "$LAG" -ge 5 ] && [ "$(date +%u)" -le 5 ]; then
-            ALERTS="$ALERTS
-🟡 因子库 alpha_library 滞后日K ${LAG} 天（${AL_DT} vs ${KL_DT}）——重跑 alpha_library_factors.py 增量刷新"
+            AL_SEEN="/tmp/.baymax_alpha_lag_seen"
+            if ! grep -q "^$(date +%F):${LAG}$" "$AL_SEEN" 2>/dev/null; then
+                echo "$(date +%F):${LAG}" >> "$AL_SEEN"
+                ALERTS="$ALERTS
+🟡 因子库 alpha_library 滞后日K ${LAG} 天（${AL_DT} vs ${KL_DT}）——夜间 cron 未生效，查 alpha_library/cron_run.log"
+            fi
         fi
     fi
 fi

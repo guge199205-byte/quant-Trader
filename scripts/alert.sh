@@ -354,6 +354,20 @@ if flock -n /home/zbox/baymax/logs/live_llm_trade.lock -c true 2>/dev/null; then
     fi
 fi
 
+# 2i. L2 快照新鲜度（live_l2_capture 交易日每 5 分钟写 data/l2_factors_live.json）：
+#     它是候选池「实时价注入 + 按资金量裁剪」的唯一数据源，停更则两条链路同时静默失效
+#     （模型拿不到池内价 → 只能 hold 或凭评分瞎报）。按天去重：真停更往往停一整天，
+#     不去重就是每 5 分钟一条。
+L2_STALE=$(/usr/bin/python3 scripts/alert_checks.py l2_stale data/l2_factors_live.json 2>/dev/null)
+if [ -n "$L2_STALE" ]; then
+    L2_SEEN="/tmp/.baymax_l2_stale_$(date +%F)"
+    if [ ! -f "$L2_SEEN" ]; then
+        touch "$L2_SEEN"
+        ALERTS="$ALERTS
+🟡 L2 快照${L2_STALE}——候选池实时价注入与资金量裁剪的数据源，停更则模型只能 hold/凭评分报单；查 logs/live_l2_capture.log 与桥状态"
+    fi
+fi
+
 # 3. 备份过期检测（>26h 无备份）
 latest_bak=$(ls -t /home/zbox/backups/baymax/baymax-*.tar.gz 2>/dev/null | head -1)
 if [ -z "$latest_bak" ] || [ $((NOW - $(stat -c %Y "$latest_bak" 2>/dev/null || echo 0))) -gt 93600 ]; then

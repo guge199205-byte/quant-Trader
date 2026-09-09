@@ -149,6 +149,59 @@ def test_rt_down_quiet_when_all_ok_or_missing():
     assert A.rt_down({}) == ("", "")
 
 
+# ---------- L2 快照新鲜度 ----------
+
+def test_l2_stale_reports_when_stale_in_session():
+    now = _bj(2026, 9, 9, 10, 30)
+
+    assert A.l2_stale_line(now, _bj(2026, 9, 9, 10, 5).timestamp()) == "停更 25 分钟"
+    assert A.l2_stale_line(now, _bj(2026, 9, 9, 10, 20).timestamp()) is None   # 10 分钟 < 阈值
+
+
+def test_l2_stale_quiet_outside_session_and_on_holiday():
+    old = _bj(2026, 9, 9, 10, 0).timestamp()
+
+    assert A.l2_stale_line(_bj(2026, 9, 9, 9, 40), old) is None     # 开盘首写还没落盘
+    assert A.l2_stale_line(_bj(2026, 9, 9, 12, 0), old) is None     # 午休
+    assert A.l2_stale_line(_bj(2026, 9, 9, 15, 30), old) is None    # 收盘后
+    assert A.l2_stale_line(_bj(2026, 9, 12, 10, 30), old) is None   # 周六（默认按工作日判）
+    assert A.l2_stale_line(_bj(2026, 9, 9, 10, 30), old, trading_day=False) is None
+
+
+def test_l2_stale_afternoon_grace_covers_lunch_gap():
+    """11:30 末笔到 13:00 首笔天然隔 90 分钟，13:15 前不判（否则每天中午误报）。"""
+    last_morning = _bj(2026, 9, 9, 11, 30).timestamp()
+
+    assert A.l2_stale_line(_bj(2026, 9, 9, 13, 10), last_morning) is None
+    assert A.l2_stale_line(_bj(2026, 9, 9, 13, 20), last_morning) == "停更 110 分钟"
+
+
+def test_l2_stale_missing_file_only_reported_in_window():
+    assert A.l2_stale_line(_bj(2026, 9, 9, 10, 30), None) == "文件缺失"
+    assert A.l2_stale_line(_bj(2026, 9, 9, 8, 0), None) is None
+
+
+# ---------- 交易日判定 ----------
+
+def test_is_trading_day_reads_calendar_then_falls_back(tmp_path):
+    cal = tmp_path / "trading_days.json"
+    # 覆盖到 09-11：09-10 在覆盖区间内但不在清单里（模拟休市日），09-11 是交易日
+    cal.write_text(json.dumps({"days": ["20260908", "20260909", "20260911"]}),
+                   encoding="utf-8")
+
+    assert A.is_trading_day(_bj(2026, 9, 9, 10, 0), cal) is True
+    assert A.is_trading_day(_bj(2026, 9, 10, 10, 0), cal) is False
+    assert A.is_trading_day(_bj(2027, 9, 9, 10, 0), cal) is True    # 超出覆盖 → 周四算交易日
+    assert A.is_trading_day(_bj(2027, 9, 11, 10, 0), cal) is False  # 超出覆盖 → 周六不算
+    assert A.is_trading_day(_bj(2026, 9, 12, 10, 0), tmp_path / "nope.json") is False
+
+
+def test_is_trading_day_knows_real_holiday():
+    """真实日历必须能识别法定假日——读不到文件会静默退化为工作日（国庆变交易日）。"""
+    assert A.is_trading_day(_bj(2026, 10, 1, 10, 0)) is False      # 国庆
+    assert A.is_trading_day(_bj(2026, 9, 9, 10, 0)) is True
+
+
 # ---------- CLI ----------
 
 def test_cli_shim_prints_nothing_without_alert(tmp_path, capsys):
@@ -192,3 +245,36 @@ def test_cli_shim_news_stale_uses_real_mtime(tmp_path, capsys, monkeypatch):
     assert rc == 0
     # 结果取决于运行时刻是否在判定窗口内：窗口内应报出分钟数，否则空
     assert out == "" or out.isdigit()
+
+
+def test_cli_shim_l2_stale_uses_real_mtime(tmp_path, capsys, monkeypatch):
+    import os
+
+    p = tmp_path / "l2_factors_live.json"
+    p.write_text("{}", encoding="utf-8")
+    old = _bj(2026, 9, 9, 10, 5).timestamp()
+    os.utime(p, (old, old))
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _bj(2026, 9, 9, 10, 30)
+
+    monkeypatch.setattr(A, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(A, "is_trading_day", lambda *a, **k: True)
+
+    assert A.main(["l2_stale", str(p)]) == 0
+    assert capsys.readouterr().out.strip() == "停更 25 分钟"
+
+
+def test_cli_shim_l2_stale_missing_file(tmp_path, capsys, monkeypatch):
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _bj(2026, 9, 9, 10, 30)
+
+    monkeypatch.setattr(A, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(A, "is_trading_day", lambda *a, **k: True)
+
+    assert A.main(["l2_stale", str(tmp_path / "nope.json")]) == 0
+    assert capsys.readouterr().out.strip() == "文件缺失"

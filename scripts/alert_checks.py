@@ -12,6 +12,7 @@ CLI（alert.sh 调用）：
   /usr/bin/python3 scripts/alert_checks.py news_stale      data/news_brief/latest.json [running]
   /usr/bin/python3 scripts/alert_checks.py folder_failures data/news_brief/state.json
   /usr/bin/python3 scripts/alert_checks.py rt_down        logs/rt_status.json
+  /usr/bin/python3 scripts/alert_checks.py l2_stale        data/l2_factors_live.json
 
 有告警 → stdout 一行文本；无告警 → 不输出，退出码 0（alert.sh 按空串判定）。
 `rt_down` 例外：固定输出两行（立即报 / 按天报），调用方按行取。
@@ -20,6 +21,7 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 BJ = timezone(timedelta(hours=8))
 
@@ -42,6 +44,55 @@ FOLDER_FAIL_MIN = 3                   # 抓取桶失败 ≥3 才值得打扰
 RT_SOURCES = ("bridge", "fuyao", "aidata")
 RT_DEBOUNCE = {"fuyao": 2}            # 抖动源：连续失败 ≥2 次才报（一天十几次单点抖动）
 RT_BYDAY = ("aidata",)                # 静态文件存在性检查：缺失即长期缺失，去抖无效 → 按天
+
+# L2 快照新鲜度（live_l2_capture 交易日每 5 分钟写 data/l2_factors_live.json）。
+# 它是「候选池实时价注入」和「按资金量裁剪候选池」的唯一数据源：停更则两条链路
+# 同时静默失效（模型拿不到池内价 → 只能 hold 或凭评分瞎报），此前零监控。
+# 判定窗口避开两个天然空档：开盘首写（09:30 起）与午休 11:30→13:00（90 分钟）。
+L2_STALE_MIN = 20
+L2_MORNING_START = 9 * 60 + 50        # 开盘 20 分钟后才够样本
+L2_MORNING_END = 11 * 60 + 30
+L2_AFTERNOON_START = 13 * 60 + 15     # 午休空档期不判，13:15 起判（13:00 首写需落盘时间）
+L2_AFTERNOON_END = 15 * 60
+
+TRADING_DAYS_JSON = Path(__file__).resolve().parents[1] / "configs" / "trading_days.json"
+
+
+def is_trading_day(now: datetime, path: Path | str | None = None) -> bool:
+    """交易日判定（读 configs/trading_days.json，标准库解析，不 import trading_cal）。
+
+    文件缺失/当日不在覆盖区间（跨年未刷新）→ 退化为周一~周五，与 alert.sh 其他段一致。
+    """
+    try:
+        days = json.loads(Path(path or TRADING_DAYS_JSON).read_text(encoding="utf-8"))["days"]
+        days = [str(x) for x in days]
+    except (OSError, ValueError, TypeError, KeyError):
+        return now.weekday() < 5
+    today = now.strftime("%Y%m%d")
+    if not days or today > max(days):
+        return now.weekday() < 5
+    return today in set(days)
+
+
+def l2_stale_line(now: datetime, mtime: float | None,
+                  trading_day: bool | None = None) -> str | None:
+    """盘中 L2 快照停更说明（"停更 N 分钟" / "文件缺失"）；不该判定或正常时返回 None。
+
+    trading_day=None 时按周一~周五判（调用方一般传 is_trading_day(now)，节假日不误报）。
+    """
+    if trading_day is None:
+        trading_day = now.weekday() < 5
+    if not trading_day:
+        return None
+    m = now.hour * 60 + now.minute
+    in_morning = L2_MORNING_START <= m < L2_MORNING_END
+    in_afternoon = L2_AFTERNOON_START <= m < L2_AFTERNOON_END
+    if not (in_morning or in_afternoon):
+        return None
+    if mtime is None:
+        return "文件缺失"
+    age = (now.timestamp() - mtime) / 60
+    return f"停更 {int(age)} 分钟" if age > L2_STALE_MIN else None
 
 
 def rt_down(doc: dict | None) -> tuple[str, str]:
@@ -146,7 +197,7 @@ def _load(path: str) -> dict:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
-        print("usage: alert_checks.py <llm_tier|news_stale|folder_failures|rt_down>"
+        print("usage: alert_checks.py <llm_tier|news_stale|folder_failures|rt_down|l2_stale>"
               " <path> [running]", file=sys.stderr)
         return 2
     check, path = argv[0], argv[1]
@@ -167,6 +218,12 @@ def main(argv: list[str]) -> int:
     elif check == "rt_down":
         immediate, byday = rt_down(_load(path))
         out = f"{immediate}\n{byday}"      # 固定两行：调用方按行取
+    elif check == "l2_stale":
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = None
+        out = l2_stale_line(now, mtime, trading_day=is_trading_day(now))
     else:
         print(f"unknown check: {check}", file=sys.stderr)
         return 2

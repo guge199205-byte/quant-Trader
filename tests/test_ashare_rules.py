@@ -81,6 +81,30 @@ def test_round_sell_qty_nearest_lot_ties_down():
     assert R.round_sell_qty("600309.SH", 100, 130) == 130  # 送股后零碎持仓（130 非整手）→ 全清
 
 
+def test_min_buy_qty_by_board():
+    """最小买入申报量：科创板 200 股，其余（主板/创业板/北交所/未知）100 股。"""
+    assert R.min_buy_qty("688183.SH") == 200
+    assert R.min_buy_qty("689009.SH") == 200
+    assert R.min_buy_qty("600309.SH") == 100
+    assert R.min_buy_qty("300750.SZ") == 100
+    assert R.min_buy_qty("832000.BJ") == 100
+    assert R.min_buy_qty("") == 100  # 未知按主板保守处理
+
+
+def test_min_buy_cost_uses_board_min_qty():
+    # 按资金量筛候选的统一口径（filter_affordable / compute_order 共用）
+    assert R.min_buy_cost("688183.SH", 50) == 10000.0
+    assert R.min_buy_cost("600309.SH", 50) == 5000.0
+    assert R.min_buy_cost("600309.SH", "12.34") == 1234.0  # 桥返回字符串价
+    assert R.MIN_LOT_SLACK > 1.0  # 限价按现价+1% 报，容差必须 >1
+
+
+def test_min_buy_cost_bad_price_returns_zero():
+    """价格非法/缺失返回 0：调用方按"无法判定→放行"处理，绝不臆造买不起。"""
+    for bad in (None, "", 0, -1, "bad", float("nan")):
+        assert R.min_buy_cost("600309.SH", bad) == 0.0
+
+
 def test_rules_brief_mentions_2026_rules():
     brief = R.rules_brief()
     assert "ST/*ST 2026-07-06 起同步放宽至±10%" in brief

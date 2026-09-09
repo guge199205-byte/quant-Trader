@@ -1794,6 +1794,24 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
 
             pool, direction = load_pool(20)
             pool_loaded = True
+        # 按资金量裁候选（2026-09-09）：单票预算 = 剩余额度×单票比例，且不超虚拟现金。
+        # 买不起的（最小 100/200 股一手都超预算）整行不推给模型——池子是研究产物、
+        # 与 agent 资金量无关，不裁则模型反复点买不起的票，下单闸门再拦已经是浪费。
+        from live_ledger import agent_remaining as _agent_remaining
+        from live_prompt_context import filter_affordable
+
+        budget = min(_agent_remaining(ledger, agent) * PER_STOCK_PCT, virtual_cash)
+        pool_agent, too_pricey = (filter_affordable(pool, budget) if pool
+                                  else (pool, []))
+        if too_pricey:
+            print(f"[{now:%F %T}] 💸 {agent} 单票预算 ¥{budget:,.0f}，"
+                  f"候选池剔除 {len(too_pricey)} 只买不起的："
+                  + "、".join(f"{c}{n}(最小{q}股 ¥{v:,.0f})"
+                              for c, n, v, q in too_pricey))
+        if not my_rows and pool and not pool_agent:
+            print(f"[{now:%F %T}] {agent} 空仓且候选池全部超出单票预算 "
+                  f"¥{budget:,.0f}，本轮跳过")
+            continue
         if not my_rows:
             # 空仓 → 候选池复盘 + 可建仓（等价 09:35 权限）；池子都没有就跳过
             if not pool:
@@ -1803,7 +1821,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
             # 候选池 diff：当日该 agent 已注入过同一份池（dsh 有对话历史）→ 紧凑注入
             # 前 8 行 + 全名单；llm 无状态模式/池变化/当日首次 → 全表（保守可逆）
             st = load_state()
-            pool_sig = ",".join(str(p.get("code") or "") for p in pool)
+            pool_sig = ",".join(str(p.get("code") or "") for p in pool_agent)
             today = now.strftime("%Y-%m-%d")
             seen_sigs = st.get("last_pool_sig") or {}
             seen_days = st.get("last_pool_sig_day") or {}
@@ -1814,7 +1832,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                 save_state({**st,
                             "last_pool_sig": {**seen_sigs, agent: pool_sig},
                             "last_pool_sig_day": {**seen_days, agent: today}})
-            user_content = build_flat_content(pool, direction, virtual_cash, agent,
+            user_content = build_flat_content(pool_agent, direction, virtual_cash, agent,
                                               compact=pool_compact)
             print(f"[{now:%F %T}] {agent} 空仓，候选池复盘"
                   f"（可建仓 ¥{virtual_cash:,.0f}{'，紧凑注入' if pool_compact else ''}）")
@@ -1832,7 +1850,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                                               agent,
                                               (last_decisions.get(agent) or {}).get("decisions"),
                                               orderbook, cross, stale, recap, review,
-                                              pool=pool)
+                                              pool=pool_agent)
         # 比赛配置多选：多选时按自然日轮转（一天一种模式，跨天轮换，
         # 盘中口径一致不横跳；单选/轮转关闭时行为不变）
         from prompts.analysis_modes import rotated_modes

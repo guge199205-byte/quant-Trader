@@ -257,7 +257,10 @@ def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
         "2. 需要买入时从候选池选：优先分数高、行业顺大盘方向的；"
         "允许换仓（同轮先 sell 再 buy），以信号分数+板块主线+新闻分子综合权衡，不必拘泥原有持仓。",
         f"3. sell 的 pct = 卖出可卖量的比例（0~1）；buy 的 pct = 使用剩余额度的比例"
-        f"（每票 ≤{PER_STOCK_PCT:.0%}，当日新开仓 ≤{MAX_NEW_BUYS} 只；超出的会被闸门裁掉）。",
+        f"（每票 ≤{PER_STOCK_PCT:.0%}，当日新开仓 ≤{MAX_NEW_BUYS} 只；超出的会被闸门裁掉）。"
+        f"候选池已按你的资金量剔除买不起的标的（单票预算 = 剩余额度×{PER_STOCK_PCT:.0%}"
+        f"；最小一手 100 股、科创板 200 股都超预算的票不会出现在表里），"
+        "表里没有的代码不要报买入。",
         "4. T+1：可卖量 0 的持仓不能卖。ST/*ST/退市整理股与黑名单标的**不可买入**（闸门硬拦）。",
         "5. 输出**严格 JSON**（不要 markdown 代码块、不要额外文字），格式：",
         DECISION_SCHEMA,
@@ -461,7 +464,6 @@ def _run(args) -> int:
         print("❌ 无候选池（picks.json 缺失或为空），终止")
         mark(ok=False, note="no_pool")
         return 1
-    pool_table = pool_rows(pool)
     print(f"📋 候选池 {len(pool)} 只  大盘: {direction.get('direction', '—')}")
 
     from live_hourly_analysis import append_log, call_llm, daily_buy_codes
@@ -495,8 +497,19 @@ def _run(args) -> int:
         # 标的边界用的名称表：候选池 + 本 agent 持仓（ST/退市识别，见 symbol_policy）
         nm_by_code = {p["code"]: p.get("name") for p in pool}
         nm_by_code.update({h["code"]: h.get("name") for h in my_holdings})
-        prompt = build_prompt(agent, my_holdings, pool_table, direction, remaining,
-                              pool=pool)
+        # 按资金量裁候选（2026-09-09）：单票预算 = 剩余额度×单票比例，且不超虚拟现金。
+        # 买不起的（最小 100/200 股一手都超预算）整行不推给模型——池子是研究产物，
+        # 与 agent 的资金量无关，不裁的话模型会反复点买不起的票、白白浪费一轮决策。
+        from live_prompt_context import filter_affordable
+
+        budget = min(remaining * PER_STOCK_PCT, agent_virtual_cash(ledger, agent))
+        pool_for_agent, too_pricey = filter_affordable(pool, budget)
+        if too_pricey:
+            print(f"  💸 [{agent}] 单票预算 ¥{budget:,.0f}，候选池剔除 {len(too_pricey)} 只买不起的："
+                  + "、".join(f"{c}{n}(最小{q}股 ¥{v:,.0f})"
+                              for c, n, v, q in too_pricey))
+        prompt = build_prompt(agent, my_holdings, pool_rows(pool_for_agent), direction,
+                              remaining, pool=pool_for_agent)
         content, usage = "", None
         try:
             content, usage = call_llm(prompt, agent)

@@ -120,6 +120,82 @@ def test_llm_trade_prompt_without_pool_is_unchanged(tmp_path, monkeypatch):
     assert "江西铜业" in out
 
 
+# ---------------------------------------------------------------- 资金量裁剪
+# 2026-09-09：每 agent ¥10 万额度、单票 ≤20% 剩余额度 → 单票预算 ~¥2 万。
+# 高价票（宁德时代 ¥363、中际旭创 ¥845）在池子里模型点不动，纯浪费一轮决策。
+
+def test_drops_unaffordable_and_keeps_rest(tmp_path):
+    # 600362 @¥48.53：一手 100 股 ≈¥4,853 ≤ ¥20,000 → 保留
+    # 688183 @¥120：科创板最小 200 股 ≈¥24,000 > ¥20,000 → 剔除
+    f = _factors_file(tmp_path, {"600362.SH": _rec(price=48.53),
+                                 "688183.SH": _rec(price=120.0)})
+    pool = [{"code": "600362.SH", "name": "江西铜业"},
+            {"code": "688183.SH", "name": "生益电子"}]
+    kept, dropped = P.filter_affordable(pool, 20000.0, path=f, now=NOW)
+    assert [p["code"] for p in kept] == ["600362.SH"]
+    assert dropped == [("688183.SH", "生益电子", 24000.0, 200)]
+
+
+def test_main_board_pricey_dropped_by_lot_minimum(tmp_path):
+    # 主板 100 股一手：¥300 的票一手 ¥30,000 > ¥20,000 → 剔除
+    f = _factors_file(tmp_path, {"600309.SH": _rec(price=300.0)})
+    kept, dropped = P.filter_affordable([{"code": "600309.SH", "name": "万华化学"}],
+                                        20000.0, path=f, now=NOW)
+    assert kept == [] and dropped[0][2] == 30000.0
+
+
+def test_keeps_when_price_missing_or_stale(tmp_path):
+    """没价/行情过期 → 无法判资金 → 保留（fail-open），由下单侧 compute_order 兜。"""
+    f = _factors_file(tmp_path, {"600362.SH": _rec(ts="2026-09-08T09:00:00+08:00")})
+    pool = [{"code": "600362.SH", "name": "江西铜业"},   # 过期
+            {"code": "002144.SZ", "name": "宏达高科"}]   # 无记录
+    kept, dropped = P.filter_affordable(pool, 1.0, path=f, now=NOW)
+    assert [p["code"] for p in kept] == ["600362.SH", "002144.SZ"]
+    assert dropped == []
+
+
+def test_slack_allows_one_lot_just_over_budget(tmp_path):
+    # 科创板 ¥100×200 股 = ¥20,000 恰在预算线上；限价买按 +1% 报 → 容差内放行
+    f = _factors_file(tmp_path, {"688183.SH": _rec(price=100.0)})
+    kept, dropped = P.filter_affordable([{"code": "688183.SH", "name": "生益电子"}],
+                                        20000.0, path=f, now=NOW)
+    assert len(kept) == 1 and dropped == []
+
+
+def test_empty_pool_or_broken_file_is_noop(tmp_path):
+    assert P.filter_affordable([], 20000.0, path=tmp_path / "nope.json", now=NOW) == ([], [])
+    pool = [{"code": "600362.SH", "name": "江西铜业"}]
+    kept, dropped = P.filter_affordable(pool, 20000.0, path=tmp_path / "nope.json", now=NOW)
+    assert kept == pool and dropped == []
+    bad = tmp_path / "bad.json"
+    bad.write_text("[1,2,3]", encoding="utf-8")
+    assert P.filter_affordable(pool, 20000.0, path=bad, now=NOW) == (pool, [])
+
+
+def test_two_layer_guard_agrees_on_same_price(tmp_path):
+    """提示词侧剔除与下单侧硬拦必须同口径：同一只票、同一个价，两边结论一致。
+    （两层各自实现会漂移——2026-09-09 把最小可买量抽到 ashare_rules 就是为此）"""
+    import live_trade_picks as T
+
+    f = _factors_file(tmp_path, {"688183.SH": _rec(price=120.0)})
+    pool = [{"code": "688183.SH", "name": "生益电子"}]
+    kept, dropped = P.filter_affordable(pool, 20000.0, path=f, now=NOW)
+    assert kept == [] and dropped[0][2] == 24000.0
+    bars = [{"close": 120.0, "open": 120.0, "volume": 1000},
+            {"close": 120.0, "open": 120.0, "volume": 1000}]
+    o = T.compute_order(bars, 100000.0, 0.2, "688183.SH")  # 预算同为 ¥20,000
+    assert o["ok"] is False and "最小可买 200 股需 ¥24,000" in o["reason"]
+
+
+def test_llm_trade_prompt_declares_budget_filter():
+    """提示词必须说明池子已按资金量裁过——否则模型会把"表里没有"当成不存在。"""
+    import live_llm_trade as T
+
+    out = T.build_prompt("a1", [], ["| 1 | 600362.SH | 江西铜业 | 有色 | 8 | 7 | — |"],
+                         {}, 100000.0)
+    assert "候选池已按你的资金量剔除买不起的标的" in out
+
+
 # ---------------------------------------------------------------- 日级新开仓上限
 
 def _trade_file(tmp_path: Path, recs: list) -> Path:

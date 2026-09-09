@@ -38,6 +38,29 @@ def is_star_market(code: str) -> bool:
     return board_of(code) == "star"
 
 
+# 最小可买股数（买入申报下限）：科创板 200 股起，主板/创业板/北交所 100 股起。
+# 按资金量筛选/拦截（filter_affordable、compute_order）必须用它，不要各写各的。
+MIN_BUY_QTY = {"star": 200}
+DEFAULT_MIN_BUY_QTY = 100
+
+# 判「买得起」的容差：限价买按现价+1% 报，故最小一手金额略超预算也算买得起。
+MIN_LOT_SLACK = 1.02
+
+
+def min_buy_qty(code: str) -> int:
+    """最小可买股数（一次买入申报的下限）。"""
+    return MIN_BUY_QTY.get(board_of(code), DEFAULT_MIN_BUY_QTY)
+
+
+def min_buy_cost(code: str, price) -> float:
+    """最小可买金额 = 最小可买股数 × 现价；价格非法返回 0（调用方按放行处理）。"""
+    try:
+        px = float(price or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(min_buy_qty(code) * px, 2) if px > 0 else 0.0
+
+
 # 主板风险警示股带宽沿革（沪深交易所《交易规则》2026-04-24 修订，2026-07-06 生效）：
 # < 2026-07-06：ST/*ST ±5%；≥ 2026-07-06：与普通股一致 ±10%。创业板/科创板/北交所
 # 的风险警示股从来就是原带宽。审计历史样本时按 bar 日期解析，勿全样本一刀切。

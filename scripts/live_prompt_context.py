@@ -182,6 +182,68 @@ def parse_intraday_decision(text: str) -> list | None:
 
 
 
+def _fresh_price(rec, now, max_age_min: int) -> tuple[float | None, float | None, bool]:
+    """单条 L2 采集记录 → (现价, 新鲜度分钟, 是否因过期被剔除)。
+
+    缺价/无时间戳 → (None, None, False)（静默跳过，不计入过期数）；
+    有价有时间戳但超时 → (None, age, True)。绝不臆造价格。
+    build_pool_quote_block 与 filter_affordable 共用这一处口径——两处各读各的，
+    会出现「提示词里给了价、却被资金筛掉了」这类不一致。
+    """
+    if not isinstance(rec, dict):
+        return None, None, False
+    try:
+        price = float(rec.get("now_price") or 0)
+    except (TypeError, ValueError):
+        return None, None, False
+    if price <= 0:
+        return None, None, False
+    ts = _parse_cn_ts(str(rec.get("ts") or ""))
+    if ts is None:
+        return None, None, False
+    age = (now - ts).total_seconds() / 60
+    if age > max_age_min:
+        return None, age, True
+    return price, age, False
+
+
+def filter_affordable(pool: list, budget: float, max_age_min: int = 45,
+                      path: Path | None = None, now=None) -> tuple[list, list]:
+    """按该 agent 的单票预算裁候选池：买不起的整行**不推给模型**。
+
+    budget = 单票预算（剩余额度 × 单票比例，且不超虚拟现金），由调用方按 agent 算。
+    判据 = 最小可买股数（科创板 200，其余 100）× 现价 > budget × 1.02 容差
+    （与 compute_order 同口径，见 ashare_rules.MIN_LOT_SLACK）。
+
+    取不到实时价 / 行情过期的标的**保留**（fail-open）：没价不等于买不起，
+    下单前 compute_order 还会按最小申报量再拦一次；这里宁可少筛，不可误删。
+    返回 (保留的候选, 剔除的 [(code, name, 最小可买金额, 最小可买股数)])。
+    """
+    from ashare_rules import MIN_LOT_SLACK, min_buy_cost, min_buy_qty
+
+    src = path or (ROOT / "data" / "l2_factors_live.json")
+    try:
+        factors = json.loads(src.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return list(pool or []), []
+    if not isinstance(factors, dict):
+        return list(pool or []), []
+    now = now or datetime.now().astimezone()
+    kept, dropped = [], []
+    for p in pool or []:
+        code = str(p.get("code") or "").strip()
+        price, _age, _stale = _fresh_price(factors.get(code), now, max_age_min)
+        if price is None:
+            kept.append(p)          # 没价/过期 → 无法判资金，放行给下单闸门兜
+            continue
+        need = min_buy_cost(code, price)
+        if need > float(budget or 0) * MIN_LOT_SLACK:
+            dropped.append((code, str(p.get("name") or ""), need, min_buy_qty(code)))
+            continue
+        kept.append(p)
+    return kept, dropped
+
+
 def build_pool_quote_block(pool: list, max_age_min: int = 45,
                            path: Path | None = None, now=None) -> str:
     """候选池实时行情（桥口径，live_l2_capture 每 5 分钟采集）→ 注入分析提示词。
@@ -209,20 +271,11 @@ def build_pool_quote_block(pool: list, max_age_min: int = 45,
     for p in pool:
         code = str(p.get("code") or "").strip()
         rec = factors.get(code) if code else None
-        if not isinstance(rec, dict):
-            continue
-        try:
-            price = float(rec.get("now_price") or 0)
-        except (TypeError, ValueError):
-            continue
-        if price <= 0:
-            continue
-        ts = _parse_cn_ts(str(rec.get("ts") or ""))
-        if ts is None:
-            continue
-        age = (now - ts).total_seconds() / 60
-        if age > max_age_min:
+        price, age, stale = _fresh_price(rec, now, max_age_min)
+        if stale:
             stale_n += 1
+            continue
+        if price is None:
             continue
         aged = age if aged is None else min(aged, age)
         pre = rec.get("pre_close")

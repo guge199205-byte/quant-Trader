@@ -1064,6 +1064,35 @@ def append_log(user_content: str, content: str, sig: str, usage: dict | None = N
     return path
 
 
+def append_failure_log(agents: list | None, reason: str, exc: BaseException) -> None:
+    """本轮分析失败时把原因写进各 agent 对话——前端对话 tab 直接可见，
+    不再只留在 cron stdout（2026-09-09 桥崩溃循环：两轮分析静默失败，对话页空白）。
+    只落对话、不写 state：失败不推进任何基线，下一轮照常重试。"""
+    now = now_cn()
+    try:
+        if agents is None:
+            from live_trade_picks import enabled_agents
+
+            agents = enabled_agents()
+    except Exception as e:  # noqa: BLE001 名单取不到也不能吞掉失败提示
+        print(f"  ⚠️ 失败提示：agent 名单读取失败: {e}")
+        agents = []
+    detail = f"{type(exc).__name__}: {exc}".replace("\n", " ")[:300]
+    user_content = f"[{now:%F %T}] 盘中定时分析（{reason}）"
+    content = "\n".join([
+        f"⚠️ 本轮分析未执行（{reason}）。",
+        "",
+        f"原因：{detail}",
+        "",
+        "持仓与决策均未变更——等下一轮自动重试；若连续失败请检查通达信桥。",
+    ])
+    for agent in agents:
+        try:
+            append_log(user_content, content, agent)
+        except Exception as e:  # noqa: BLE001 落盘失败不影响 cron 退出码
+            print(f"  ⚠️ 失败提示落盘失败 [{agent}]: {e}")
+
+
 def record_window(now: datetime) -> bool:
     """净值采样时段：9:25-11:30 / 13:00-15:10 交易日（跳过午休 11:31-12:59，
     桥价在午休冻结，采样只会写出与 11:30 相同的平线或残留下午价假折）。
@@ -1697,6 +1726,14 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
     acct = broker._account_query()
     asset = float((acct.get("asset") or {}).get("asset") or 0)
     cash = float((acct.get("asset") or {}).get("cash") or 0)
+    # 桥假活硬闸（2026-09-09）：HTTP 通、行情正常，但账户通道返空（交易账号未登录/
+    # 会话掉线）——旧代码落进下面的"无实盘持仓，跳过"静默返回，对话页一片空白，
+    # 用户以为 agent 没在跑。资产 ≤0 不可能是真账户状态 → 显式失败，走失败提示落盘。
+    if asset <= 0:
+        from agent_tools.brokers.base import BrokerError
+
+        raise BrokerError(f"桥假活：account/query 返回资产 {asset}（行情通道正常，"
+                          "交易账号可能未登录或会话掉线）")
     # 净值记录：每次分析一条（空仓也记，曲线不中断）
     record_equity(broker, asset, cash)
     positions = [p for p in (acct.get("positions") or [])
@@ -1932,6 +1969,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
       except Exception as exc:  # noqa: BLE001
           print(f"[{now_cn():%F %T}] ⚠️ [{agent}] 本轮分析/执行失败: {type(exc).__name__}: {exc}"
                 f"（其余 agent 不受影响）")
+          append_failure_log([agent], "本轮分析/执行", exc)
           continue
     # 更新波动基线（全部持仓，跨 agent 汇总）；merge 旧键——仲裁/其他写入方
     # 可能带 last_good_sample_ts 等采样键，整体替换会丢掉断线恢复判据
@@ -2041,6 +2079,7 @@ def main() -> int:
                 positions = [p for p in (acct.get("positions") or [])
                              if float(p.get("total_volume") or 0) > 0]
                 # 方案 C: 波动触发 — 交易时段内持仓盈亏 ±3pp 或个股涨跌 ±5%
+                vol_reason = None
                 if positions:
                     try:
                         vol_reason = check_volatility(broker, positions)
@@ -2059,8 +2098,11 @@ def main() -> int:
                                 print(f"[{now:%F %T}] ⚠️ 波动触发分析失败: {exc}")
                 # 断线恢复补跑：数据中断 ≥RECOVERY_DOWN_MIN 分钟、恢复即整窗口补跑。
                 # 断线期间整点轮全跳过 → 空窗到下一整点（2026-09-04 复盘）；本次加固：
-                # 短中断（如 13:20-13:35 掉线、13:00 刚分析过）同样恢复即补——不再傻等
-                elif missed >= RECOVERY_DOWN_MIN:
+                # 短中断（如 13:20-13:35 掉线、13:00 刚分析过）同样恢复即补——不再傻等。
+                # 2026-09-09 修：原写作 elif 挂在 if positions 下 → 有持仓时永不补跑
+                # （当天断线 1h、有 2 只持仓，恢复后只做波动检测，静默空窗到下一整点）。
+                # 现在与波动触发互斥但不再被持仓短路：波动没触发就补跑。
+                if not vol_reason and missed >= RECOVERY_DOWN_MIN:
                     # 开盘宽限：断线自盘前（last_good 停在昨日）且刚开盘不久 →
                     # 09:35 llm_trade 开盘全池分析会接手，让路防 09:34/09:35 双跑叠买
                     open_grace = (str(last_good)[:10] != now.strftime("%Y-%m-%d")
@@ -2104,6 +2146,7 @@ def main() -> int:
                           agents=agents_filter, allow_lock_skip=allow_lock_skip)
     except Exception as exc:  # noqa: BLE001 桥挂/数据源坏 → 一行落日志，等下一轮 cron
         print(f"[{now:%F %T}] ⚠️ {label}分析失败: {type(exc).__name__}: {exc}（等下一轮重试）")
+        append_failure_log(agents_filter, label, exc)
         rc = 1
     # 辩论 v2：分歧检测 → arbiter 建议（只记录与提示，不代执行权）
     try:

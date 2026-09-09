@@ -22,8 +22,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from live_ledger import (agent_virtual_cash, find_holder,  # noqa: E402
                          load_ledger)
-from live_hourly_analysis import (LEVERAGE_MAX, SELL_LIMIT_DOWN,  # noqa: E402
-                                  in_trading_window, now_cn)
+from live_hourly_analysis import (LEVERAGE_MAX, in_trading_window,  # noqa: E402
+                                  now_cn)
 from live_fills import add_pending, load_pending, round_sell_qty  # noqa: E402
 from ashare_rules import at_limit_down  # noqa: E402
 

@@ -9,7 +9,7 @@ ledger['deferred']，cron 每个交易分钟跑本脚本，桥健康（行情新
   - 只重放 sell（减仓）：buy 的额度/现金闸门是决策时刻算的，重放时空跑更危险
   - T+1 可卖量复核，可卖不足按可卖量缩量，0 可卖则保留延期
   - 行情新鲜度硬闸：连桥行情都在停更，延期单绝不重放
-  - 限价卖（现价 -1%），跌停不接（SELL_LIMIT_DOWN）
+  - 限价卖（现价 -1%），跌停不接（ashare_rules.at_limit_down 比例法）
   - 延期超过 24h 自动作废（隔日委托已失效，清掉防堆积）
 """
 import sys
@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from live_ledger import (clear_deferred, load_deferred, load_ledger,  # noqa: E402
                          save_ledger)
-from live_hourly_analysis import (SELL_LIMIT_DOWN, in_trading_window,  # noqa: E402
+from live_hourly_analysis import (in_trading_window,  # noqa: E402
                                   now_cn)
 from live_fills import add_pending, round_sell_qty  # noqa: E402
 from ashare_rules import at_limit_down, after_hours_eligible, after_hours_window  # noqa: E402

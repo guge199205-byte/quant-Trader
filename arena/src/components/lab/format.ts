@@ -20,6 +20,15 @@ export const errText = (e: unknown): string => {
   return detail || (e instanceof Error ? e.message : String(e));
 };
 
+/** ISO 时间戳 → 本地「MM-DD HH:MM」（解析不了返回空串，别让界面出现 Invalid Date） */
+export const fmtWhen = (iso?: string): string => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
 /** 语料来源：edited > recrawl > desktop */
 export const KIND_LABEL: Record<string, string> = {
   desktop: '原始语料',

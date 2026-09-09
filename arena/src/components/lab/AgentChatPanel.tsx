@@ -4,7 +4,7 @@
  * 把「改前 / 改后」指标并列给用户看——不点「采用」绝不写回正式源码。
  */
 import { useEffect, useRef, useState } from 'react';
-import { STAGE_LABEL, compareCellText, compareDeltaClass, compareDeltaText } from './format';
+import { STAGE_LABEL, compareCellText, compareDeltaClass, compareDeltaText, fmtWhen } from './format';
 import type { Workbench } from './useWorkbench';
 
 /** 空白对话时的快捷提问——把「不知道怎么问」的空白填掉 */
@@ -30,8 +30,15 @@ function CandidateCard({ wb }: { wb: Workbench }) {
         <b>候选回测对比</b>
         <span>
           {cand.compare.symbol} · {cand.compare.adj} · 成交 {cand.trades ?? '—'} 笔
+          {cand.compare.before_at ? ` · 改前基线 ${fmtWhen(cand.compare.before_at)}` : ''}
         </span>
       </div>
+      {cand.compare.before_stale && (
+        <div className="lab-cand-warn">
+          「改前」取自最近一次正式回测，比当前源码还旧（源码改过或闸门收紧后没重跑）——
+          两列不是同一份源码，先重跑一次再对比才准。
+        </div>
+      )}
       <table className="lab-cand-table">
         <thead>
           <tr>

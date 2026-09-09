@@ -1,7 +1,20 @@
 /** 候选对比卡的取数与上色：pct 与 value 两种口径混在同一格表里，
  *  取错会显示成 0.6% 而不是 62%，方向取错会把变差染成绿色。 */
 import { describe, expect, test } from 'vitest';
-import { compareCellText, compareDeltaClass, compareDeltaText } from './format';
+import { compareCellText, compareDeltaClass, compareDeltaText, fmtWhen } from './format';
+
+describe('fmtWhen', () => {
+  test('ISO 时间戳 → 本地 MM-DD HH:MM', () => {
+    const iso = new Date(2026, 8, 9, 12, 43).toISOString();   // 本地 09-09 12:43
+    expect(fmtWhen(iso)).toBe('09-09 12:43');
+  });
+
+  test('空值或坏值返回空串，不出现 Invalid Date', () => {
+    expect(fmtWhen('')).toBe('');
+    expect(fmtWhen(undefined)).toBe('');
+    expect(fmtWhen('not-a-date')).toBe('');
+  });
+});
 
 describe('compareCellText', () => {
   test('有 pct 时按百分数显示（pct 已是 62.35 口径）', () => {

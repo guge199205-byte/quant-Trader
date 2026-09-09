@@ -220,6 +220,22 @@ def _finish_ask(job_id: str, item_id: str, reply: str, usage, truncated: bool,
                       reply=reply, usage=usage, truncated=bool(truncated), error="")
 
 
+def _baseline(item_id: str) -> dict:
+    """「改前」那一列的来源与新鲜度。
+
+    基线取的是**最近一次正式回测报告**，它可能比当前源码还旧（用户手改过源码、
+    或闸门刚收紧还没重跑）——那样前后对比就不是同一份源码，必须在界面上说清。
+    """
+    rp = pl.report_path(item_id)
+    src = pl.source_path(item_id)
+    try:
+        at = datetime.fromtimestamp(rp.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+        stale = rp.stat().st_mtime < src.stat().st_mtime
+    except OSError:
+        return {"before_at": "", "before_stale": False}
+    return {"before_at": at, "before_stale": stale}
+
+
 def _finish_edit(job_id: str, item_id: str, raw: str, usage, truncated: bool,
                  model: str, symbol: str, adj: str) -> dict:
     """改策略：模型出 Pine → 同一套链路跑候选 → 前后指标对比。"""
@@ -254,7 +270,7 @@ def _finish_edit(job_id: str, item_id: str, raw: str, usage, truncated: bool,
             "stats": got["report"].get("stats") or {},
             "trades": got["report"].get("trades"),
             "symbol": symbol, "adj": adj,
-            "compare": compare(before, got["report"], symbol, adj)}
+            "compare": {**compare(before, got["report"], symbol, adj), **_baseline(item_id)}}
     reply = explain or "已生成候选。"
     _append_thread(item_id, {"timestamp": _now(), "role": "assistant",
                              "content": f"{reply}\n\n（已生成候选，点「采用」才会写入正式源码）",

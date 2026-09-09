@@ -472,9 +472,23 @@ class TestRevert:
 
         assert got["reverted"] and got["remaining"] == 1
         assert pl.get_source("0001")["source"] == before
+        # 还原成与语料一致 → 覆盖文件删掉（否则界面永远挂着「已编辑」）
+        assert not (pl.EDITED_DIR / "0001.pine").exists()
         # 刚采用的那版也留了快照 → 再点一次能退回去（回滚不是单向的）
         pl.revert_source("0001")
         assert pl.get_source("0001")["source"] == new
+        assert (pl.EDITED_DIR / "0001.pine").exists()
+
+    def test_revert_to_hand_edited_version_keeps_override(self, staged):
+        pl.save_source("0001", "//@version=5\nstrategy('手工改过的')\n")
+        _stage_candidate("0001", self.JOB)
+        pl.apply_candidate("0001", self.JOB)
+
+        pl.revert_source("0001")
+
+        # 回滚目标是「手改版」而不是原始语料 → 必须继续以 edited/ 生效
+        assert (pl.EDITED_DIR / "0001.pine").read_text(encoding="utf-8") == \
+            "//@version=5\nstrategy('手工改过的')\n"
 
     def test_revert_without_snapshot_rejected(self, staged):
         with pytest.raises(ValueError, match="没有可回滚"):

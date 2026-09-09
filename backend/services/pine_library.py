@@ -74,17 +74,23 @@ def _find(idx: dict, item_id: str) -> dict:
     raise LibraryError(f"策略不存在: {item_id}")
 
 
+def source_path(item_id: str) -> Path:
+    """当前生效的源码文件（edited/ 优先，与索引构建的来源优先级一致）。"""
+    item_id = _check_id(item_id)
+    edited_path = EDITED_DIR / f"{item_id}.pine"
+    return edited_path if edited_path.exists() else SOURCE_DIR / f"{item_id}.pine"
+
+
 def get_source(item_id: str) -> dict:
     """单条策略元数据 + 源码（编辑版优先，与索引构建的来源优先级一致）。"""
     item_id = _check_id(item_id)
     idx = load_index()
     item = _find(idx, item_id)
-    edited_path = EDITED_DIR / f"{item_id}.pine"
-    path = edited_path if edited_path.exists() else SOURCE_DIR / f"{item_id}.pine"
+    path = source_path(item_id)
     if not path.exists():
         raise LibraryError(f"策略源码缺失: {item_id}（重建索引试试）")
     text = path.read_text(encoding="utf-8", errors="replace")
-    return {**item, "edited": edited_path.exists(), "source": text}
+    return {**item, "edited": (EDITED_DIR / f"{item_id}.pine").exists(), "source": text}
 
 
 def save_source(item_id: str, text: str) -> dict:
@@ -269,10 +275,14 @@ def job_status(item_id: str) -> dict:
     return job
 
 
+def report_path(item_id: str) -> Path:
+    """正式回测报告文件（对话 worker 靠它的 mtime 判断「改前」基线有多旧）。"""
+    return TRANSPILE_DIR / _check_id(item_id) / "report.json"
+
+
 def read_report(item_id: str) -> dict:
     """回测报告（stats + 逐笔 + 净值）。没跑过 → 空 dict。"""
-    item_id = _check_id(item_id)
-    return _read_json(TRANSPILE_DIR / item_id / "report.json")
+    return _read_json(report_path(item_id))
 
 
 def enqueue_backtest(item_id: str, symbol: str, adj: str = "backward",
@@ -431,6 +441,15 @@ def _snapshot(item_id: str, text: str) -> str:
     return name
 
 
+def _same_as_corpus(item_id: str, text: str) -> bool:
+    """与原始语料一字不差？（回滚到未编辑状态时用来决定删不删 edited/ 覆盖文件）"""
+    try:
+        return (SOURCE_DIR / f"{item_id}.pine").read_text(
+            encoding="utf-8", errors="replace") == text
+    except OSError:
+        return False
+
+
 def _write_edited(item_id: str, text: str) -> None:
     if not isinstance(text, str) or not text.strip():
         raise LibraryError("源码不能为空")
@@ -497,7 +516,12 @@ def revert_source(item_id: str, version: str = "") -> dict:
 
     text = path.read_text(encoding="utf-8", errors="replace")
     _snapshot(item_id, get_source(item_id)["source"])   # 当前版也留一份，回滚可逆
-    _write_edited(item_id, text)
+    if _same_as_corpus(item_id, text):
+        # 还原成与语料一字不差时，删掉覆盖文件——否则界面永远挂着「已编辑」，
+        # 而内容其实等于原始语料。被删掉的那版仍在快照里，再回滚一次能切回来。
+        (EDITED_DIR / f"{item_id}.pine").unlink(missing_ok=True)
+    else:
+        _write_edited(item_id, text)
     path.unlink(missing_ok=True)
     report = read_report(item_id)
     queued, queue_error = _requeue(item_id, report.get("symbol") or "",

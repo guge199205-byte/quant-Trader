@@ -1516,6 +1516,16 @@
   color: #666;
 }
 
+/* 「改前」基线比当前源码旧时的提醒：黄底黑框，别做成红色警报吓人 */
+.lab-cand-warn {
+  padding: 6px 8px;
+  border-bottom: 1.5px solid #000;
+  background: #fff3bf;
+  font-size: 10px;
+  line-height: 1.5;
+  font-family: 'Courier New', monospace;
+}
+
 .lab-cand-table {
   width: 100%;
   border-collapse: collapse;

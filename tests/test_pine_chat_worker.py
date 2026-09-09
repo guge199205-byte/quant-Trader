@@ -5,6 +5,7 @@
 运行：.venv/bin/python -m pytest tests/test_pine_chat_worker.py -q
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -37,6 +38,9 @@ def chat_env(tmp_path, monkeypatch):
         "symbol": "600309.SH", "adj": "backward", "trades": 203,
         "stats": {"Net profit": {"pct": 62.3}, "Buy & hold return": {"pct": 555.1},
                   "Max equity drawdown": {"pct": 42.2}}})
+    # 基线新鲜度看的是真实文件 mtime → 一律指到临时目录，别去读仓库里的正式报告
+    monkeypatch.setattr(pl, "report_path", lambda item_id: tmp_path / "report.json")
+    monkeypatch.setattr(pl, "source_path", lambda item_id: tmp_path / "source.pine")
     monkeypatch.setattr(pcw, "_chat",
                         lambda messages, model, think=False: ("这是回答", {"total_tokens": 10}, False))
     return d
@@ -203,6 +207,7 @@ class TestEditMode:
         assert cand["compare"]["before"]["Net profit"]["pct"] == 62.3
         assert cand["compare"]["after"]["Net profit"]["pct"] == 70.0
         assert cand["compare"]["after"]["trades"]["value"] == 180
+        assert cand["compare"]["before_stale"] is False      # 临时目录里没有报告 → 不误报
         assert pl.chat_thread("0001")["messages"][-1]["mode"] == "edit"
 
     def test_edit_without_pine_block_fails(self, chat_env, monkeypatch):
@@ -245,3 +250,39 @@ class TestEditMode:
         ctx = pcw.build_messages("0001", "改", [], mode="edit")[0]["content"]
         assert "```pine" in ctx and "仓位口径" in ctx
         assert ctx != pcw.build_messages("0001", "改", [])[0]["content"]
+
+
+class TestBaseline:
+    """「改前」那列取自最近一次正式报告，比当前源码旧就必须标出来。"""
+
+    def _pair(self, tmp_path, report_at: float, source_at: float):
+        rp = tmp_path / "report.json"
+        sp = tmp_path / "source.pine"
+        rp.write_text("{}", encoding="utf-8")
+        sp.write_text("x", encoding="utf-8")
+        os.utime(rp, (report_at, report_at))
+        os.utime(sp, (source_at, source_at))
+        return rp, sp
+
+    def test_source_newer_than_report_marks_stale(self, chat_env, monkeypatch, tmp_path):
+        rp, sp = self._pair(tmp_path, report_at=1_700_000_000, source_at=1_800_000_000)
+        monkeypatch.setattr(pl, "report_path", lambda item_id: rp)
+        monkeypatch.setattr(pl, "source_path", lambda item_id: sp)
+
+        got = pcw._baseline("0001")
+
+        assert got["before_stale"] is True
+        assert got["before_at"].startswith("2023-")            # 报告自己的时间，不是源码的
+
+    def test_report_newer_than_source_is_fresh(self, chat_env, monkeypatch, tmp_path):
+        rp, sp = self._pair(tmp_path, report_at=1_800_000_000, source_at=1_700_000_000)
+        monkeypatch.setattr(pl, "report_path", lambda item_id: rp)
+        monkeypatch.setattr(pl, "source_path", lambda item_id: sp)
+
+        assert pcw._baseline("0001")["before_stale"] is False
+
+    def test_missing_files_are_not_stale(self, chat_env, monkeypatch, tmp_path):
+        monkeypatch.setattr(pl, "report_path", lambda item_id: tmp_path / "无.json")
+        monkeypatch.setattr(pl, "source_path", lambda item_id: tmp_path / "无.pine")
+
+        assert pcw._baseline("0001") == {"before_at": "", "before_stale": False}

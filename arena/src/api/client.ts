@@ -1022,6 +1022,10 @@ export interface ChatCandidate {
     adj: string;
     before: Record<string, CompareCell>;
     after: Record<string, CompareCell>;
+    /** 「改前」那列取自最近一次正式回测报告；这是它生成的时间 */
+    before_at?: string;
+    /** 报告比当前源码还旧（手改过源码 / 闸门收紧后没重跑）→ 对比不可比 */
+    before_stale?: boolean;
   };
 }
 

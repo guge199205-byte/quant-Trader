@@ -948,6 +948,41 @@ export interface PineTranspile {
 export const fetchPineTranspile = () =>
   unwrap<Record<string, PineTranspile>>(api.get('/market-lab/transpile'));
 
+// ---------- 策略备注（data/pine_library/notes/<id>.json，索引重建不丢） ----------
+
+export const NOTE_STATUSES = ['待研究', '观察中', '已采用', '已弃用'] as const;
+export type NoteStatus = (typeof NOTE_STATUSES)[number];
+
+export interface NoteDoc {
+  id: string;
+  note: string;
+  tags: string[];
+  rating: number | null;
+  status: NoteStatus;
+  by: 'user' | 'agent';
+  updated: string;
+}
+
+/** 写备注的入参：tags 传数组或空格/逗号分隔的字符串都认（后端归一化） */
+export interface NoteInput {
+  note?: string;
+  tags?: string[] | string;
+  rating?: number | null;
+  status?: NoteStatus;
+  by?: 'user' | 'agent';
+}
+
+/** 同时覆盖库 id（0001 / x001）与内置模板 id（sma_cross） */
+export const fetchNote = (id: string) =>
+  unwrap<NoteDoc>(api.get(`/market-lab/library/${encodeURIComponent(id)}/note`));
+
+export const saveNote = (id: string, payload: NoteInput) =>
+  unwrap<NoteDoc>(api.put(`/market-lab/library/${encodeURIComponent(id)}/note`, payload));
+
+/** 有备注的策略 id 集合（左栏 💬 角标） */
+export const fetchNoteIds = () =>
+  unwrap<{ ids: string[]; count: number }>(api.get('/market-lab/notes'));
+
 export interface PineTradeRow {
   entry_time: string;
   entry_price: number | null;

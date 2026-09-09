@@ -112,6 +112,88 @@ def reset_source(item_id: str) -> dict:
     return {"id": item_id, "removed": existed}
 
 
+# ---------- 策略备注（每条一份 JSON） ----------
+# 索引由 scripts/pine_library_index.py 整体原子重建，备注写进 index.json 下次就没了，
+# 所以单独放 notes/<id>.json（与 edited/<id>.pine 同构，天然避免并发写冲突）。
+
+NOTES_DIR = LIB_DIR / "notes"
+# 备注要同时覆盖库 id（0001 / x001）与内置模板 id（sma_cross），比源码的 _check_id 宽
+NOTE_ID_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+NOTE_STATUSES = ("待研究", "观察中", "已采用", "已弃用")
+NOTE_BY = ("user", "agent")
+MAX_NOTE_CHARS = 20000
+MAX_TAGS = 20
+EMPTY_NOTE = {"note": "", "tags": [], "rating": None, "status": "待研究", "by": "user"}
+
+
+def _check_note_id(item_id: str) -> str:
+    item_id = (item_id or "").strip()
+    if not NOTE_ID_RE.match(item_id):
+        raise LibraryError(f"无效的备注 id: {item_id!r}")
+    return item_id
+
+
+def _clean_note(payload: dict) -> dict:
+    """校验并归一化备注字段（越界一律报错，不静默截断成别的意思）。"""
+    if not isinstance(payload, dict):
+        raise LibraryError("备注必须是 JSON 对象")
+    note = payload.get("note", "")
+    if not isinstance(note, str):
+        raise LibraryError("note 必须是字符串")
+    if len(note) > MAX_NOTE_CHARS:
+        raise LibraryError(f"备注过长（>{MAX_NOTE_CHARS} 字）")
+
+    tags = payload.get("tags", [])
+    if isinstance(tags, str):                 # 界面直接传「趋势 多周期」也认
+        tags = re.split(r"[,，\s]+", tags)
+    if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+        raise LibraryError("tags 必须是字符串数组")
+    tags = [t.strip() for t in tags if t.strip()][:MAX_TAGS]
+
+    rating = payload.get("rating")
+    if rating in ("", None):
+        rating = None
+    elif isinstance(rating, bool) or not isinstance(rating, int) or not 0 <= rating <= 5:
+        raise LibraryError("rating 必须是 0–5 的整数")
+
+    status = payload.get("status") or EMPTY_NOTE["status"]
+    if status not in NOTE_STATUSES:
+        raise LibraryError(f"未知状态: {status!r}")
+    by = payload.get("by") or "user"
+    if by not in NOTE_BY:
+        raise LibraryError(f"未知来源: {by!r}")
+    return {"note": note, "tags": tags, "rating": rating, "status": status, "by": by}
+
+
+def get_note(item_id: str) -> dict:
+    """读备注；没写过就返回空结构（界面不必判空）。"""
+    item_id = _check_note_id(item_id)
+    stored = _read_json(NOTES_DIR / f"{item_id}.json")
+    return {"id": item_id, **EMPTY_NOTE, **{k: stored[k] for k in EMPTY_NOTE if k in stored},
+            "updated": stored.get("updated", "")}
+
+
+def save_note(item_id: str, payload: dict) -> dict:
+    """写备注（原子替换；只动 notes/，不碰索引与源码）。"""
+    item_id = _check_note_id(item_id)
+    doc = {"id": item_id, **_clean_note(payload),
+           "updated": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    path = NOTES_DIR / f"{item_id}.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return doc
+
+
+def list_notes() -> dict:
+    """有备注的策略 id 集合（左栏 💬 角标用，不读正文）。"""
+    if not NOTES_DIR.is_dir():
+        return {"ids": [], "count": 0}
+    ids = sorted(p.stem for p in NOTES_DIR.glob("*.json") if NOTE_ID_RE.match(p.stem))
+    return {"ids": ids, "count": len(ids)}
+
+
 # ---------- AI 转写产物（scripts/pine_to_pyne.py 写的，页面只读） ----------
 
 TRANSPILE_DIR = LIB_DIR.parent / "pine_transpile"

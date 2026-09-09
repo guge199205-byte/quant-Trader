@@ -7,6 +7,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 import {
   fetchLabKlines,
   fetchLabStrategies,
+  fetchNote,
+  fetchNoteIds,
   fetchPineJob,
   fetchPineList,
   fetchPineSource,
@@ -14,6 +16,7 @@ import {
   resetPineSource,
   runLabBacktest,
   runPineBacktest,
+  saveNote as putNote,
   savePineSource,
   searchLabSymbols,
   type AdjMode,
@@ -21,6 +24,8 @@ import {
   type Kline,
   type LabStrategy,
   type LabSymbol,
+  type NoteDoc,
+  type NoteInput,
   type PineJob,
   type PineList,
   type PineListItem,
@@ -86,6 +91,14 @@ export interface Workbench {
   // 结果
   result: LabResult | null;
 
+  // 备注
+  note: NoteDoc | null;
+  noteBusy: boolean;
+  noteMsg: string;
+  noteErr: string;
+  saveNote: (patch: NoteInput) => void;
+  noteIds: Set<string>;
+
   // 源码编辑
   draft: string;
   setDraft: (s: string) => void;
@@ -142,6 +155,48 @@ export function useWorkbench(symbol: string, setSymbol: (code: string) => void):
   const [job, setJob] = useState<PineJob | null>(null);
   const [report, setReport] = useState<PineReport | null>(null);
   const [queuing, setQueuing] = useState(false);
+
+  // ---- 备注 ----
+  const [note, setNote] = useState<NoteDoc | null>(null);
+  const [noteBusy, setNoteBusy] = useState(false);
+  const [noteMsg, setNoteMsg] = useState('');
+  const [noteErr, setNoteErr] = useState('');
+  const [noteIds, setNoteIds] = useState<Set<string>>(new Set());
+
+  const refreshNoteIds = useCallback(() => {
+    fetchNoteIds()
+      .then((d) => setNoteIds(new Set(d.ids)))
+      .catch(() => setNoteIds(new Set()));
+  }, []);
+
+  useEffect(() => {
+    refreshNoteIds();
+  }, [refreshNoteIds]);
+
+  useEffect(() => {
+    if (!sel) return;
+    setNoteMsg('');
+    setNoteErr('');
+    setNote(null);
+    fetchNote(sel.id)
+      .then(setNote)
+      .catch(() => setNote(null));
+  }, [sel]);
+
+  const saveNote = (patch: NoteInput) => {
+    if (!sel) return;
+    setNoteBusy(true);
+    setNoteMsg('');
+    setNoteErr('');
+    putNote(sel.id, patch)
+      .then((doc) => {
+        setNote(doc);
+        setNoteMsg('已保存');
+        refreshNoteIds();
+      })
+      .catch((e) => setNoteErr(errText(e) || '备注保存失败'))
+      .finally(() => setNoteBusy(false));
+  };
 
   // ---- 内置模板列表 ----
   useEffect(() => {
@@ -421,6 +476,13 @@ export function useWorkbench(symbol: string, setSymbol: (code: string) => void):
     err,
 
     result,
+
+    note,
+    noteBusy,
+    noteMsg,
+    noteErr,
+    saveNote,
+    noteIds,
 
     draft,
     setDraft: (v: string) => {

@@ -228,3 +228,70 @@ class TestBacktestQueue:
 
     def test_read_report_missing_is_empty(self, queue):
         assert pl.read_report("0001") == {}
+
+
+@pytest.fixture()
+def notes(lib, tmp_path, monkeypatch):
+    """备注目录指到临时库（备注独立于 index.json，另建一份）。"""
+    d = tmp_path / "notes"
+    monkeypatch.setattr(pl, "NOTES_DIR", d)
+    return d
+
+
+class TestNotes:
+    def test_missing_note_returns_empty_shape(self, notes):
+        got = pl.get_note("0001")
+        assert got["id"] == "0001" and got["note"] == "" and got["tags"] == []
+        assert got["rating"] is None and got["status"] == "待研究"
+
+    def test_save_then_get_roundtrip(self, notes):
+        pl.save_note("0001", {"note": "趋势市有效", "tags": ["趋势", "多周期"],
+                              "rating": 4, "status": "观察中"})
+        got = pl.get_note("0001")
+        assert got["note"] == "趋势市有效"
+        assert got["tags"] == ["趋势", "多周期"]
+        assert got["rating"] == 4 and got["status"] == "观察中"
+        assert got["by"] == "user" and got["updated"]
+
+    def test_template_id_accepted_even_if_not_in_index(self, notes):
+        """内置模板（sma_cross）不在 Pine 索引里，也要能写备注。"""
+        assert pl.save_note("sma_cross", {"note": "参数少，抗过拟合"})["id"] == "sma_cross"
+        assert "sma_cross" in pl.list_notes()["ids"]
+
+    def test_tags_accept_comma_separated_string(self, notes):
+        got = pl.save_note("0001", {"tags": "趋势, 多周期 突破"})
+        assert got["tags"] == ["趋势", "多周期", "突破"]
+
+    @pytest.mark.parametrize("bad", ["../etc/passwd", "0001.pine", "", "ABC", "x" * 33])
+    def test_bad_id_rejected(self, notes, bad):
+        with pytest.raises(ValueError):
+            pl.get_note(bad)
+
+    @pytest.mark.parametrize("rating", [6, -1, True, "4"])
+    def test_rating_must_be_int_0_to_5(self, notes, rating):
+        with pytest.raises(ValueError):
+            pl.save_note("0001", {"rating": rating})
+
+    def test_unknown_status_rejected(self, notes):
+        with pytest.raises(ValueError, match="未知状态"):
+            pl.save_note("0001", {"status": "已跑赢"})
+
+    def test_oversize_note_rejected(self, notes):
+        with pytest.raises(ValueError, match="过长"):
+            pl.save_note("0001", {"note": "字" * (pl.MAX_NOTE_CHARS + 1)})
+
+    def test_list_notes_counts_only_saved(self, notes):
+        assert pl.list_notes() == {"ids": [], "count": 0}
+        pl.save_note("0001", {"note": "甲"})
+        pl.save_note("0002", {"note": "乙"})
+        assert pl.list_notes() == {"ids": ["0001", "0002"], "count": 2}
+
+    def test_save_leaves_no_tmp_file(self, notes):
+        pl.save_note("0001", {"note": "甲"})
+        assert sorted(p.name for p in notes.iterdir()) == ["0001.json"]
+
+    def test_note_survives_index_rebuild(self, lib, notes, tmp_path):
+        """索引是整体原子重建的——备注写进 index.json 就会被下次重建抹掉。"""
+        pl.save_note("0001", {"note": "重建后还得在"})
+        pli.build(source=_corpus(tmp_path), lib_dir=lib)
+        assert pl.get_note("0001")["note"] == "重建后还得在"

@@ -20,7 +20,14 @@ export default function StrategyList({ wb }: { wb: Workbench }) {
               title={s.desc}
               onClick={() => wb.selectTemplate(s.id)}
             >
-              <span className="n">{s.name}</span>
+              <span className="n">
+                {s.name}
+                {wb.noteIds.has(s.id) && (
+                  <em className="note" title="有备注">
+                    💬
+                  </em>
+                )}
+              </span>
               <span className="d">{s.desc}</span>
             </li>
           ))}
@@ -65,6 +72,11 @@ export default function StrategyList({ wb }: { wb: Workbench }) {
                   <span className="i">{it.id}</span>
                   <span className="n">{it.title || it.file}</span>
                   <span className="b">
+                    {wb.noteIds.has(it.id) && (
+                      <em className="note" title="有备注">
+                        💬
+                      </em>
+                    )}
                     {it.source_kind === 'edited' && <em className="edited">改</em>}
                     {tp && (
                       <em className="ai" title="已 AI 转写为 Pyne-Python">

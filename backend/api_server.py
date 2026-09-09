@@ -2088,6 +2088,39 @@ def pine_library_reset(item_id: str):
         return {"success": False, "error": f"重置失败: {e}"}
 
 
+@app.get("/api/market-lab/notes")
+def pine_notes_index():
+    """有备注的策略 id 集合（左栏角标用）。"""
+    try:
+        return {"success": True, "data": _pine_lib().list_notes()}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"备注索引读取失败: {e}"}
+
+
+@app.get("/api/market-lab/library/{item_id}/note")
+def pine_library_note_get(item_id: str):
+    """单条策略的备注（没写过 → 空结构）。"""
+    try:
+        return {"success": True, "data": _pine_lib().get_note(item_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("pine note get failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"备注读取失败: {e}"}
+
+
+@app.put("/api/market-lab/library/{item_id}/note")
+def pine_library_note_save(item_id: str, payload: dict = Body(...)):
+    """写备注（data/pine_library/notes/<id>.json；索引重建不会丢）。"""
+    try:
+        return {"success": True, "data": _pine_lib().save_note(item_id, payload)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("pine note save failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"备注保存失败: {e}"}
+
+
 @app.get("/api/market-lab/transpile")
 def pine_transpile_list():
     """AI 转写产物一览（宿主上跑 scripts/pine_to_pyne.py 生成，页面只读）。"""

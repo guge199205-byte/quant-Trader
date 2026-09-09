@@ -1,9 +1,10 @@
 /** 右栏：当前策略的详情、运行入口、备注/对话，以及可折叠的 Pine 源码编辑器。 */
 import { useState } from 'react';
+import NotePanel from './NotePanel';
 import { fmt, fmtPct, KIND_LABEL, STAGE_LABEL } from './format';
 import type { Workbench } from './useWorkbench';
 
-function SubTabs() {
+function SubTabs({ wb }: { wb: Workbench }) {
   const [sub, setSub] = useState<'note' | 'chat'>('note');
   return (
     <section className="lab-panel-block">
@@ -16,12 +17,7 @@ function SubTabs() {
         </button>
       </div>
       {sub === 'note' ? (
-        <p className="lab-note">
-          每条策略一份备注（markdown + 标签 + 状态），存在
-          <code>data/pine_library/notes/&lt;id&gt;.json</code>，策略库索引重建不会丢。
-          <br />
-          <span className="lab-soon">P1 上线</span>
-        </p>
+        <NotePanel wb={wb} />
       ) : (
         <p className="lab-note">
           问策略逻辑 / 让 agent 改参数，产出先落候选、只在 bwrap 沙箱里回测，
@@ -192,7 +188,7 @@ export default function StrategyPanel({ wb }: { wb: Workbench }) {
         </div>
       )}
 
-      {wb.sel && <SubTabs />}
+      {wb.sel && <SubTabs wb={wb} />}
     </aside>
   );
 }

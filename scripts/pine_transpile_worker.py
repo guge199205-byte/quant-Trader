@@ -48,11 +48,9 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _write_job(item_id: str, **fields) -> dict:
-    """写 job.json（原子替换）。界面只读这个文件判断进度。"""
-    d = OUT_DIR / item_id
-    d.mkdir(parents=True, exist_ok=True)
-    path = d / "job.json"
+def _write_job_at(path: Path, **fields) -> dict:
+    """写任意 job.json（原子替换）。界面只读这个文件判断进度。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
     job = {}
     if path.exists():
         try:
@@ -65,6 +63,10 @@ def _write_job(item_id: str, **fields) -> dict:
     tmp.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
     return job
+
+
+def _write_job(item_id: str, **fields) -> dict:
+    return _write_job_at(OUT_DIR / item_id / "job.json", **fields)
 
 
 def _tail(text: str) -> str:
@@ -111,22 +113,43 @@ def _run(argv: list[str], timeout: int) -> subprocess.CompletedProcess:
                           timeout=timeout, check=False)
 
 
-def process(req: dict) -> dict:
-    """处理一条队列请求。返回 job 字段。"""
+def process(req: dict, item_dir: Path | None = None,
+            job_path: Path | None = None, success_status: str = "done") -> dict:
+    """处理一条队列请求。返回 job 字段。
+
+    ``item_dir`` / ``job_path`` 给对话改策略的候选改道用：候选跑在
+    ``data/pine_library/chat/<id>/<job_id>/`` 里，进度直接写对话 job（合并写，
+    不动 reply 等字段），所以 ``job_path=None`` 表示不写 job 文件。
+    正式队列由 ``main()`` 显式传 ``data/pine_transpile/<id>/job.json``。
+
+    ``success_status``：成功时写什么状态。对话候选写 ``staged``——它还没跑完
+    （对话 worker 还要落前后对比），界面不能把它当终态停止轮询。
+    """
     item_id = str(req.get("id") or "").strip()
     symbol = str(req.get("symbol") or "").strip()
     adj = str(req.get("adj") or "backward")
     model = str(req.get("model") or "")
+    source = str(req.get("source") or "").strip()
     if not item_id or not symbol:
         raise ValueError("请求缺 id / symbol")
-    item_dir = OUT_DIR / item_id
+    item_dir = item_dir or OUT_DIR / item_id
     item_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_job(item_id, status="running", stage="transpile", symbol=symbol, adj=adj,
-               error="", started=_now())
+    def write_job(**fields) -> dict:
+        if job_path is None:
+            return dict(fields, id=item_id, updated=_now())
+        return _write_job_at(job_path, id=item_id, **fields)
+
+    write_job(status="running", stage="transpile", symbol=symbol, adj=adj,
+              error="", started=_now())
+
+    # 候选与正式产物走同一套 CLI、同一道静态闸、同一个沙箱，只有路径改道。
+    where = ["--out", str(item_dir)]
+    if source:
+        where += ["--source", source]
 
     # ---- 1. 转写（联网；只生成文本，不执行候选）----
-    argv = ["--id", item_id]
+    argv = ["--id", item_id, *where]
     if model:
         argv += ["--model", model]
     if req.get("force"):
@@ -134,13 +157,13 @@ def process(req: dict) -> dict:
     try:
         got = _run([sys.executable, str(CLI), *argv], TRANSPILE_TIMEOUT)
     except subprocess.TimeoutExpired:
-        return _write_job(item_id, status="failed", stage="transpile",
-                          error=f"转写超时（>{TRANSPILE_TIMEOUT}s）")
+        return write_job(status="failed", stage="transpile",
+                         error=f"转写超时（>{TRANSPILE_TIMEOUT}s）")
     if got.returncode not in (0, 2):
         detail = _last_line(got.stdout + "\n" + got.stderr)
-        return _write_job(item_id, status="failed", stage="transpile",
-                          error=detail or f"转写失败（exit {got.returncode}）",
-                          log=_tail(got.stdout + got.stderr))
+        return write_job(status="failed", stage="transpile",
+                         error=detail or f"转写失败（exit {got.returncode}）",
+                         log=_tail(got.stdout + got.stderr))
 
     # ---- 2. 静态闸 + 沙箱回测：哪一段不过都把原因喂回模型重修，最多 MAX_REPAIRS 轮 ----
     # 首次转写的语法错误也走这个循环：实测 30 条抽样里 8 条卡在 Pine 残留语法，
@@ -153,20 +176,21 @@ def process(req: dict) -> dict:
             detail = "静态检查未通过：" + "；".join(problems)
             feedback = detail
         else:
-            _write_job(item_id, status="running", stage="backtest", attempt=attempt + 1)
+            write_job(status="running", stage="backtest", attempt=attempt + 1)
             try:
-                argv = sandbox_cmd(item_dir, ["--id", item_id, "--no-transpile",
+                argv = sandbox_cmd(item_dir, ["--id", item_id, *where,
+                                              "--no-transpile",
                                               "--validate", symbol, "--adj", adj])
             except RuntimeError as exc:
-                return _write_job(item_id, status="failed", stage="backtest", error=str(exc))
+                return write_job(status="failed", stage="backtest", error=str(exc))
             try:
                 got = _run(argv, BACKTEST_TIMEOUT)
             except subprocess.TimeoutExpired:
-                return _write_job(item_id, status="failed", stage="backtest",
-                                  error=f"回测超时（>{BACKTEST_TIMEOUT}s）")
+                return write_job(status="failed", stage="backtest",
+                                 error=f"回测超时（>{BACKTEST_TIMEOUT}s）")
             if got.returncode == 0:
-                return _write_job(item_id, status="done", stage="done", error="", problems=[],
-                                  log=_tail(got.stdout))
+                return write_job(status=success_status, stage="done", error="", problems=[],
+                                 log=_tail(got.stdout))
             # 沙箱里 --no-transpile 会复读 meta.problems，所以这里再读一次
             problems = _read_meta(item_dir).get("problems") or []
             if problems:
@@ -179,23 +203,23 @@ def process(req: dict) -> dict:
                 feedback = _tail(got.stdout + "\n" + got.stderr)
 
         if attempt >= MAX_REPAIRS:
-            return _write_job(item_id, status="failed", stage=stage,
-                              error=detail or "失败", problems=problems,
-                              log=_tail((got.stdout + "\n" + got.stderr) if got else ""))
+            return write_job(status="failed", stage=stage,
+                             error=detail or "失败", problems=problems,
+                             log=_tail((got.stdout + "\n" + got.stderr) if got else ""))
 
         # 模型只改代码；执行永远只发生在下一轮沙箱里
-        _write_job(item_id, status="running", stage="repair", error=detail)
+        write_job(status="running", stage="repair", error=detail)
         try:
-            fix = _run([sys.executable, str(CLI), "--id", item_id, "--repair", feedback],
-                       TRANSPILE_TIMEOUT)
+            fix = _run([sys.executable, str(CLI), "--id", item_id, *where,
+                        "--repair", feedback], TRANSPILE_TIMEOUT)
         except subprocess.TimeoutExpired:
-            return _write_job(item_id, status="failed", stage="repair",
-                              error=f"修复超时（>{TRANSPILE_TIMEOUT}s）")
+            return write_job(status="failed", stage="repair",
+                             error=f"修复超时（>{TRANSPILE_TIMEOUT}s）")
         if fix.returncode not in (0, 2):     # 2 = 修完仍有静态问题，留给下一轮继续修
-            return _write_job(item_id, status="failed", stage="repair",
-                              error=_last_line(fix.stdout + "\n" + fix.stderr)
-                              or f"修复失败（exit {fix.returncode}）",
-                              log=_tail(fix.stdout + "\n" + fix.stderr))
+            return write_job(status="failed", stage="repair",
+                             error=_last_line(fix.stdout + "\n" + fix.stderr)
+                             or f"修复失败（exit {fix.returncode}）",
+                             log=_tail(fix.stdout + "\n" + fix.stderr))
 
 
 def _claim_lock():
@@ -233,7 +257,7 @@ def main() -> int:
         # 先摘牌再处理：处理中重复点按钮不会排两遍（API 也有一道查重）。
         path.unlink(missing_ok=True)
         try:
-            job = process(req)
+            job = process(req, job_path=OUT_DIR / str(req.get("id") or "unknown") / "job.json")
             print(f"{_now()} {req.get('id')} → {job.get('status')}/{job.get('stage')} "
                   f"（{time.time() - t0:.1f}s）{job.get('error') or ''}")
         except Exception as exc:  # noqa: BLE001

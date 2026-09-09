@@ -108,8 +108,9 @@ class TestProcess:
         pcw.process(pl.enqueue_chat("0001", "问")["request"])
         assert seen == {"model": pl.CHAT_MODEL, "think": False}
 
-    def test_edit_mode_rejected_until_p3(self, chat_env):
-        req = pl.enqueue_chat("0001", "止损改成 3%", mode="edit")["request"]
+    def test_unknown_mode_rejected(self, chat_env):
+        req = pl.enqueue_chat("0001", "问", mode="ask")["request"]
+        req["mode"] = "magic"
 
         job = pcw.process(req)
 
@@ -137,3 +138,110 @@ class TestProcess:
     def test_missing_fields_rejected(self, chat_env):
         with pytest.raises(ValueError):
             pcw.process({"id": "0001", "message": "问"})
+
+
+PINE_REPLY = """把止损从 ATR 改成固定 3%，其余不动。
+
+```pine
+//@version=5
+strategy("改过的", initial_capital=100000, default_qty_value=95, default_qty_type=strategy.percent_of_equity)
+x = 1
+```
+"""
+
+
+class TestExtractPine:
+    def test_takes_the_pine_block(self):
+        assert pcw.extract_pine(PINE_REPLY).startswith("//@version=5")
+
+    def test_skips_examples_without_pine_markers(self):
+        text = "看这个\n```\nfoo()\n```\n真源码\n```pine\nstrategy(\"x\")\n```"
+        assert 'strategy("x")' in pcw.extract_pine(text)
+
+    def test_no_block_is_empty(self):
+        assert pcw.extract_pine("就是不改") == ""
+
+    def test_strip_removes_code_leaves_explanation(self):
+        got = pcw.strip_pine_block(PINE_REPLY)
+        assert "把止损从 ATR 改成固定 3%" in got and "```" not in got
+
+
+class TestEditMode:
+    def _fake_pipeline(self, monkeypatch, fields: dict, calls: list):
+        def fake_process(req, **kw):
+            calls.append((req, kw))
+            d = Path(kw["item_dir"])
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "meta.json").write_text(json.dumps(
+                {"problems": [], "title": "改过的"}), encoding="utf-8")
+            (d / "report.json").write_text(json.dumps({
+                "symbol": "600309.SH", "adj": "backward", "trades": 180,
+                "stats": {"Net profit": {"pct": 70.0}, "Buy & hold return": {"pct": 500.0},
+                          "Max equity drawdown": {"pct": 30.0}}}), encoding="utf-8")
+            return fields
+
+        monkeypatch.setattr(pcw.ptw, "process", fake_process)
+
+    def test_edit_runs_candidate_and_writes_compare(self, chat_env, monkeypatch):
+        calls: list = []
+        self._fake_pipeline(monkeypatch, {"status": "staged", "stage": "done"}, calls)
+        monkeypatch.setattr(pcw, "_chat", lambda *a, **k: (PINE_REPLY, {"total_tokens": 9}, False))
+        enq = pl.enqueue_chat("0001", "止损改成 3%", mode="edit")["request"]
+
+        job = pcw.process(enq)
+
+        assert job["status"] == "done" and job["stage"] == "done"
+        assert job["reply"].startswith("把止损从 ATR 改成固定 3%")
+        assert "```" not in job["reply"]                    # 代码块不进对话正文
+        req, kw = calls[0]
+        assert req["source"].endswith("candidate.pine")
+        assert req["symbol"] == "600309.SH"                 # 沿用正式报告的标的
+        assert kw["success_status"] == "staged"             # 不能当成终态，还要补对比
+        assert kw["job_path"] == pl.CHAT_JOBS / f"{enq['job_id']}.json"
+        cand = job["candidate"]
+        assert cand["pine"].startswith("//@version=5")
+        assert cand["compare"]["before"]["Net profit"]["pct"] == 62.3
+        assert cand["compare"]["after"]["Net profit"]["pct"] == 70.0
+        assert cand["compare"]["after"]["trades"]["value"] == 180
+        assert pl.chat_thread("0001")["messages"][-1]["mode"] == "edit"
+
+    def test_edit_without_pine_block_fails(self, chat_env, monkeypatch):
+        monkeypatch.setattr(pcw, "_chat", lambda *a, **k: ("我做不到", None, False))
+        monkeypatch.setattr(pcw.ptw, "process",
+                            lambda *a, **k: pytest.fail("没有源码不该进候选链路"))
+
+        job = pcw.process(pl.enqueue_chat("0001", "加个比特币过滤", mode="edit")["request"])
+
+        assert job["status"] == "failed" and job["stage"] == "edit"
+        assert "Pine" in job["error"]
+
+    def test_edit_candidate_failure_keeps_detail(self, chat_env, monkeypatch):
+        calls: list = []
+        self._fake_pipeline(monkeypatch, {
+            "status": "failed", "stage": "static",
+            "error": "静态检查未通过：仓位口径必须与库内统一",
+            "problems": ["仓位口径必须与库内统一"]}, calls)
+        monkeypatch.setattr(pcw, "_chat", lambda *a, **k: (PINE_REPLY, None, False))
+
+        job = pcw.process(pl.enqueue_chat("0001", "本金改成 20 万", mode="edit")["request"])
+
+        assert job["status"] == "failed" and job["stage"] == "static"
+        assert "仓位口径" in job["error"]
+        assert job["problems"] == ["仓位口径必须与库内统一"]
+        assert job["reply"].startswith("把止损从 ATR")       # 说明仍然保留给用户看
+
+    def test_edit_falls_back_to_default_symbol(self, chat_env, monkeypatch):
+        monkeypatch.setattr(pl, "read_report", lambda item_id: {})
+        calls: list = []
+        self._fake_pipeline(monkeypatch, {"status": "staged", "stage": "done"}, calls)
+        monkeypatch.setattr(pcw, "_chat", lambda *a, **k: (PINE_REPLY, None, False))
+
+        pcw.process(pl.enqueue_chat("0001", "改", mode="edit")["request"])
+
+        assert calls[0][0]["symbol"] == pcw.DEFAULT_SYMBOL
+        assert calls[0][0]["adj"] == "backward"
+
+    def test_edit_prompt_asks_for_pine(self, chat_env):
+        ctx = pcw.build_messages("0001", "改", [], mode="edit")[0]["content"]
+        assert "```pine" in ctx and "仓位口径" in ctx
+        assert ctx != pcw.build_messages("0001", "改", [])[0]["content"]

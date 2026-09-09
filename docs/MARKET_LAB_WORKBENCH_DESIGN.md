@@ -11,13 +11,31 @@
 | P0 | ✅ 2026-09-09 已上线（commit `04eb38a`，已 deploy --ui） | `Workbench.tsx` / `StrategyList.tsx` / `ResultView.tsx` / `StrategyPanel.tsx` / `useWorkbench.ts` / `labResult.ts`(+test) |
 | P1 | ✅ 2026-09-09 已上线（commit `611cffb`，已 deploy --api） | `pine_library.py` 备注段 + 3 端点 + `NotePanel.tsx` + 左栏 💬 角标（11 单测） |
 | P2 | ✅ 2026-09-09 已上线（`ask` 问答；`edit` 留 P3） | `pine_chat_worker.py` + `AgentChatPanel.tsx` + 对话端点 + cron（24 单测） |
-| P3 | 待做 | `pine_to_pyne.py` 加 `--source/--scratch` + `versions/` |
+| P3 | ✅ 2026-09-09 已上线（`edit` 全链路已实跑验证，见下） | `pine_to_pyne.py` 的 `--source/--out` + `versions/` + `apply`/`revert`/`versions` 三端点 + 候选对比卡 |
 
-P0 落地时顺带发现（未修，待定）：静态闸 `pine_to_pyne.py:1005-1015` 只检查
+**P3 验收实跑**（2026-09-09，`0001` Fib Confluence Scanner，标的 600309.SH 后复权）：
+发「lenA/lenB/lenC 20/50/100 → 40/100/200」→ 17.9s 出候选，`chat/0001/<job_id>/`
+里落 `candidate.pine` + 沙箱报告；对比卡显示净收益 127.8%→19.1%、最大回撤 44.4%→54.0%、
+成交 239→281 笔；点采用 → `edited/0001.pine` 变成 40/100/200 并自动重排转写；
+回滚 → 源码回到 20/50/100，且**被回滚掉的那版仍留快照**（可再切回去）。
+
+P3 三个实现决定（与设计稿原文不同，均为实跑后改的）：
+
+- 不做 `--scratch`，改成 `--source <pine> --out <dir>`：候选复用**同一条** CLI + 静态闸 +
+  bwrap 沙箱，只把「读哪份 Pine、产物落哪」改道，避免出现第二条能绕过静态闸的链路。
+  `--out` 只改产物目录，**不改 item_id**（否则 chat 目录名 job_id 会被当成策略 id，
+  标题/分类全丢），标题等元信息仍从正式库里取。
+- 任务状态多一个**非终态** `staged`：候选跑完但 worker 还没落对比时，界面继续轮询，
+  否则前端会在对比卡出现前就停止刷新。
+- 回滚做成**交换**而非单向消耗：先把当前生效版快照一份，再写回目标版，最后删掉被用的
+  快照——所以「采用 → 回滚 → 再回滚」能来回切，不是一次性撤销。
+
+P0 落地时顺带发现的静态闸漏洞（已修）：`pine_to_pyne.py` 原来只检查
 `initial_capital` / `default_qty_value` / `default_qty_type` **存在**，不校验**取值**，
-于是 `0001` 的候选写了 `initial_capital=10000` + `default_qty_value=100`（提示词要求
-100000 / 95）也能过闸——同一策略与模板回测不同口径，跨策略比较会失真。
-（界面已按每条链路真实本金显示，见 `labResult.ts` 的 `capital` / `unit`。）
+于是 `0001` 的候选写了 `initial_capital=10000` + `default_qty_value=100` 也能过闸——
+同一策略与模板回测不同口径，跨策略比较会失真。现在 `_sizing_problems()` 校验取值
+（100000 / 95 / percent_of_equity），189 份候选里偏离的 62 份已排批重跑。
+（界面仍按每条链路真实本金显示，见 `labResult.ts` 的 `capital` / `unit`。）
 
 P2 上线时踩到的坑（已修，`deploy.sh` 已加护栏）：容器以 root 在 bind mount 里建目录，
 而 unlink/rename 只看**目录**写权限——`chat/queue` 被容器建成 `root:755` 后，宿主 worker
@@ -272,7 +290,7 @@ type LabResult = {
 | **P0** | 去 tab 化三栏布局；库策略接入中栏回测；成交点标到 K线 | `MarketLab.tsx`、拆 `StrategyLibrary.tsx`、`SingleBacktest.tsx` 加 props、`MarketLab.css` | 左栏点一条已转写策略 → 中栏看到完整 K线（带买卖点）/净值/逐笔，与模板回测同款 |
 | **P1** | 备注：存储 + 3 个端点 + 右栏编辑 + 左栏角标 | `pine_library.py`、`api_server.py`、新增 `NotePanel.tsx` | 写完备注刷新仍在；索引重建后备注不丢 |
 | **P2** | 对话 `ask` + 一键写入备注 | 新增 `pine_chat_worker.py`、`AgentChatPanel.tsx`、cron 一行 | 页面发问 → ≤1 分钟出答 → 可写入备注 |
-| **P3** | 对话 `edit`：候选 → 沙箱回测 → 前后对比 → 采用/回滚 | `pine_to_pyne.py` 加 `--source/--scratch`、`versions/` | 让 agent 改一个参数 → 看到前后指标对比 → 采用后编辑器源码已变 → 可回滚 |
+| **P3** | 对话 `edit`：候选 → 沙箱回测 → 前后对比 → 采用/回滚 | `pine_to_pyne.py` 加 `--source/--out`、`versions/` | 让 agent 改一个参数 → 看到前后指标对比 → 采用后编辑器源码已变 → 可回滚 |
 
 **分期顺序的理由**：P0 是纯前端、无新后端依赖，先把「看到」打通；P1 是 P2/P3 的
 上下文基础（agent 回答要能沉淀）；P2 先做只读问答，把队列+worker+轮询这套链路跑顺，

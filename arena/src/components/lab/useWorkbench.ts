@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import {
+  applyChatCandidate,
   fetchChatJob,
   fetchChatThread,
   fetchLabKlines,
@@ -15,7 +16,9 @@ import {
   fetchPineList,
   fetchPineSource,
   fetchPineTranspile,
+  fetchPineVersions,
   resetPineSource,
+  revertPineSource,
   runLabBacktest,
   runPineBacktest,
   saveNote as putNote,
@@ -26,6 +29,7 @@ import {
   type BtResult,
   type ChatJob,
   type ChatMessage,
+  type ChatMode,
   type Kline,
   type LabStrategy,
   type LabSymbol,
@@ -36,6 +40,7 @@ import {
   type PineListItem,
   type PineReport,
   type PineTranspile,
+  type VersionRow,
 } from '../../api/client';
 import { fromPineReport, fromTemplate, type LabResult } from './labResult';
 import { errText } from './format';
@@ -113,6 +118,22 @@ export interface Workbench {
   chatBusy: boolean;
   chatErr: string;
   sendChat: (message: string) => void;
+  /** ask = 问答；edit = 让 agent 产出改过的候选 */
+  chatMode: ChatMode;
+  setChatMode: (m: ChatMode) => void;
+  /** 当前任务（含 edit 模式的候选与前后对比） */
+  chatJob: ChatJob | null;
+  /** 把一条回答追加进备注（by=agent） */
+  appendNote: (text: string) => void;
+
+  // 候选采用 / 回滚
+  applyBusy: boolean;
+  applyMsg: string;
+  applyErr: string;
+  applyCandidate: () => void;
+  revert: () => void;
+  /** 可回滚的版本快照（每次采用/回滚各留一份） */
+  versions: VersionRow[];
 
   // 源码编辑
   draft: string;
@@ -219,11 +240,22 @@ export function useWorkbench(symbol: string, setSymbol: (code: string) => void):
   const [chatJob, setChatJob] = useState<ChatJob | null>(null);
   const [chatSending, setChatSending] = useState(false);
   const [chatErr, setChatErr] = useState('');
+  const [chatMode, setChatMode] = useState<ChatMode>('ask');
+  const [versions, setVersions] = useState<VersionRow[]>([]);
+  const [applyBusy, setApplyBusy] = useState(false);
+  const [applyMsg, setApplyMsg] = useState('');
+  const [applyErr, setApplyErr] = useState('');
 
   const loadChat = useCallback((id: string) => {
     fetchChatThread(id)
       .then((d) => setChat(d.messages))
       .catch(() => setChat([]));
+  }, []);
+
+  const refreshVersions = useCallback((id: string) => {
+    fetchPineVersions(id)
+      .then((d) => setVersions(d.versions))
+      .catch(() => setVersions([]));
   }, []);
 
   useEffect(() => {
@@ -232,11 +264,17 @@ export function useWorkbench(symbol: string, setSymbol: (code: string) => void):
     setChatJob(null);
     setChatSending(false);
     setChatErr('');
+    setVersions([]);
+    setApplyMsg('');
+    setApplyErr('');
     if (sel?.kind !== 'pine') return;      // 对话只针对策略库条目（模板不在库里）
     loadChat(sel.id);
-  }, [sel, loadChat]);
+    refreshVersions(sel.id);
+  }, [sel, loadChat, refreshVersions]);
 
-  const chatRunning = chatJob?.status === 'queued' || chatJob?.status === 'running';
+  // staged = 候选已过沙箱回测，但 worker 还要落对比 → 不是终态
+  const chatRunning =
+    chatJob?.status === 'queued' || chatJob?.status === 'running' || chatJob?.status === 'staged';
   const chatJobId = chatJob?.job_id ?? '';
 
   // 轮询任务：worker 由 cron 每分钟起一次，答完才写 done
@@ -247,7 +285,7 @@ export function useWorkbench(symbol: string, setSymbol: (code: string) => void):
       fetchChatJob(itemId, chatJobId)
         .then((j) => {
           setChatJob(j);
-          if (j.status === 'queued' || j.status === 'running') return;
+          if (j.status === 'queued' || j.status === 'running' || j.status === 'staged') return;
           setChatPending(null);
           setChatSending(false);
           if (j.status === 'done') loadChat(itemId);
@@ -263,15 +301,72 @@ export function useWorkbench(symbol: string, setSymbol: (code: string) => void):
     const text = message.trim();
     if (!sel || sel.kind !== 'pine' || !text || chatSending) return;
     setChatErr('');
+    setApplyMsg('');
+    setApplyErr('');
     setChatSending(true);
     setChatPending({ role: 'user', content: text, pending: true });
-    postChat(sel.id, text)
+    postChat(sel.id, text, chatMode)
       .then((r) => setChatJob({ job_id: r.job_id, status: 'queued', stage: 'queued' }))
       .catch((e) => {
         setChatPending(null);
         setChatSending(false);
         setChatErr(errText(e) || '发送失败');
       });
+  };
+
+  /** 采用/回滚后：源码与任务都变了，重载这两样（不动 sel，免得清掉对话与对比卡） */
+  const reloadSource = (id: string) => {
+    fetchPineSource(id)
+      .then((d) => {
+        setCur(d);
+        setDraft(d.source ?? '');
+        setDirty(false);
+      })
+      .catch(() => setSaveErr('源码读取失败'));
+    loadJob(id);
+  };
+
+  const applyCandidate = () => {
+    if (!sel || sel.kind !== 'pine' || !chatJob?.job_id || !chatJob.candidate) return;
+    setApplyBusy(true);
+    setApplyMsg('');
+    setApplyErr('');
+    applyChatCandidate(sel.id, chatJob.job_id, symbol, adj)
+      .then((r) => {
+        setApplyMsg(r.queued
+          ? '已采用，正在重跑转写 + 回测…'
+          : `已采用；未自动重跑（${r.queue_error}）`);
+        reloadSource(sel.id);
+        refreshVersions(sel.id);
+        refreshTranspile();
+      })
+      .catch((e) => setApplyErr(errText(e) || '采用失败'))
+      .finally(() => setApplyBusy(false));
+  };
+
+  const revert = () => {
+    if (!sel || sel.kind !== 'pine' || !versions.length) return;
+    setApplyBusy(true);
+    setApplyMsg('');
+    setApplyErr('');
+    revertPineSource(sel.id)
+      .then((r) => {
+        setApplyMsg(r.queued
+          ? `已回滚到 ${r.reverted}，正在重跑…`
+          : `已回滚到 ${r.reverted}；未自动重跑（${r.queue_error}）`);
+        reloadSource(sel.id);
+        refreshVersions(sel.id);
+        refreshTranspile();
+      })
+      .catch((e) => setApplyErr(errText(e) || '回滚失败'))
+      .finally(() => setApplyBusy(false));
+  };
+
+  /** 把 agent 的回答沉淀进备注（人工写的部分不动，只往后追加） */
+  const appendNote = (text: string) => {
+    if (!sel || sel.kind !== 'pine' || !text.trim()) return;
+    const base = (note?.note ?? '').trim();
+    saveNote({ note: base ? `${base}\n\n${text.trim()}` : text.trim(), by: 'agent' });
   };
 
   // ---- 内置模板列表 ----
@@ -403,14 +498,7 @@ export function useWorkbench(symbol: string, setSymbol: (code: string) => void):
     setSaveMsg('');
     setSaveErr('');
     setDirty(false);
-    fetchPineSource(id)
-      .then((d) => {
-        setCur(d);
-        setDraft(d.source ?? '');
-        setDirty(false);
-      })
-      .catch(() => setSaveErr('源码读取失败'));
-    loadJob(id);
+    reloadSource(id);
   };
 
   // ---- 轮询：任务在跑就每 2.5s 拉一次；跑完刷新列表上的 AI/▶ 角标 ----
@@ -562,10 +650,25 @@ export function useWorkbench(symbol: string, setSymbol: (code: string) => void):
 
     chat,
     chatPending,
-    chatStage: chatRunning ? chatJob?.stage || 'queued' : '',
+    chatStage: chatRunning
+      ? chatJob?.status === 'staged'
+        ? 'staged'
+        : chatJob?.stage || 'queued'
+      : '',
     chatBusy: chatSending,
     chatErr,
     sendChat,
+    chatMode,
+    setChatMode,
+    chatJob,
+    appendNote,
+
+    applyBusy,
+    applyMsg,
+    applyErr,
+    applyCandidate,
+    revert,
+    versions,
 
     draft,
     setDraft: (v: string) => {

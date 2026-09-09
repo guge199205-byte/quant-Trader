@@ -1436,6 +1436,159 @@
   margin-top: 0;
 }
 
+/* 对话模式切换（问策略 / 改策略） */
+.lab-chat-modes {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.lab-chat-modes .lab-more.on {
+  background: #000;
+  color: #fff;
+  border-color: #000;
+}
+
+.lab-chat-hint {
+  font-size: 9px;
+  font-family: 'Courier New', monospace;
+  color: #999;
+}
+
+/* agent 回答下方的动作（写入备注） */
+.lab-msg-act {
+  margin-top: 4px;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-family: 'Courier New', monospace;
+  border: 1px solid #ccc;
+  background: #fff;
+  color: #666;
+  cursor: pointer;
+}
+
+.lab-msg-act:hover:not(:disabled) {
+  border-color: #000;
+  color: #000;
+}
+
+.lab-msg-act:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.lab-ok {
+  margin-bottom: 12px;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+  border: 1.5px solid #0a7d3c;
+  border-left-width: 5px;
+  color: #0a7d3c;
+  background: #f2fbf5;
+}
+
+/* 候选对比卡（edit 模式）：改前 / 改后 / 变化 */
+.lab-cand {
+  margin: 10px 0;
+  border: 1.5px solid #000;
+  background: #fff;
+}
+
+.lab-cand-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1.5px solid #000;
+  font-size: 10px;
+  font-family: 'Courier New', monospace;
+  background: #f4f4f4;
+}
+
+.lab-cand-head b {
+  font-size: 11px;
+}
+
+.lab-cand-head span {
+  color: #666;
+}
+
+.lab-cand-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+  font-family: 'Courier New', monospace;
+}
+
+.lab-cand-table th,
+.lab-cand-table td {
+  padding: 4px 8px;
+  text-align: right;
+  border-bottom: 1px solid #eee;
+}
+
+.lab-cand-table th:first-child,
+.lab-cand-table td:first-child {
+  text-align: left;
+}
+
+.lab-cand-table th {
+  font-size: 9px;
+  color: #999;
+  font-weight: 400;
+}
+
+.lab-cand-table td.up {
+  color: #0a7d3c;
+}
+
+.lab-cand-table td.down {
+  color: #e2373b;
+}
+
+.lab-cand-src {
+  padding: 6px 8px;
+  font-size: 10px;
+  font-family: 'Courier New', monospace;
+  border-top: 1px solid #eee;
+}
+
+.lab-cand-src summary {
+  cursor: pointer;
+  color: #666;
+}
+
+.lab-cand-src pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 6px;
+  font-size: 10px;
+  line-height: 1.5;
+  background: #fafafa;
+  border: 1px solid #eee;
+}
+
+.lab-cand .lab-run {
+  width: 100%;
+  margin: 0;
+  border-top: 1.5px solid #000;
+}
+
+.lab-versions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 9px;
+  font-family: 'Courier New', monospace;
+  color: #666;
+}
+
 .lab-tpl-list em.note,
 .lab-pine-row em.note {
   margin-left: 5px;

@@ -988,9 +988,10 @@ export const fetchNoteIds = () =>
 // API 只写请求文件、读结果文件。
 
 export type ChatRole = 'user' | 'assistant';
-/** ask = 只问答；edit = 产出候选 Pine（P3 才上线） */
+/** ask = 只问答；edit = 产出候选 Pine（沙箱回测后由用户决定是否采用） */
 export type ChatMode = 'ask' | 'edit';
-export type ChatStatus = 'queued' | 'running' | 'done' | 'failed';
+/** staged = 候选已跑通沙箱回测，等 worker 落对比（还没到终态，界面要继续轮询） */
+export type ChatStatus = 'queued' | 'running' | 'staged' | 'done' | 'failed';
 
 export interface ChatMessage {
   role: ChatRole;
@@ -1002,6 +1003,28 @@ export interface ChatMessage {
   pending?: boolean;
 }
 
+/** 对比卡的一格：pct 是百分数（TradingView 口径），trades 只有 value */
+export interface CompareCell {
+  label: string;
+  value?: number | null;
+  pct?: number | null;
+}
+
+export interface ChatCandidate {
+  pine: string;
+  problems: string[];
+  trades?: number | null;
+  symbol?: string;
+  adj?: string;
+  stats: Record<string, { value?: number; pct?: number }>;
+  compare: {
+    symbol: string;
+    adj: string;
+    before: Record<string, CompareCell>;
+    after: Record<string, CompareCell>;
+  };
+}
+
 export interface ChatJob {
   job_id: string;
   id?: string;
@@ -1010,6 +1033,34 @@ export interface ChatJob {
   reply?: string;
   error?: string;
   truncated?: boolean;
+  problems?: string[];
+  /** edit 模式跑完才有：候选源码 + 前后指标对比 */
+  candidate?: ChatCandidate;
+}
+
+export interface ApplyResult {
+  id: string;
+  job_id: string;
+  applied: boolean;
+  /** 采用前那版的快照名（回滚用） */
+  snapshot: string;
+  bytes: number;
+  queued: boolean;
+  queue_error: string;
+}
+
+export interface RevertResult {
+  id: string;
+  reverted: string;
+  bytes: number;
+  remaining: number;
+  queued: boolean;
+  queue_error: string;
+}
+
+export interface VersionRow {
+  version: string;
+  bytes: number;
 }
 
 export const fetchChatThread = (id: string, limit = 100) =>
@@ -1025,6 +1076,23 @@ export const sendChat = (id: string, message: string, mode: ChatMode = 'ask') =>
 export const fetchChatJob = (id: string, jobId: string) =>
   unwrap<ChatJob>(
     api.get(`/market-lab/library/${encodeURIComponent(id)}/chat/${encodeURIComponent(jobId)}`),
+  );
+
+/** 采用候选：后端先快照当前源码，再写 edited/<id>.pine 并自动重跑 */
+export const applyChatCandidate = (id: string, jobId: string, symbol = '', adj = 'backward') =>
+  unwrap<ApplyResult>(
+    api.post(`/market-lab/library/${encodeURIComponent(id)}/chat/${encodeURIComponent(jobId)}/apply`,
+      { symbol, adj }),
+  );
+
+export const revertPineSource = (id: string, version = '') =>
+  unwrap<RevertResult>(
+    api.post(`/market-lab/library/${encodeURIComponent(id)}/revert`, { version }),
+  );
+
+export const fetchPineVersions = (id: string) =>
+  unwrap<{ id: string; count: number; versions: VersionRow[] }>(
+    api.get(`/market-lab/library/${encodeURIComponent(id)}/versions`),
   );
 
 export interface PineTradeRow {

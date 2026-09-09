@@ -270,7 +270,8 @@ class TestMain:
     def test_consumes_queue_and_clears_request(self, out_dir, monkeypatch):
         (out_dir / "queue/0001.json").write_text(
             json.dumps({"id": "0001", "symbol": "600309.SH"}), encoding="utf-8")
-        monkeypatch.setattr(w, "process", lambda req: {"status": "done", "stage": "done"})
+        monkeypatch.setattr(w, "process",
+                            lambda req, **kw: {"status": "done", "stage": "done"})
         assert w.main() == 0
         assert not (out_dir / "queue/0001.json").exists()   # 摘牌
 
@@ -278,3 +279,70 @@ class TestMain:
         (out_dir / "queue/0001.json").write_text("{ 不是 json", encoding="utf-8")
         assert w.main() == 0
         assert not (out_dir / "queue/0001.json").exists()
+
+
+class TestCandidateRedirect:
+    """对话改策略的候选：同一套 CLI/闸门/沙箱，只把路径改道。"""
+
+    def _fake(self, monkeypatch, calls: list, seen_dirs: list):
+        def fake_run(argv, timeout):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+        monkeypatch.setattr(w, "_run", fake_run)
+        monkeypatch.setattr(w, "sandbox_cmd",
+                            lambda item_dir, argv: seen_dirs.append(item_dir) or ["bwrap", *argv])
+
+    def test_source_and_out_reach_the_cli(self, out_dir, tmp_path, monkeypatch):
+        cand = tmp_path / "chat/0001/job1"
+        calls: list[list[str]] = []
+        seen: list[Path] = []
+        self._fake(monkeypatch, calls, seen)
+        pine = cand / "candidate.pine"
+
+        job = w.process({"id": "0001", "symbol": "600309.SH", "source": str(pine)},
+                        item_dir=cand, job_path=tmp_path / "chat/jobs/job1.json")
+
+        assert job["status"] == "done"
+        assert calls[0][calls[0].index("--out") + 1] == str(cand)
+        assert calls[0][calls[0].index("--source") + 1] == str(pine)
+        # 三段调用（转写/沙箱/修复）argv 一致：--no-transpile 不读 Pine，带了也无害
+        assert calls[1][calls[1].index("--out") + 1] == str(cand)
+        assert calls[1][calls[1].index("--source") + 1] == str(pine)
+        assert seen == [cand]                      # 沙箱只把候选目录挂成可写
+
+    def test_official_job_json_untouched(self, out_dir, tmp_path, monkeypatch):
+        """候选进度由对话 worker 记，正式 job.json 不能被候选覆写。"""
+        cand = tmp_path / "chat/0001/job1"
+        job_path = tmp_path / "chat/jobs/job1.json"
+        calls: list[list[str]] = []
+        self._fake(monkeypatch, calls, [])
+
+        w.process({"id": "0001", "symbol": "600309.SH"}, item_dir=cand, job_path=job_path)
+
+        assert json.loads(job_path.read_text(encoding="utf-8"))["status"] == "done"
+        assert not (out_dir / "0001" / "job.json").exists()
+
+    def test_official_job_written_when_path_given(self, out_dir, monkeypatch):
+        calls: list[list[str]] = []
+        self._fake(monkeypatch, calls, [])
+        path = out_dir / "0001" / "job.json"
+
+        w.process({"id": "0001", "symbol": "600309.SH"}, job_path=path)
+
+        assert _job(out_dir, "0001")["status"] == "done"
+        assert calls[0][calls[0].index("--out") + 1] == str(out_dir / "0001")
+
+    def test_main_points_job_at_official_path(self, out_dir, monkeypatch):
+        """队列主循环自己决定 job 落点，别让 process 猜。"""
+        (out_dir / "queue/0001.json").write_text(
+            json.dumps({"id": "0001", "symbol": "600309.SH"}), encoding="utf-8")
+        seen: dict = {}
+
+        def fake_process(req, **kw):
+            seen.update(kw)
+            return {"status": "done", "stage": "done"}
+
+        monkeypatch.setattr(w, "process", fake_process)
+        assert w.main() == 0
+        assert seen["job_path"] == out_dir / "0001" / "job.json"

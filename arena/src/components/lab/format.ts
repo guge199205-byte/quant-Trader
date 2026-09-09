@@ -8,8 +8,8 @@ import { fmtMoney as moneyText, fmtNum, fmtPct as ratioPct } from '../../utils/f
 
 export const fmt = fmtNum;
 
-export const fmtPct = (v: number | null | undefined, digits = 2): string =>
-  ratioPct(v == null ? v : v / 100, digits);
+export const fmtPct = (v: number | null | undefined, digits = 2, signed = true): string =>
+  ratioPct(v == null ? v : v / 100, digits, signed);
 
 export const fmtMoney = (v: number | null | undefined, unit = '¥'): string =>
   moneyText(v, unit, 0);
@@ -28,6 +28,39 @@ export const KIND_LABEL: Record<string, string> = {
   missing: '缺失',
 };
 
+/** 对比卡的一格：pct 是百分数口径（62.35），没有 pct 就显示 value（成交笔数这类） */
+export interface CompareCellLike {
+  label?: string;
+  value?: number | null;
+  pct?: number | null;
+}
+
+const cellValue = (c?: CompareCellLike): number | null => c?.pct ?? c?.value ?? null;
+
+export const compareCellText = (c?: CompareCellLike): string => {
+  const v = cellValue(c);
+  if (v == null) return '—';
+  // 值本身不带符号（回撤 18% 写成 +18% 会让人以为在涨），只有「变化」列才带符号
+  return c?.pct != null ? fmtPct(v, 1, false) : fmt(v, 0);
+};
+
+export const compareDeltaText = (b?: CompareCellLike, a?: CompareCellLike): string => {
+  const bv = cellValue(b);
+  const av = cellValue(a);
+  if (bv == null || av == null) return '—';
+  const d = av - bv;
+  const sign = d > 0 ? '+' : '';
+  return b?.pct != null || a?.pct != null ? `${sign}${d.toFixed(1)}pp` : `${sign}${d.toFixed(0)}`;
+};
+
+/** 变好/变差 → 上色用的 class（数据缺失不猜） */
+export const compareDeltaClass = (b?: CompareCellLike, a?: CompareCellLike): string => {
+  const bv = cellValue(b);
+  const av = cellValue(a);
+  if (bv == null || av == null) return '';
+  return av > bv ? 'up' : av < bv ? 'down' : '';
+};
+
 /** 转写 / 对话任务的阶段文案（两套阶段的 key 不重叠，共用一张表） */
 export const STAGE_LABEL: Record<string, string> = {
   queued: '已入队，等宿主 worker 取（每分钟一轮）',
@@ -37,6 +70,7 @@ export const STAGE_LABEL: Record<string, string> = {
   repair: '回测报错，让模型修一版再重跑…',
   context: '读取策略上下文…',
   llm: '模型思考中…',
+  staged: '候选已跑通沙箱回测，正在整理前后对比…',
   mode: '该模式还没上线',
   done: '完成',
   worker: 'worker 异常',

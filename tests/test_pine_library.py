@@ -371,3 +371,138 @@ class TestChatQueue:
 
     def test_empty_thread_is_empty(self, chat):
         assert pl.chat_thread("0001") == {"id": "0001", "count": 0, "messages": []}
+
+
+@pytest.fixture()
+def staged(lib, chat, tmp_path, monkeypatch):
+    """采用/回滚环境：版本目录 + 转写队列都指到临时目录，标的校验直通。"""
+    monkeypatch.setattr(pl, "VERSIONS_DIR", tmp_path / "versions")
+    monkeypatch.setattr(pl, "TRANSPILE_DIR", tmp_path / "pine_transpile")
+    monkeypatch.setattr(pl, "QUEUE_DIR", tmp_path / "pine_transpile/queue")
+    monkeypatch.setattr(pl, "_check_symbol", lambda s: s)
+    return lib
+
+
+def _stage_candidate(item_id: str, job_id: str, pine: str = "//@version=5\nstrategy('新')\n",
+                     problems: list | None = None, report: dict | None = None) -> Path:
+    """造一条跑完的候选（worker 的产物形态）。"""
+    d = pl.CHAT_DIR / item_id / job_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / pl.CANDIDATE_PINE).write_text(pine, encoding="utf-8")
+    (d / "meta.json").write_text(json.dumps({"problems": problems or []}), encoding="utf-8")
+    (d / "report.json").write_text(json.dumps(report or {
+        "symbol": "600309.SH", "adj": "backward", "trades": 12,
+        "stats": {"Net profit": {"pct": 5.0}}}), encoding="utf-8")
+    pl.CHAT_JOBS.mkdir(parents=True, exist_ok=True)
+    (pl.CHAT_JOBS / f"{job_id}.json").write_text(json.dumps({
+        "job_id": job_id, "id": item_id, "status": "done", "stage": "done",
+        "problems": problems or []}), encoding="utf-8")
+    return d
+
+
+class TestCandidateApply:
+    JOB = "0001-20260909T120000-abcdef"
+
+    def test_apply_snapshots_then_writes_edited(self, staged):
+        before = pl.get_source("0001")["source"]
+        _stage_candidate("0001", self.JOB)
+
+        got = pl.apply_candidate("0001", self.JOB)
+
+        assert got["applied"] and got["snapshot"]
+        assert pl.get_source("0001")["source"] == "//@version=5\nstrategy('新')\n"
+        assert (pl.EDITED_DIR / "0001.pine").exists()
+        snap = pl.VERSIONS_DIR / "0001" / f"{got['snapshot']}.pine"
+        assert snap.read_text(encoding="utf-8") == before      # 快照存的是改动前那版
+        # 采用后自动重跑官方产物，且必须 force（否则会复用旧候选）
+        q = json.loads((pl.QUEUE_DIR / "0001.json").read_text(encoding="utf-8"))
+        assert q["force"] is True and q["symbol"] == "600309.SH"
+        assert got["queued"] is True and got["queue_error"] == ""
+
+    def test_apply_rejects_unfinished_job(self, staged):
+        pl.CHAT_JOBS.mkdir(parents=True, exist_ok=True)
+        (pl.CHAT_JOBS / f"{self.JOB}.json").write_text(json.dumps({
+            "job_id": self.JOB, "id": "0001", "status": "running"}), encoding="utf-8")
+        with pytest.raises(ValueError, match="还没跑完"):
+            pl.apply_candidate("0001", self.JOB)
+
+    def test_apply_rejects_candidate_that_failed_the_gate(self, staged):
+        _stage_candidate("0001", self.JOB, problems=["仓位口径必须与库内统一"])
+        with pytest.raises(ValueError, match="静态检查"):
+            pl.apply_candidate("0001", self.JOB)
+        assert not (pl.EDITED_DIR / "0001.pine").exists()
+
+    def test_apply_still_lands_when_queue_is_busy(self, staged):
+        _stage_candidate("0001", self.JOB)
+        pl.QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+        (pl.QUEUE_DIR / "0001.json").write_text("{}", encoding="utf-8")
+
+        got = pl.apply_candidate("0001", self.JOB)
+
+        assert got["applied"] and got["queued"] is False
+        assert "队列" in got["queue_error"]
+        assert (pl.EDITED_DIR / "0001.pine").exists()          # 采用照样生效
+
+    def test_apply_without_symbol_reports_why_not_requeued(self, staged):
+        _stage_candidate("0001", self.JOB, report={"symbol": "", "stats": {}})
+        got = pl.apply_candidate("0001", self.JOB)
+        assert got["queued"] is False and "没有标的" in got["queue_error"]
+
+    def test_candidate_reads_pine_meta_report(self, staged):
+        _stage_candidate("0001", self.JOB, pine="//@version=5\nstrategy('候选')\n")
+        got = pl.candidate("0001", self.JOB)
+        assert "strategy('候选')" in got["pine"]
+        assert got["meta"]["problems"] == [] and got["report"]["trades"] == 12
+
+    def test_missing_candidate_rejected(self, staged):
+        with pytest.raises(ValueError, match="没有候选源码"):
+            pl.candidate("0001", self.JOB)
+
+
+class TestRevert:
+    JOB = "0001-20260909T120000-abcdef"
+
+    def test_revert_swaps_versions_so_it_is_reversible(self, staged):
+        before = pl.get_source("0001")["source"]
+        _stage_candidate("0001", self.JOB)
+        pl.apply_candidate("0001", self.JOB)
+        new = pl.get_source("0001")["source"]
+
+        got = pl.revert_source("0001")
+
+        assert got["reverted"] and got["remaining"] == 1
+        assert pl.get_source("0001")["source"] == before
+        # 刚采用的那版也留了快照 → 再点一次能退回去（回滚不是单向的）
+        pl.revert_source("0001")
+        assert pl.get_source("0001")["source"] == new
+
+    def test_revert_without_snapshot_rejected(self, staged):
+        with pytest.raises(ValueError, match="没有可回滚"):
+            pl.revert_source("0001")
+
+    def test_revert_specific_version(self, staged):
+        d = pl.VERSIONS_DIR / "0001"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "20260909T010000000000.pine").write_text("旧一版", encoding="utf-8")
+        (d / "20260909T020000000000.pine").write_text("旧两版", encoding="utf-8")
+
+        got = pl.revert_source("0001", "20260909T010000000000")
+
+        assert got["reverted"] == "20260909T010000000000"
+        assert pl.get_source("0001")["source"] == "旧一版"
+        # 旧两版还在，且刚被换下的那版也留了快照
+        assert pl.list_versions("0001")["count"] == 2
+
+    @pytest.mark.parametrize("bad", ["../x", "2026", "20260909T01000000000"])
+    def test_bad_version_rejected(self, staged, bad):
+        with pytest.raises(ValueError):
+            pl.revert_source("0001", bad)
+
+    def test_list_versions_ignores_junk(self, staged):
+        d = pl.VERSIONS_DIR / "0001"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "20260909T010000000000.pine").write_text("x", encoding="utf-8")
+        (d / "note.txt").write_text("x", encoding="utf-8")
+        (d / "latest.pine").write_text("x", encoding="utf-8")
+        got = pl.list_versions("0001")
+        assert [v["version"] for v in got["versions"]] == ["20260909T010000000000"]

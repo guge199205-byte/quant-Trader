@@ -42,12 +42,22 @@ if _PINE_SITE.is_dir() and str(_PINE_SITE) not in sys.path:
 OUT_DIR = Path(__file__).resolve().parents[1] / "data/pine_transpile"
 LAB_DIR = ROOT / "backend/services/lab_strategies"
 MODEL = "deepseek-v4-flash"
+# --source / --out：agent 改策略时用来跑候选（读指定 Pine、产物落到别的目录）。
+# 候选绝不能覆盖正式产物，所以这两项一旦给了，路径就整体改道。
+SOURCE_OVERRIDE: Path | None = None
+OUT_OVERRIDE: Path | None = None
 # 推理模型的 reasoning token 也计入 completion：0001 开思考烧掉 23755 token / 180s 才
 # 勉强塞进 32k，0004 同样 32k 直接截断（策略还更短）。转写是照模板的机械活，不需要长
 # 思考——默认 thinking=disabled，输出只剩代码，8k 富余。真截断了再回退开思考重试。
 MAX_TOKENS = 32000          # 开思考时的上限
 MAX_TOKENS_FAST = 8000      # 关思考时只出代码
 NO_THINKING = {"thinking": {"type": "disabled"}}
+
+
+def _out(item_id: str) -> Path:
+    """某条策略的产物目录：默认 ``data/pine_transpile/<id>``，``--out`` 时整体改道。"""
+    return OUT_OVERRIDE if OUT_OVERRIDE is not None else OUT_DIR / item_id
+
 
 # 危险调用黑名单：转写产物是要被执行的，先在静态阶段挡一道。
 BANNED = [
@@ -1105,7 +1115,7 @@ def _refresh_problems(item_id: str, meta: dict) -> dict:
     闸门会随规则收紧（2026-09-09 起校验本金/仓位取值）——不重算的话，
     复用已有候选的老产物会拿旧结论绕过新规则，重跑一遍等于白跑。
     """
-    cand = OUT_DIR / item_id / "candidate.py"
+    cand = _out(item_id) / "candidate.py"
     if not cand.exists():
         return meta
     problems = static_check(cand.read_text(encoding="utf-8"))
@@ -1113,12 +1123,27 @@ def _refresh_problems(item_id: str, meta: dict) -> dict:
         return meta
     meta = {**meta, "problems": problems,
             "checked": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-    (OUT_DIR / item_id / "meta.json").write_text(
+    (_out(item_id) / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
 
 
 def _load_pine(item_id: str) -> dict:
+    """默认读策略库的生效源码；``--source`` 时读指定文件（agent 改策略的候选）。"""
+    if SOURCE_OVERRIDE is not None:
+        from scripts.pine_library_index import _meta
+
+        from backend.services import pine_library as pl
+
+        text = SOURCE_OVERRIDE.read_text(encoding="utf-8", errors="replace")
+        try:
+            base = pl.get_source(item_id)     # 标题/分类仍取正式策略，候选只换源码
+        except ValueError:
+            base = {}
+        fresh = _meta(text)
+        return {**base, "id": item_id, "version": fresh.get("version") or base.get("version"),
+                "lines": fresh.get("lines"), "indent_ok": fresh.get("indent_ok"),
+                "source_kind": "candidate", "source": text}
     from backend.services import pine_library as pl
 
     return pl.get_source(item_id)
@@ -1190,7 +1215,7 @@ REPAIR_PROMPT = """你上一次的转写没通过静态检查 / 回测。下面�
 def transpile(item_id: str, model: str = MODEL) -> dict:
     got = _load_pine(item_id)
     user = _pine_prompt(got)
-    out = OUT_DIR / item_id
+    out = _out(item_id)
     out.mkdir(parents=True, exist_ok=True)
     (out / "prompt.md").write_text(
         f"# system\n\n{SYSTEM_PROMPT}\n\n# user\n\n{user}\n", encoding="utf-8")
@@ -1222,7 +1247,7 @@ def transpile(item_id: str, model: str = MODEL) -> dict:
 
 def repair(item_id: str, error: str, model: str = MODEL) -> dict:
     """把回测报错喂回模型，改一版候选（只写文件，不执行——执行归沙箱）。"""
-    out = OUT_DIR / item_id
+    out = _out(item_id)
     cand = out / "candidate.py"
     meta_path = out / "meta.json"
     if not cand.exists() or not meta_path.exists():
@@ -1255,7 +1280,7 @@ def repair(item_id: str, error: str, model: str = MODEL) -> dict:
 def validate(item_id: str, symbol: str, adj: str = "backward") -> dict:
     from backend.services import market_lab as ml
 
-    out = OUT_DIR / item_id
+    out = _out(item_id)
     cand = out / "candidate.py"
     if not cand.exists():
         raise SystemExit(f"没有候选文件：{cand}（先跑 --id {item_id}）")
@@ -1277,7 +1302,7 @@ def validate(item_id: str, symbol: str, adj: str = "backward") -> dict:
 
 def install(item_id: str) -> dict:
     """把候选装进 lab_strategies/（复制文件 + 打印注册表条目）。"""
-    out = OUT_DIR / item_id
+    out = _out(item_id)
     cand = out / "candidate.py"
     if not cand.exists():
         raise SystemExit(f"没有候选文件：{cand}")
@@ -1313,6 +1338,24 @@ def _list() -> int:
     return 0
 
 
+def _redirect_out(out: str) -> None:
+    """``--out <dir>``：把**这一条的产物目录**整体指过去（id 不变）。
+
+    对话候选落在 ``data/pine_library/chat/<id>/<job_id>/``——正式产物
+    ``data/pine_transpile/<id>/`` 一个字节都不动。
+    """
+    global OUT_OVERRIDE
+
+    OUT_OVERRIDE = Path(out).resolve()
+
+
+def _pin_source(path: str) -> None:
+    """``--source <file>``：从该文件读 Pine，而不是策略库的生效源码。"""
+    global SOURCE_OVERRIDE
+
+    SOURCE_OVERRIDE = Path(path).resolve()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=".pine → Pyne-Python 转写与验证")
     ap.add_argument("--id", help="策略库 id（如 0001）")
@@ -1325,11 +1368,19 @@ def main() -> int:
                     help="只校验已有候选（不调模型）。队列 worker 的沙箱回测段走这个。")
     ap.add_argument("--repair", metavar="ERROR",
                     help="用回测报错修一版候选（需已有 candidate.py；只写文件不执行）")
+    ap.add_argument("--source", metavar="PINE",
+                    help="改读该 Pine 文件（默认读策略库生效源码）——候选绝不覆盖正式产物")
+    ap.add_argument("--out", metavar="DIR",
+                    help="这一条的产物目录（默认 data/pine_transpile/<id>；候选指到 chat/ 下）")
     ap.add_argument("--list", action="store_true")
     args = ap.parse_args()
 
     if args.list:
         return _list()
+    if args.out:
+        _redirect_out(args.out)
+    if args.source:
+        _pin_source(args.source)
     if not args.id:
         ap.print_help()
         return 1
@@ -1338,8 +1389,8 @@ def main() -> int:
         print(json.dumps(install(args.id), ensure_ascii=False, indent=2))
         return 0
 
-    cand = OUT_DIR / args.id / "candidate.py"
-    meta_path = OUT_DIR / args.id / "meta.json"
+    cand = _out(args.id) / "candidate.py"
+    meta_path = _out(args.id) / "meta.json"
     if args.repair:
         try:
             meta = repair(args.id, args.repair, model=args.model)

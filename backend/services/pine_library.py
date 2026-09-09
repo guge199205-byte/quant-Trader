@@ -380,3 +380,128 @@ def enqueue_chat(item_id: str, message: str, mode: str = "ask") -> dict:
     tmp.write_text(json.dumps(req, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(CHAT_QUEUE / f"{job_id}.json")
     return {"job_id": job_id, "queued": True, "request": req}
+
+
+# ---------- 候选采用 / 版本回滚（P3） ----------
+# agent 改出来的候选在用户点「采用」之前只活在 chat/<id>/<job_id>/ 里；采用时先把
+# 当前生效源码快照到 versions/<id>/<ts>.pine 再写 edited/。回滚就是把这个快照写回去
+# ——快照自己就是审计轨迹，不另建索引文件（索引会被 scripts/pine_library_index.py 重建）。
+
+VERSIONS_DIR = LIB_DIR / "versions"
+CANDIDATE_PINE = "candidate.pine"
+VERSION_RE = re.compile(r"^\d{8}T\d{12}$")
+
+
+def _candidate_dir(item_id: str, job_id: str) -> Path:
+    return CHAT_DIR / item_id / job_id
+
+
+def candidate(item_id: str, job_id: str) -> dict:
+    """读候选：Pine 源码 + 转写元信息 + 沙箱回测报告。"""
+    item_id = _check_id(item_id)
+    job_id = _check_job_id(job_id)
+    pine = _candidate_dir(item_id, job_id) / CANDIDATE_PINE
+    if not pine.exists():
+        raise LibraryError(f"没有候选源码: {job_id}")
+    d = pine.parent
+    return {"id": item_id, "job_id": job_id,
+            "pine": pine.read_text(encoding="utf-8", errors="replace"),
+            "meta": _read_json(d / "meta.json"), "report": _read_json(d / "report.json")}
+
+
+def list_versions(item_id: str) -> dict:
+    """可回滚的版本快照（新的在后）。"""
+    item_id = _check_id(item_id)
+    d = VERSIONS_DIR / item_id
+    rows = []
+    if d.is_dir():
+        rows = [{"version": p.stem, "bytes": p.stat().st_size}
+                for p in sorted(d.glob("*.pine")) if VERSION_RE.match(p.stem)]
+    return {"id": item_id, "count": len(rows), "versions": rows}
+
+
+def _snapshot(item_id: str, text: str) -> str:
+    """采用前先把「现在这版」存一份，返回快照名。"""
+    name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    d = VERSIONS_DIR / item_id
+    d.mkdir(parents=True, exist_ok=True)
+    tmp = d / f"{name}.pine.tmp"
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(d / f"{name}.pine")
+    return name
+
+
+def _write_edited(item_id: str, text: str) -> None:
+    if not isinstance(text, str) or not text.strip():
+        raise LibraryError("源码不能为空")
+    if len(text.encode("utf-8")) > MAX_SOURCE_BYTES:
+        raise LibraryError("源码过大（>512KB）")
+    EDITED_DIR.mkdir(parents=True, exist_ok=True)
+    (EDITED_DIR / f"{item_id}.pine").write_text(text, encoding="utf-8")
+
+
+def _requeue(item_id: str, symbol: str, adj: str) -> tuple[bool, str]:
+    """采用/回滚后自动重跑官方产物。入不了队不算失败，但要如实回报原因。"""
+    if not symbol:
+        return False, "没有标的，未自动重跑"
+    try:
+        enqueue_backtest(item_id, symbol, adj=adj, force=True)
+        return True, ""
+    except LibraryError as exc:
+        return False, str(exc)
+
+
+def apply_candidate(item_id: str, job_id: str, symbol: str = "",
+                    adj: str = "backward") -> dict:
+    """采用候选：快照当前源码 → 写 edited/<id>.pine → 入队重跑转写+回测。"""
+    item_id = _check_id(item_id)
+    job_id = _check_job_id(job_id)
+    job = chat_job(item_id, job_id)
+    if job.get("status") != "done":
+        raise LibraryError("候选还没跑完，不能采用")
+    if job.get("problems"):
+        raise LibraryError("候选没通过静态检查，不能采用")
+    got = candidate(item_id, job_id)          # 候选文件必须真的在
+    report = got.get("report") or {}
+    symbol = symbol or report.get("symbol") or read_report(item_id).get("symbol") or ""
+    adj = adj or report.get("adj") or "backward"
+
+    snap = _snapshot(item_id, get_source(item_id)["source"])
+    _write_edited(item_id, got["pine"])
+    queued, queue_error = _requeue(item_id, symbol, adj)
+    return {"id": item_id, "job_id": job_id, "applied": True, "snapshot": snap,
+            "bytes": len(got["pine"].encode("utf-8")), "queued": queued,
+            "queue_error": queue_error}
+
+
+def revert_source(item_id: str, version: str = "") -> dict:
+    """回滚到上一版（默认最新快照）。
+
+    回滚前先把「当前这版」也存一份快照——否则回滚会永久丢掉刚采用的那版，
+    再点一次就没法退回来。快照因此是一叠可来回翻的版本，不是一次性撤销。
+    """
+    item_id = _check_id(item_id)
+    d = VERSIONS_DIR / item_id
+    snaps = [p for p in sorted(d.glob("*.pine")) if VERSION_RE.match(p.stem)] if d.is_dir() else []
+    if not snaps:
+        raise LibraryError("没有可回滚的版本")
+    if version:
+        version = version.strip()
+        if not VERSION_RE.match(version):
+            raise LibraryError(f"无效的版本号: {version!r}")
+        path = d / f"{version}.pine"
+        if not path.exists():
+            raise LibraryError(f"版本不存在: {version}")
+    else:
+        path, version = snaps[-1], snaps[-1].stem
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    _snapshot(item_id, get_source(item_id)["source"])   # 当前版也留一份，回滚可逆
+    _write_edited(item_id, text)
+    path.unlink(missing_ok=True)
+    report = read_report(item_id)
+    queued, queue_error = _requeue(item_id, report.get("symbol") or "",
+                                   report.get("adj") or "backward")
+    return {"id": item_id, "reverted": version, "bytes": len(text.encode("utf-8")),
+            "remaining": list_versions(item_id)["count"],
+            "queued": queued, "queue_error": queue_error}

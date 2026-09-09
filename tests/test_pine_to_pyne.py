@@ -776,3 +776,56 @@ class TestListTranspile:
         (d / "meta.json").write_text("{ 不是 json", encoding="utf-8")
         monkeypatch.setattr(pl, "TRANSPILE_DIR", tmp_path / "pine_transpile")
         assert pl.list_transpile() == {}
+
+
+class TestCandidateOverride:
+    """`--source` / `--out`：agent 改策略的候选绝不覆盖正式产物。"""
+
+    def test_default_out_is_official(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ptp, "OUT_DIR", tmp_path / "official")
+        monkeypatch.setattr(ptp, "OUT_OVERRIDE", None)
+        assert ptp._out("0001") == tmp_path / "official/0001"
+
+    def test_out_override_points_at_candidate_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ptp, "OUT_DIR", tmp_path / "official")
+        monkeypatch.setattr(ptp, "OUT_OVERRIDE", tmp_path / "chat/0001/job1")
+        assert ptp._out("0001") == tmp_path / "chat/0001/job1"
+
+    def test_load_pine_keeps_library_metadata(self, tmp_path, monkeypatch):
+        """候选只换源码：标题/分类仍取正式策略，界面才认得出是哪一条。"""
+        src = tmp_path / "candidate.pine"
+        src.write_text('//@version=5\nstrategy("改过的")\n', encoding="utf-8")
+        monkeypatch.setattr(ptp, "SOURCE_OVERRIDE", src)
+        monkeypatch.setattr(pl, "get_source", lambda i: {
+            "id": i, "title": "原策略", "category": "趋势",
+            "source": '//@version=5\nstrategy("原")\n'})
+
+        got = ptp._load_pine("0001")
+        assert got["title"] == "原策略" and got["category"] == "趋势"
+        assert got["source_kind"] == "candidate" and "改过的" in got["source"]
+
+    def test_load_pine_survives_unknown_id(self, tmp_path, monkeypatch):
+        src = tmp_path / "candidate.pine"
+        src.write_text("//@version=5\n", encoding="utf-8")
+        monkeypatch.setattr(ptp, "SOURCE_OVERRIDE", src)
+
+        def boom(_):
+            raise ValueError("没有这条策略")
+
+        monkeypatch.setattr(pl, "get_source", boom)
+        assert ptp._load_pine("x001")["source_kind"] == "candidate"
+
+    def test_transpile_writes_to_override_not_official(self, tmp_path, monkeypatch):
+        official, out = tmp_path / "official", tmp_path / "chat/0001/job1"
+        src = tmp_path / "candidate.pine"
+        src.write_text('//@version=5\nstrategy("改过的")\n', encoding="utf-8")
+        monkeypatch.setattr(ptp, "OUT_DIR", official)
+        monkeypatch.setattr(ptp, "OUT_OVERRIDE", out)
+        monkeypatch.setattr(ptp, "SOURCE_OVERRIDE", src)
+        monkeypatch.setattr(ptp, "call_llm",
+                            lambda *a, **k: (f"```python\n{GOOD}\n```", {"total_tokens": 1}, False))
+
+        meta = ptp.transpile("0001")
+        assert (out / "candidate.py").exists() and (out / "meta.json").exists()
+        assert meta["id"] == "0001"
+        assert not official.exists()          # 正式产物一个字节都没动

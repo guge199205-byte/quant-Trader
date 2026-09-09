@@ -2161,6 +2161,47 @@ def pine_library_chat_job(item_id: str, job_id: str):
         return {"success": False, "error": f"对话任务读取失败: {e}"}
 
 
+@app.post("/api/market-lab/library/{item_id}/chat/{job_id}/apply")
+def pine_library_chat_apply(item_id: str, job_id: str, payload: dict = Body(default={})):
+    """采用对话产出的候选：快照当前源码 → 写 edited/<id>.pine → 入队重跑。
+
+    候选是模型产物，只有用户显式点「采用」才会进正式源码（`scripts/pine_chat_worker.py` 只写 chat/）。
+    """
+    try:
+        return {"success": True, "data": _pine_lib().apply_candidate(
+            item_id, job_id, payload.get("symbol", ""), payload.get("adj", "backward"))}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("pine candidate apply failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"采用失败: {e}"}
+
+
+@app.get("/api/market-lab/library/{item_id}/versions")
+def pine_library_versions(item_id: str):
+    """可回滚的版本快照（每次「采用」前存一版）。"""
+    try:
+        return {"success": True, "data": _pine_lib().list_versions(item_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("pine versions failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"版本读取失败: {e}"}
+
+
+@app.post("/api/market-lab/library/{item_id}/revert")
+def pine_library_revert(item_id: str, payload: dict = Body(default={})):
+    """回滚到上一版（默认最新快照）；回滚后同样自动重跑官方产物。"""
+    try:
+        return {"success": True, "data": _pine_lib().revert_source(
+            item_id, payload.get("version", ""))}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.error("pine revert failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"回滚失败: {e}"}
+
+
 @app.get("/api/market-lab/transpile")
 def pine_transpile_list():
     """AI 转写产物一览（宿主上跑 scripts/pine_to_pyne.py 生成，页面只读）。"""

@@ -771,10 +771,29 @@ export interface BtEquityPoint {
   value: number;
 }
 
+/** 回测时捕获的策略指标序列（与 K 线逐根对齐；缺值的 bar 为 null）。
+ *  overlays 画在价格主图上，panes 各占一个副图（MACD/RSI 这类不同量纲的）。 */
+export interface IndicatorSeries {
+  key: string;
+  /** 副图分组：同一条推导链的多条线共用一个 group（如 MACD 的 DIF/DEA/柱，
+   *  以及 RSI 与其区间高低点）→ 同画在一个副图。叠加线画在主图上，没有这个字段。 */
+  group?: string;
+  label: string;
+  kind: 'line' | 'hist';
+  values: (number | null)[];
+}
+
+export interface IndicatorSet {
+  bars: number;
+  overlays: IndicatorSeries[];
+  panes: IndicatorSeries[];
+}
+
 export interface BtResult {
   stats: Record<string, BtStat>;
   trades: BtTrade[];
   equity: BtEquityPoint[];
+  indicators?: IndicatorSet | null;
   meta: {
     strategy: string;
     name: string;
@@ -1118,6 +1137,8 @@ export interface PineReport {
   stats: Record<string, { value?: number; pct?: number }>;
   trade_rows: PineTradeRow[];
   equity: { date: string; value: number }[];
+  /** 策略真正算过的指标（沙箱回测时捕获）。老报告没有这个字段。 */
+  indicators?: IndicatorSet | null;
 }
 
 export interface PineJob {

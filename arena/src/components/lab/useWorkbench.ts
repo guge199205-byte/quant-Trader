@@ -62,6 +62,9 @@ export interface Workbench {
   toggleSpan: () => void;
   showMarkers: boolean;
   toggleMarkers: () => void;
+  /** 回测捕获到的指标是否画在 K 线上（叠加线 + 副图） */
+  showIndicators: boolean;
+  toggleIndicators: () => void;
   query: string;
   hits: LabSymbol[];
   showHits: boolean;
@@ -156,6 +159,7 @@ export function useWorkbench(symbol: string, setSymbol: (code: string) => void):
   /** 看盘默认近 600 根；跑完回测自动切全历史，否则 10 年回测的买卖点大多落在图外 */
   const [fullSpan, setFullSpan] = useState(false);
   const [showMarkers, setShowMarkers] = useState(true);
+  const [showIndicators, setShowIndicators] = useState(true);
 
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<LabSymbol[]>([]);
@@ -607,6 +611,8 @@ export function useWorkbench(symbol: string, setSymbol: (code: string) => void):
     toggleSpan: () => setFullSpan((v) => !v),
     showMarkers,
     toggleMarkers: () => setShowMarkers((v) => !v),
+    showIndicators,
+    toggleIndicators: () => setShowIndicators((v) => !v),
     query,
     hits,
     showHits,

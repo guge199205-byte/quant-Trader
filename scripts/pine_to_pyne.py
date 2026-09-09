@@ -1285,7 +1285,7 @@ def validate(item_id: str, symbol: str, adj: str = "backward") -> dict:
     if not cand.exists():
         raise SystemExit(f"没有候选文件：{cand}（先跑 --id {item_id}）")
     t0 = time.time()
-    res = ml.run_script_file(cand, symbol, adj=adj)
+    res = ml.run_script_file(cand, symbol, adj=adj, want_indicators=True)
     stats = res.get("stats") or {}
     trades = res.get("trades") or []
     report = {"id": item_id, "symbol": symbol, "adj": adj,
@@ -1293,6 +1293,9 @@ def validate(item_id: str, symbol: str, adj: str = "backward") -> dict:
               "stats": stats, "trades": len(trades),
               # 逐笔与净值一并落盘：界面要画净值曲线 / 列成交，重跑一次回测没必要。
               "trade_rows": trades, "equity": res.get("equity") or [],
+              # 策略真正算过的指标序列（ema/macd/rsi…）：界面叠到 K 线主图与副图上。
+              # 只有沙箱里跑得出来的产物才有——容器侧永不执行模型代码。
+              "indicators": res.get("indicators") or {},
               "meta": res.get("meta"),
               "validated": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2),

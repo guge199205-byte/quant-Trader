@@ -8,6 +8,7 @@ import EquityChart, { type ChartLine } from '../EquityChart';
 import KLineChart from '../KLineChart';
 import type { Kline } from '../../api/client';
 import type { LabResult } from './labResult';
+import { DOWN_COLOR, paneGroups, seriesColor, UP_COLOR } from './indicators';
 import { fmt, fmtMoney, fmtPct } from './format';
 
 const TRADE_ROWS = 60;
@@ -80,6 +81,42 @@ function TradeTable({ result }: { result: LabResult }) {
   );
 }
 
+/** 图例：取色必须与 KLineChart 一致（叠加线按序取、副图组内按序取）。 */
+function IndicatorLegend({ result }: { result: LabResult }) {
+  const ind = result.indicators;
+  const groups = paneGroups(ind);
+  if (!ind.overlays.length && !groups.length) return null;
+  const swatch = (bg: string) => ({ background: bg });
+  return (
+    <div className="lab-legend">
+      {ind.overlays.map((s, i) => (
+        <span key={s.key} className="lab-legend-item">
+          <i style={swatch(seriesColor(true, i))} />
+          {s.label}
+        </span>
+      ))}
+      {groups.map((g) => (
+        <span key={g} className="lab-legend-group">
+          {ind.panes
+            .filter((s) => s.group === g)
+            .map((s, si) => (
+              <span key={s.key} className="lab-legend-item">
+                <i
+                  style={swatch(
+                    s.kind === 'hist'
+                      ? `linear-gradient(90deg, ${UP_COLOR} 50%, ${DOWN_COLOR} 50%)`
+                      : seriesColor(false, si),
+                  )}
+                />
+                {s.label}
+              </span>
+            ))}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export default function ResultView({
   bars,
   barsBusy,
@@ -87,6 +124,8 @@ export default function ResultView({
   result,
   showMarkers,
   onToggleMarkers,
+  showIndicators,
+  onToggleIndicators,
   fullSpan,
   onToggleSpan,
   onSyncSymbol,
@@ -97,6 +136,8 @@ export default function ResultView({
   result: LabResult | null;
   showMarkers: boolean;
   onToggleMarkers: () => void;
+  showIndicators: boolean;
+  onToggleIndicators: () => void;
   fullSpan: boolean;
   onToggleSpan: () => void;
   onSyncSymbol: () => void;
@@ -115,6 +156,11 @@ export default function ResultView({
         : [],
     [result],
   );
+  const hasIndicators = !!result
+    && (result.indicators.overlays.length > 0 || result.indicators.panes.length > 0);
+  // 每个指标副图约 70px：不抬高容器的话，4 个副图会把主图挤成一条缝
+  const paneCount = result && showIndicators ? paneGroups(result.indicators).length : 0;
+  const chartHeight = 460 + Math.min(paneCount, 6) * 70;
 
   return (
     <div className="lab-center">
@@ -129,8 +175,10 @@ export default function ResultView({
         <KLineChart
           bars={bars}
           trades={result?.trades ?? []}
-          height={460}
+          height={chartHeight}
           showMarkers={showMarkers}
+          indicators={result?.indicators}
+          showIndicators={showIndicators}
         />
         <div className="lab-hint">
           quantdb 日线 · {bars.length} 根 · {bars[0]?.date ?? '—'} ~{' '}
@@ -141,7 +189,13 @@ export default function ResultView({
           <button className="lab-span" onClick={onToggleMarkers}>
             {showMarkers ? '隐藏成交点' : '显示成交点'}
           </button>
+          {hasIndicators && (
+            <button className="lab-span" onClick={onToggleIndicators}>
+              {showIndicators ? '隐藏指标' : '显示指标'}
+            </button>
+          )}
         </div>
+        {hasIndicators && showIndicators && result && <IndicatorLegend result={result} />}
       </section>
 
       {result && (

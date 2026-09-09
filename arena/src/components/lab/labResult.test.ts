@@ -136,6 +136,32 @@ describe('fromTemplate', () => {
   });
 });
 
+describe('indicators 归一化', () => {
+  test('老报告没有 indicators → 空集，不是 undefined', () => {
+    const r = fromPineReport(PINE_REPORT);
+    expect(r.indicators).toEqual({ bars: 0, overlays: [], panes: [] });
+  });
+
+  test('后端给空对象 {} → 收敛成空集（空对象是 truthy，直接读 .overlays 会炸）', () => {
+    const r = fromPineReport({ ...PINE_REPORT, indicators: {} as never });
+    expect(r.indicators.overlays).toEqual([]);
+    expect(r.indicators.panes).toEqual([]);
+  });
+
+  test('有指标时原样带出', () => {
+    const set = {
+      bars: 3,
+      overlays: [
+        { key: 'k', group: 'g', label: 'EMA(20)', kind: 'line' as const, values: [1, 2, 3] },
+      ],
+      panes: [],
+    };
+    const r = fromPineReport({ ...PINE_REPORT, indicators: set });
+    expect(r.indicators.overlays[0].label).toBe('EMA(20)');
+    expect(r.indicators.bars).toBe(3);
+  });
+});
+
 describe('格式化', () => {
   test('空值一律给破折号', () => {
     expect(fmt(null)).toBe('—');

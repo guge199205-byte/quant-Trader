@@ -233,6 +233,39 @@
   color: #fff;
 }
 
+/* 指标图例：色块与 K 线上的线一一对应（副图按调用点分组，组间用竖线隔开） */
+.lab-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 4px 6px 5px;
+  border-top: 1px dashed #eee;
+  font-size: 10px;
+  font-family: 'Courier New', monospace;
+  color: #444;
+}
+
+.lab-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lab-legend-item i {
+  width: 10px;
+  height: 3px;
+  border-radius: 1px;
+}
+
+.lab-legend-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 10px;
+  border-left: 1px solid #ddd;
+}
+
 /* ---------- 右侧面板 ---------- */
 .lab-panel {
   display: flex;

@@ -179,6 +179,45 @@ type LabResult = {
 - **密集成交**：203 笔 = 406 个 marker，叠在 2595 根K线上会很糊。默认画，
   给一个「成交点」开关（`showMarkers`），并在缩放后只画可视区间内的标记。
 
+### 2.3 策略用到的指标也画在 K 线上
+
+光有买卖点看不出策略为什么进出场——策略真正算过的 EMA/MACD/RSI 必须同时画出来：
+与价格同量纲的叠加线进主图，振荡指标各自开副图。实现在
+`backend/services/lab_indicators.py`（捕获）+ `arena/src/components/lab/indicators.ts`（对齐/配色）。
+
+**为什么是运行时捕获，不是解析源码**：转写产物里**没有 `plot()`**（`pine_to_pyne.py`
+的 SYSTEM_PROMPT 明确禁止 plot/alert/table/label/line/box），内置模板也没有——静态解析
+无从下手。改在回测时给 `pynecore.lib.ta` 打桩，按「调用点」（`文件名@行号@字节码偏移`）
+记录每根 bar 的实参与返回值。
+
+- **必须行为透明**：打桩只包一层记录后原样返回。单测断言同一策略打桩前后
+  `stats` / `trades` 逐位相同（`tests/test_lab_indicators.py::TestRealBacktest`）。
+- **`@overload` 分派器是个坑**：`ta.highest/lowest/pivothigh/pivotlow` 等 6 个函数走
+  `__pyne_bind__`，而 `functools.wraps` 会把该方法复制到包装层上——于是锚点绑到了真分派器、
+  直接绕过记录（三个周期的 `highest` 还会互相污染）。修法：包装 `__pyne_bind__`，
+  让它返回「记录版」的绑定可调用对象。
+- **标签取实参，不取源码**：周期可能来自 `input()`（还会被界面覆盖）或嵌套函数参数，
+  源码里读不到。捕获到的实参中「每根 bar 都一样且为整数」的挑出来做后缀 →
+  `EMA(20)`、`MACD DIF(12,26,9)`。
+- **量纲闸**：`ta.sma(volume, 22)` 也是 `sma`，值 3e7，画进主图会把价格压成一条直线。
+  中位数偏离价格中位数超过 4 倍的一律降级到副图（`PRICE_RATIO_LO/HI`）。
+- **指标套指标跟输入走，不跟函数名走**：`ta.highest(rsi, 14)` 名字在叠加表里，值域却是
+  RSI 的 0-100（中位数 ~50 恰在价格的 ±4 倍护栏内，量纲闸拦不住）。pynecore 传给 `ta.*`
+  的是当前 bar 的浮点数（不是 Series 对象），所以只能按「谁的输出与本调用的源值逐 bar
+  逐位相同」认亲，链式一路走到根 → 与 RSI 同格。`ta.sma(stoch_rsi_k, 3)` 的源值被
+  pynecore 注入的状态对象（list）挡住，要取第一个数值实参。
+- **副图内按量级拆格**：同一条推导链共一格；格内量级差超过 4 倍再拆开——0541 一行三个
+  `ta.sma` 中位数 0.0036 / 0.031 / 2.14，挤在一格时小的两条被压成贴着 0 的直线。
+- **体积闸**：`MAX_OVERLAYS=24` / `MAX_PANES=24`。一条序列 ≈ 每根 K 线一个数，实测
+  183 份报告 p95 = 16、最长 32 条；旧值 8/6 曾把 4 份报告的线悄悄截掉（0975 的 RSI
+  区间高低点、成交量均线就这么消失过）。
+- **对齐**：指标是全历史跑的，K 线可能只取尾部 600 根 → `alignSeries` 尾部切片；
+  长度对不上（换了标的/周期）宁可整条不画，也不画一条错位的线。
+- **两条链路都走同一个捕获器**：模板在 API 进程内同步回测时直接捕获；Pine 产物在宿主
+  bwrap 沙箱回测时捕获，结果落 `report.json` 的 `indicators`——**容器侧永远不执行模型代码**。
+- **老报告补数据**：`pine_lab/.venv/bin/python scripts/pine_backfill_indicators.py
+  --missing-only --workers 8`（重跑沙箱回测，`validate()` 只在成功后写盘，失败保留原报告）。
+
 ---
 
 ## 3. 策略备注

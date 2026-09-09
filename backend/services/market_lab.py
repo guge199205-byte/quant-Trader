@@ -331,7 +331,8 @@ def _purge_script_module(script_path: Path) -> None:
 
 
 def _run_strategy_on_bars(strategy_id: str, bars: list[dict], symbol: str, adj: str,
-                          overrides: dict | None = None, want_trades: bool = True) -> dict:
+                          overrides: dict | None = None, want_trades: bool = True,
+                          want_indicators: bool = False) -> dict:
     """核心回测：K线已在手 → 跑一次 PyneCore，返回 {stats, trades, equity, meta}。
 
     与 run_backtest 分离是为了批量回测：同一标的的 K 线只从 quantdb 读一次，
@@ -344,26 +345,35 @@ def _run_strategy_on_bars(strategy_id: str, bars: list[dict], symbol: str, adj: 
     if not script.is_file():
         raise FileNotFoundError(f"策略文件缺失: {script}")
     return _run_script(script, strategy_id, spec["name"], bars, symbol, adj,
-                       overrides, want_trades)
+                       overrides, want_trades, want_indicators)
 
 
 def run_script_file(script: Path, symbol: str, adj: str = "backward", start: str = "",
-                    end: str = "", overrides: dict | None = None) -> dict:
+                    end: str = "", overrides: dict | None = None,
+                    want_indicators: bool = False) -> dict:
     """跑任意 Pyne 脚本文件（不进策略注册表）。AI 转写候选的验证走这条路。"""
     script = Path(script)
     if not script.is_file():
         raise FileNotFoundError(f"脚本文件缺失: {script}")
     bars = load_klines(symbol, adj=adj, limit=0, start=start, end=end)
     return _run_script(script, script.stem, script.stem, bars, symbol, adj,
-                       overrides, want_trades=True)
+                       overrides, want_trades=True, want_indicators=want_indicators)
+
+
+def _price_ref(bars: list[dict]) -> float | None:
+    """收盘价中位数：给指标分类判断「这条线是不是与价格同量纲」。"""
+    closes = sorted(b["close"] for b in bars if b.get("close"))
+    return closes[len(closes) // 2] if closes else None
 
 
 def _run_script(script: Path, strategy_id: str, name: str, bars: list[dict], symbol: str,
-                adj: str, overrides: dict | None, want_trades: bool) -> dict:
+                adj: str, overrides: dict | None, want_trades: bool,
+                want_indicators: bool = False) -> dict:
     _require_pyne()
     from pynecore.core.script_runner import ScriptRunner
 
     code = normalize_code(symbol)
+    indicators = None
     with tempfile.TemporaryDirectory(prefix="lab_bt_") as td:
         tdir = Path(td)
         strat_csv = tdir / "strat.csv"
@@ -380,8 +390,15 @@ def _run_script(script: Path, strategy_id: str, name: str, bars: list[dict], sym
                 plot_path=None, strat_path=strat_csv, trade_path=trade_csv,
                 inputs=overrides or None,
             )
-            for _ in runner.run_iter():
-                pass
+            if want_indicators:
+                from . import lab_indicators
+                with lab_indicators.capture(script) as hits:
+                    for _ in runner.run_iter():
+                        pass
+                indicators = lab_indicators.build(hits, len(bars), _price_ref(bars))
+            else:
+                for _ in runner.run_iter():
+                    pass
         stats = _parse_strat_csv(strat_csv)
         _fix_infinite_pf(stats)
         trades = _parse_trades_csv(trade_csv) if want_trades else []
@@ -393,6 +410,7 @@ def _run_script(script: Path, strategy_id: str, name: str, bars: list[dict], sym
         "stats": stats,
         "trades": trades,
         "equity": equity,
+        "indicators": indicators,
         "meta": {"strategy": strategy_id, "name": name, "symbol": code,
                  "name_cn": stock_name(symbol), "adj": adj,
                  "start": bars[0]["date"], "end": bars[-1]["date"], "bars": len(bars),
@@ -402,14 +420,15 @@ def _run_script(script: Path, strategy_id: str, name: str, bars: list[dict], sym
 
 def run_backtest(strategy_id: str, symbol: str, adj: str = "backward",
                  start: str = "", end: str = "", params: dict | None = None) -> dict:
-    """单策略 × 单标的回测。返回 {stats, trades, equity, meta}。"""
+    """单策略 × 单标的回测。返回 {stats, trades, equity, indicators, meta}。"""
     if strategy_id not in STRATEGIES:
         raise ValueError(f"未知策略: {strategy_id}")
     bars = load_klines(symbol, adj=adj, limit=0, start=start, end=end)
     if len(bars) < 60:
         raise ValueError(f"K线不足（{len(bars)} 根，至少 60 根）")
     overrides = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
-    return _run_strategy_on_bars(strategy_id, bars, symbol, adj, overrides)
+    return _run_strategy_on_bars(strategy_id, bars, symbol, adj, overrides,
+                                 want_indicators=True)
 
 
 def list_strategies() -> list[dict]:

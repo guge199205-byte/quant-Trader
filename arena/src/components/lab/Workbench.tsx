@@ -65,6 +65,8 @@ export default function Workbench({
           result={wb.result}
           showMarkers={wb.showMarkers}
           onToggleMarkers={wb.toggleMarkers}
+          showIndicators={wb.showIndicators}
+          onToggleIndicators={wb.toggleIndicators}
           fullSpan={wb.fullSpan}
           onToggleSpan={wb.toggleSpan}
           onSyncSymbol={wb.syncToResult}

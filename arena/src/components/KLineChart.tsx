@@ -2,6 +2,7 @@
  *
  *  - 蜡烛图 + 成交量副图；A股红涨绿跌口径
  *  - 回测成交点用 markers 标注（买↑ / 卖↓）
+ *  - 策略算过的指标：叠加线（EMA/布林带…）画在主图，振荡指标（MACD/RSI…）各自开副图
  *  - 容器尺寸变化自适应（ResizeObserver），卸载时销毁实例
  */
 import { useEffect, useRef } from 'react';
@@ -12,6 +13,7 @@ import {
   createSeriesMarkers,
   CrosshairMode,
   HistogramSeries,
+  LineSeries,
   type IChartApi,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
@@ -19,10 +21,14 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
-import type { BtTrade, Kline } from '../api/client';
-
-const UP = '#e2373b';    // A股：红涨
-const DOWN = '#1a9e5c';  // 绿跌
+import type { BtTrade, IndicatorSeries, IndicatorSet, Kline } from '../api/client';
+import {
+  DOWN_COLOR as DOWN,
+  paneGroups,
+  seriesColor,
+  toPoints,
+  UP_COLOR as UP,
+} from './lab/indicators';
 
 /** 'YYYY-MM-DD' → lightweight-charts 的 Time */
 const toTime = (d: string) => d as unknown as Time;
@@ -32,11 +38,16 @@ export default function KLineChart({
   trades = [],
   height = 420,
   showMarkers = true,
+  indicators,
+  showIndicators = true,
 }: {
   bars: Kline[];
   trades?: BtTrade[];
   height?: number;
   showMarkers?: boolean;
+  /** 策略回测时真正算过的指标（可能来自老报告，缺省即无） */
+  indicators?: IndicatorSet;
+  showIndicators?: boolean;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -167,7 +178,62 @@ export default function KLineChart({
       marksRef.current?.setMarkers([]);
     }
     chart.timeScale().fitContent();
-  }, [bars, trades, showMarkers]);
+  }, [bars, trades, showMarkers, height]);   // height 变化会重建图表（见建图 effect），数据得重灌
+
+  // 指标：叠加线挂主图（pane 0），振荡指标按调用点分组，每组一个副图（pane 1..N）
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const created: ISeriesApi<'Line' | 'Histogram'>[] = [];
+
+    const add = (s: IndicatorSeries, pane: number, color: string) => {
+      const pts = toPoints(bars, s.values);
+      if (!pts.length) return;      // 不同源/无数据：不画，也不留下空副图
+      if (s.kind === 'hist') {
+        const hist = chart.addSeries(
+          HistogramSeries,
+          { priceLineVisible: false, lastValueVisible: pane > 0 },
+          pane,
+        );
+        hist.setData(pts.map((p) => (p.value == null
+          ? { time: p.time }
+          : { time: p.time, value: p.value, color: p.value >= 0 ? UP : DOWN })));
+        created.push(hist);
+        return;
+      }
+      const line = chart.addSeries(
+        LineSeries,
+        {
+          color,
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: pane > 0,
+          crosshairMarkerVisible: false,
+        },
+        pane,
+      );
+      line.setData(pts);
+      created.push(line);
+    };
+
+    if (showIndicators && indicators) {
+      indicators.overlays.forEach((s, i) => add(s, 0, seriesColor(true, i)));
+      paneGroups(indicators).forEach((g, gi) => {
+        indicators.panes
+          .filter((s) => s.group === g)
+          .forEach((s, si) => add(s, gi + 1, seriesColor(false, si)));
+      });
+      // 主图占大头：主图 4 份，每个副图 1 份
+      chart.panes().forEach((p, i) => p.setStretchFactor(i === 0 ? 4 : 1));
+    }
+
+    return () => {
+      if (!chartRef.current) return;   // 建图 effect 已销毁图表（高度变化/卸载）
+      for (const s of created) chart.removeSeries(s);
+      // 序列移除后空副图可能残留，显式回收，只留主图
+      while (chart.panes().length > 1) chart.removePane(chart.panes().length - 1);
+    };
+  }, [bars, indicators, showIndicators]);
 
   return <div ref={boxRef} className="kline-box" style={{ height }} />;
 }

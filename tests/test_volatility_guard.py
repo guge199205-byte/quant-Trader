@@ -28,11 +28,19 @@ def setup_module(module):
     L.STATE_PATH = Path("/tmp/test_state_guard.json")
     L.build_rows = lambda broker, positions, names: [dict(r) for r in ROWS]
     L.MIN_ANALYSIS_INTERVAL_MIN = 0
+    # check_volatility 的新闻触发读真实 data/news_brief/latest.json（news_brief.BRIEF_FILE）。
+    # 2026-09-09 持仓情报复活后该文件真的有了 |impact|≥1 的行 → 坏 tick 用例被新闻信号
+    # 顶掉而失败。测试必须隔离外部数据，指向不存在的路径（→ brief={}）。
+    import news_brief
+    module._news_brief = news_brief
+    module._orig_brief = news_brief.BRIEF_FILE
+    news_brief.BRIEF_FILE = Path("/tmp/test_guard_brief_absent.json")
 
 
 def teardown_module(module):
     L.STATE_PATH = module._orig_state
     L.build_rows, L.quote_fallback = module._orig_rows, module._orig_qf
+    module._news_brief.BRIEF_FILE = module._orig_brief
     Path("/tmp/test_state_guard.json").unlink(missing_ok=True)
 
 

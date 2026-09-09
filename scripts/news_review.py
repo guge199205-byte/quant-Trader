@@ -92,9 +92,11 @@ def collect_rows(briefs: list[dict]) -> list[dict]:
     """各轮分子的逐票信号去重合并（同 code 同事件只留一条，保留最强 impact）。
 
     两个来源：
-    - holdings 逐票行（verdict 直接给出）——主编保真转写，但该段因"新闻没点名
-      持仓"常年为空（当日持仓股上不了快讯标题 → holdings 全天 0 条）
-    - micro 事件（sentiment -1..1 → 利好/利空）——**每日唯一稳定的个股级信号流**
+    - holdings 逐票行（verdict 直接给出）——主编保真转写。**2026-09-09 起复活**：
+      持仓情报段改走「板块→个股传导」（证据闸门 + 串行在 macro/micro 之后），
+      不再等新闻标题点名持仓（此前该段自 09-07 起零输出，holdings 全天 0 条）。
+      来源列「板块传导」= 推断，其它 = 新闻直接命中，复盘时可分开统计。
+    - micro 事件（sentiment -1..1 → 利好/利空）——每日稳定的个股级信号流
       （约 5 条/轮）
 
     2026-09-08 前只复盘 holdings → rows 恒空 → lessons.json 恒为 `{}`，

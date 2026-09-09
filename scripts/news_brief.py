@@ -207,6 +207,21 @@ def save_state(st: dict) -> None:
         pass
 
 
+def state_after_run(st: dict, stages, until_iso: str, **extra) -> dict:
+    """状态合并：**只有跑满五段才推进 last_end 游标**。
+
+    `--stage X` 单跑（手动调试/补段）此前也推进游标 → 这段新闻对后续正式轮
+    永久跳过。游标是「完整一轮的消费位」，单段跑不该动它。
+    """
+    out = {**st, **extra}
+    if tuple(stages) == ALL_STAGES:
+        out["last_end"] = until_iso
+    else:
+        print(f"ℹ️ 单段运行（{'/'.join(stages)}）不推进游标，last_end 保持 "
+              f"{_bj_fmt(_iso(st.get('last_end', '')), '%m-%d %H:%M') or '空'}")
+    return out
+
+
 def window_for(last_end: str, now_iso: str) -> tuple[str, str]:
     """增量窗口 (start,end)：从上次成功分析结束起（不重复历史），
     超 MAX_WINDOW_HOURS 自动截断（首跑/长假防爆量）。"""
@@ -320,13 +335,25 @@ def _system_for(stage: str) -> str:
                 "示例：T | 存储芯片 | 涨价+需求复苏 | 2 | 三星涨价\n"
                 "E | 688123.SH | 聚辰股份 | 涨停异动 | 0.8 | 板块带动")
     if stage == HOLD:
-        return ("你是『持仓情报』（重点岗，只分析不下单）：输入为命中实盘持仓/关注池的新闻。"
-                "逐条判断对股价影响。行式输出（每行一条，字段用 | 分隔，严禁其他文字）：\n"
+        return ("你是『持仓情报』（重点岗，只分析不下单）：输入 = 实盘持仓/关注池代码清单"
+                "+ 本轮板块/宏观结论 + 直接命中这些代码的新闻。你的活是**行业→个股传导**："
+                "从板块主题/宏观主线推出清单里哪些票受影响、方向与力度。"
+                "代码只许来自清单，禁止臆造；没有实质信号就不输出该票。"
+                "行式输出（每行一条，字段用 | 分隔，严禁其他文字）：\n"
                 "H | 代码 | 名称 | verdict(利好/利空/中性) | impact(-2..2) | "
-                "事件类型+一句话依据 | 来源（可多行）\n"
+                "事件类型：一句话传导链 | 来源（最多 12 行）\n"
                 "X | 代码 | 跨持仓联动风险（可多行）\n"
                 "A | 动作提示(观察/挂条件/警示)（可多行）\nC | confidence(0..1)\n"
-                "示例：H | 600309.SH | 万华化学 | 利好 | 1 | 涨价：MDI挂牌价上调 | 财联社\n"
+                "硬约束：\n"
+                "1) verdict 与 impact 必须一致——利好不得配 impact 0（矛盾行会被丢弃）；\n"
+                "2) 事件类型以枚举词开头：涨停/跌停/大涨异动/大跌异动/业绩/回购增持/"
+                "减持/解禁/并购重组/政策监管/中标订单/涨价/股东变动/问询处罚/其他；"
+                "冒号后写传导链一句话（如 涨价：MDI挂牌价上调→聚氨酯龙头成本传导）；\n"
+                "3) 来源列：板块/宏观传导推断一律写「板块传导」，直接命中新闻写原来源——"
+                "晚间复盘靠这一列区分「推断」与「新闻命中」；\n"
+                "4) 输入既无板块/宏观结论、也无直接命中新闻时，只输出 `C | 0`，不要编。\n"
+                "示例：H | 600309.SH | 万华化学 | 利好 | 1 | 涨价：MDI挂牌价上调→"
+                "聚氨酯龙头成本传导 | 板块传导\n"
                 "宁精勿滥：泛泛而谈标中性+impact0。只输出这些行。")
     return ("你是『新闻主编』：汇总本轮宏观/板块/持仓分析，产出面向交易的『新闻分子』。"
             "宏观已在输入给出不用重述；你负责：主题≤4、watch≤5（给代码+触发条件）、"
@@ -722,6 +749,44 @@ def _maybe_dict(v) -> dict:
     return v if isinstance(v, dict) else {}
 
 
+def _norm_code(code) -> str:
+    """代码归一（只用于比对）：去后缀/空格、大写，取前 6 位数字字母。
+    "600309.SH" / "600309.sh" / "600309" → "600309"；"9880.HK" → "9880"。"""
+    return re.sub(r"[^0-9A-Z]", "", str(code or "").upper())[:6]
+
+
+def _chief_holdings(rows, hold_seg) -> list:
+    """主编 H 行只保留「持仓情报段真出现过的票」，去重保序。
+
+    2026-09-09 实录：HOLD 段只给了 1 条 H 行，主编却输出 21 行——把关注池代码
+    全补成「中性/0 未命中」填充行，同一条万华化学还写了两遍。提示词里
+    「只转写输入出现的（≤8，不加新内容）」拦不住模型，这里用代码兜底：
+    **代码必须来自 HOLD 段**，否则 latest.json.holdings 会被填充行淹没，
+    「持仓情报有没有真情报」反而看不出来。
+
+    同时把 source/event_type 换成 HOLD 段的原值——主编转写时常把段名
+    「持仓情报」填进 source 列（实录），而晚间复盘靠这一列区分
+    「板块传导（推断）」与「财联社（新闻命中）」，不能丢。
+    """
+    hold_seg = hold_seg if isinstance(hold_seg, dict) else {}
+    by_code = {_norm_code(h.get("code")): h
+               for h in _list_of_dicts(hold_seg.get("per_stock"))}
+    by_code.pop("", None)
+    if not by_code:
+        return []          # HOLD 没跑/无输出 → 主编无「输入出现过的票」可转写
+    out, seen = [], set()
+    for r in _list_of_dicts(rows):
+        c = _norm_code(r.get("code"))
+        if not c or c not in by_code or c in seen:
+            continue
+        src = by_code[c]
+        out.append({**r,
+                    "source": src.get("source") or r.get("source"),
+                    "event_type": src.get("event_type") or r.get("event_type")})
+        seen.add(c)
+    return out
+
+
 def brief_to_text(b: dict) -> str:
     """『新闻分子』markdown（嵌入交易/市场研究提示词）。字段缺失/异形逐段容忍。"""
     m = _maybe_dict(b.get("macro"))
@@ -779,14 +844,54 @@ def _seg_compact(stage: str, d: dict | None) -> str:
             out.append(f"轮动 {d.get('rotation')}")
     elif stage == HOLD:
         for h in _list_of_dicts(d.get("per_stock"))[:10]:
+            horizon = (f" {h['horizon']}" if h.get("horizon") else "")
             out.append(f"持仓 {h.get('name')}({h.get('code')}) {h.get('verdict')} "
-                       f"impact{_fnum(h.get('impact')):+.0f} {h.get('horizon')} · "
+                       f"impact{_fnum(h.get('impact')):+.0f}{horizon} · "
                        f"{h.get('event_type')}：{str(h.get('headline'))[:44]}（{h.get('source')}）"
                        + (f" note={h.get('note')}" if h.get("note") else ""))
         for x in _list_of_dicts(d.get("cross_risks"))[:3]:
             out.append(f"  ⚠ 联动 {x.get('code')} {x.get('why')}")
     out.append(f"置信度 {_fnum(d.get('confidence')):.2f}")
     return "\n".join(out)
+
+
+HOLD_NO_OUTPUT = "本窗口无输出"     # _seg_compact 对缺席段的占位文案
+HOLD_DIRECT_MAX = 30                # 直接命中新闻最多喂 30 条（热点日可能几十条）
+
+
+def _hold_has_evidence(results: dict, h_art: list, watch_codes: dict) -> bool:
+    """持仓情报证据闸门：关注池非空 **且** 三路素材至少一路有实质内容。
+
+    没有素材时模型只能对着一串代码脑补传导链，H 行无法证伪 → 会污染
+    latest.json.holdings 与晚间经验库。这也是该段自 2026-09-07 起长期静默
+    之外必须补的防线（旧逻辑是「有命中新闻才跑」，等于永远不跑）。
+    """
+    if not watch_codes:
+        return False
+    if h_art:
+        return True
+    return any(HOLD_NO_OUTPUT not in _seg_compact(s, results.get(s))
+               for s in (MICRO, MACRO))
+
+
+def build_hold_user(watch_codes: dict, results: dict, h_art: list,
+                    lessons_block: str = "") -> str:
+    """持仓情报输入块：关注池 + 本轮板块/宏观结论 + 直接命中新闻（纯函数，可测）。
+
+    方案 A（2026-09-09）：不再等「新闻标题点名持仓」——关注池是 20 只小盘候选
+    + 实盘持仓，快讯标题几乎不点名 → h_art 恒空 → 该段自 09-07 起零输出。
+    改为让模型做「板块/主题 → 个股传导」。
+    """
+    parts = ["当前实盘持仓/关注池 + 本轮板块/宏观结论（请做行业→个股传导）",
+             _watch_line(watch_codes, "当前实盘持仓/关注池代码（含实盘持仓与候选池）")]
+    if lessons_block:
+        parts.append(lessons_block)
+    for stage in (MICRO, MACRO):
+        parts.append(_seg_compact(stage, results.get(stage)))
+    if h_art:
+        parts.append(f"直接命中关注代码的新闻（最多 {HOLD_DIRECT_MAX} 条）：\n"
+                     + _fmt_titles(h_art[:HOLD_DIRECT_MAX]))
+    return "\n".join(parts)
 
 
 def update_intraday_watch(micro: dict | None, watch_list: list | None,
@@ -868,14 +973,16 @@ def empty_window_markup(ts: str) -> str:
 
 # ---------- 关注代码（持仓 + 候选池） ----------
 
-def _watch_line(watch_codes: dict) -> str:
+def _watch_line(watch_codes: dict,
+                label: str = "关注代码（命中→holdings 方向）") -> str:
     """关注代码行 → 注入 gate/chief/holdings 提示词。带公司名：
-    次新股代码模型不认识，不给名它就瞎猜（浪费 token 且易截断）。"""
+    次新股代码模型不认识，不给名它就瞎猜（浪费 token 且易截断）。
+    label 供 holdings 段换成「持仓/关注池」口径（门卫看的是「命中→方向」）。"""
     if not watch_codes:
-        return "关注代码（命中→holdings 方向）：无"
+        return f"{label}：无"
     parts = [f"{c} {watch_codes[c]}" if watch_codes.get(c) else c
              for c in sorted(watch_codes)]
-    return "关注代码（命中→holdings 方向）：" + ",".join(parts)
+    return f"{label}：" + ",".join(parts)
 
 
 def merge_watch_codes(positions: list | None, pool: list | None,
@@ -970,7 +1077,7 @@ _MODE = {GATE: "gate", MACRO: "macro", MICRO: "micro", HOLD: "holdings", CHIEF: 
 # 输出预算受 120s 超时约束（≈4-6k token 上限）：批量段用行式协议压缩输出。
 # 2026-09-08 实录：v4-flash 思考+输出合计吃满预算即截断（GATE 批 100 全灭、
 # CHIEF 推演 9943 字未及写分子）→ 常规预算上调一档，截断后另有一次性放宽重试。
-_MAX_TOKENS = {GATE: 6000, MICRO: 5000, MACRO: 4000, HOLD: 4000, CHIEF: 8000}
+_MAX_TOKENS = {GATE: 6000, MICRO: 5000, MACRO: 4000, HOLD: 5000, CHIEF: 8000}
 TRUNC_RETRY_MAX_TOKENS = 10000
 
 # 单次运行统计（截断/重试/门卫兜底批数）→ state.last_run，供告警与排查
@@ -1112,7 +1219,7 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
           + (f" / 桶失败 {len(fails)}" if fails else ""))
 
     if not arts:
-        save_state({**st, "last_end": until_iso, "last_empty": now.isoformat()})
+        save_state(state_after_run(st, stages, until_iso, last_empty=now.isoformat()))
         msg = empty_window_markup(until_iso)
         print("⏭️ " + msg)
         if CHIEF in stages:
@@ -1171,7 +1278,9 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
         g_macro = [a for a in others if _GLOBAL_RE.search(str(a.get("title") or ""))]
         g_micro = [a for a in others if not _GLOBAL_RE.search(str(a.get("title") or ""))]
 
-    # 4) 大/小/持仓 并行（各段内分批；空子集短路；--stage 单跑时全量喂该段）
+    # 4) 大/小 并行（各段内分批；空子集短路；--stage 单跑时全量喂该段）
+    #    持仓情报（HOLD）**不在这个池子里**——它要吃 macro/micro 的结论做传导，
+    #    必须串行排在这两段之后（2026-09-09 方案 A）。
     gate_active = GATE in stages
     results: dict = {}
 
@@ -1179,8 +1288,6 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
         user = f"新闻输入（{AGENT_CN[stage]}）"
         if lessons_block:
             user += f"\n{lessons_block}"
-        if stage == HOLD:
-            user += "\n" + _watch_line(watch_codes).replace("关注代码", "当前实盘持仓/关注池代码")
         d, ok = _run_chunked(stage, arts_sub, user)
         results[stage] = _stage_result(d, ok)
 
@@ -1189,13 +1296,27 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
         tasks.append((MACRO, g_macro))
     if MICRO in stages and (g_micro or not gate_active):
         tasks.append((MICRO, g_micro))
-    if HOLD in stages and (h_art or not gate_active):
-        tasks.append((HOLD, h_art))
-    with ThreadPoolExecutor(max_workers=3) as ex:
+    with ThreadPoolExecutor(max_workers=2) as ex:
         for f in (ex.submit(_task, s, a) for s, a in tasks):
             f.result()
     for s, _a in tasks:
         results.setdefault(s, {"skipped": True})
+
+    # 4b) 持仓情报：串行在 macro/micro 之后，且必须有素材才跑
+    #     （--stage holdings 单跑时 macro/micro 缺席、gate_active=False：
+    #       显式单跑=操作员意图，放行，但此时没有素材 → 模型只会输出 C | 0）
+    if HOLD in stages:
+        if _hold_has_evidence(results, h_art, watch_codes) or not gate_active:
+            try:
+                hold_user = build_hold_user(watch_codes, results, h_art, lessons_block)
+                d, ok = _run_stage(HOLD, hold_user)
+                results[HOLD] = _stage_result(d, ok)
+            except Exception as exc:  # noqa: BLE001 持仓段失败不能掀翻整期主编产出
+                print(f"⚠️ [{AGENT_CN[HOLD]}] 异常：{str(exc)[:120]}")
+                results[HOLD] = _stage_result(None, False)
+        else:
+            print(f"⏭️ [{AGENT_CN[HOLD]}] 无素材（无关注代码 / 无板块宏观结论），跳过")
+            results.setdefault(HOLD, {"skipped": True})
 
     # 5) 主编汇总（含上一版分子连续性 + 各段原始 JSON）
     chief_ok: bool | None = None   # None=未跑（--stage 跳过），True/False=本期产出与否
@@ -1235,7 +1356,7 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
                 "themes": themes_dedup,
                 "watch_list": _list_of_dicts(d.get("watch_list")),
                 "open_risks": _list_of_dicts(d.get("open_risks")),
-                "holdings": _list_of_dicts(d.get("holdings")),  # 主编保真转写（≤8）
+                "holdings": _chief_holdings(d.get("holdings"), results.get(HOLD)),
                 "market_notes": d.get("market_notes") or "",
                 "confidence": conf,
                 "editor_note": d.get("editor_note") or "",
@@ -1248,8 +1369,10 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
             print(f"✓ 主编分子已落盘 → {BRIEF_FILE}（confidence={brief['confidence']:.2f}）")
             print(brief["text"])
 
-    new_st = {**st, "last_end": until_iso, "last_stages": list(stages),
-              "last_ok": now.isoformat(), "last_run": {**_RUN_STATS, "ts": now.isoformat()}}
+    new_st = state_after_run(
+        st, stages, until_iso,
+        last_stages=list(stages), last_ok=now.isoformat(),
+        last_run={**_RUN_STATS, "ts": now.isoformat(), "folder_failures": fails})
     if chief_ok:
         new_st["last_chief_ok"] = now.isoformat()
     elif chief_ok is False:

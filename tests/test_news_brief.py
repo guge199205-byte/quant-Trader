@@ -5,7 +5,10 @@ brief 渲染/字段、watch codes 合并。
 """
 import json
 import sys
+import types
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -616,6 +619,199 @@ def test_review_collect_rows_includes_micro_events():
     assert {r["code"] for r in rows} == {"000737.SZ", "000002.SZ"}
     assert {r["verdict"] for r in rows} == {"利好", "利空"}
     assert all(r["source"] == "micro" for r in rows)
+
+
+# ---------- 2026-09-09：持仓情报复活（证据闸门 + 板块→个股传导 + 单跑不推游标） ----------
+
+ARTS = [
+    {"title": "央行降准释放流动性", "source_name": "财联社",
+     "published_at": "2026-09-09T14:30:00+08:00",
+     "enrichment": {"event_tags": ["政策"]}},
+    {"title": "聚酯产业链景气回升", "source_name": "证券时报",
+     "published_at": "2026-09-09T14:20:00+08:00",
+     "enrichment": {"event_tags": ["涨价"]}},
+]
+SINCE = "2026-09-09T14:00:00+08:00"
+UNTIL = "2026-09-09T14:40:00+08:00"
+PRIOR_CURSOR = "2026-09-09T13:55:00+08:00"
+
+
+def _setup_pipeline(monkeypatch, tmp_path, *, segments_ok=True, watch=None):
+    """run_pipeline 全链路打桩：不碰真实 state/latest/对话日志，也不真调 LLM。
+
+    返回 (calls, saved)：calls = 各段调用顺序（证明 HOLD 串行在 macro/micro 之后），
+    saved = save_brief/save_state 捕获到的落盘内容。
+    """
+    calls, saved = [], {}
+
+    def fake_llm(user, system, stage="", max_tokens=None):
+        calls.append(stage)
+        if stage == N.GATE:
+            return "0 macro", None              # 黑名单式：第 0 条改向 macro，其余默认 micro
+        if stage == N.MACRO:
+            return ("V | 中性偏多，流动性宽松 | 0.3\nC | 0.6" if segments_ok else ""), None
+        if stage == N.MICRO:
+            return ("T | 聚酯 | 景气回升 | 2 | 油价回落\nC | 0.6"
+                    if segments_ok else ""), None
+        if stage == N.HOLD:
+            saved["hold_user"] = user
+            return ("H | 600309.SH | 万华化学 | 利好 | 1 | 涨价：MDI挂牌价上调→"
+                    "聚氨酯龙头成本传导 | 板块传导\nC | 0.5"), None
+        if stage == N.CHIEF:
+            return ("T | 化工景气 | 涨价传导\n"
+                    "H | 600309.SH | 万华化学 | 利好 | 1 | 短期 | 涨价 | "
+                    "MDI挂牌价上调 | 板块传导 | \n"
+                    "H | 001312.SZ | 福恩股份 | 中性 | 0 | 短期 | 未命中 | "
+                    "本窗口无直接催化 | 持仓情报 | 中性\n"       # 关注池填充行 → 应被丢弃
+                    "C | 0.6"), None
+        return "", None
+
+    monkeypatch.setattr(N, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(N, "BRIEF_FILE", tmp_path / "latest.json")
+    monkeypatch.setattr(N, "WATCH_FILE", tmp_path / "watch_codes.json")
+    monkeypatch.setattr(N, "INTRA_WATCH_FILE", tmp_path / "intraday_watch.json")
+    monkeypatch.setattr(N, "fetch_incr", lambda since, until: (list(ARTS), []))
+    monkeypatch.setattr(N, "load_lessons_text", lambda: "")
+    monkeypatch.setattr(N, "load_watch_codes",
+                        lambda: ({"600309.SH": "万华化学"} if watch is None else watch, []))
+    monkeypatch.setattr(N, "append_log",
+                        lambda *a, **k: N.ROOT / "logs" / "fake_chat.md")
+    monkeypatch.setattr(N, "save_brief", lambda b: saved.update(brief=b))
+    monkeypatch.setattr(N, "save_state", lambda st: saved.update(state=st))
+    monkeypatch.setattr(N, "update_intraday_watch", lambda m, w: {"items": {}})
+    monkeypatch.setattr(N, "call_llm", fake_llm)
+    fake_risk = types.ModuleType("risk_list")     # 函数内 import → 打桩 sys.modules
+    fake_risk.refresh = lambda: {"items": 0, "warns": 0}
+    monkeypatch.setitem(sys.modules, "risk_list", fake_risk)
+    (tmp_path / "state.json").write_text(
+        json.dumps({"last_end": PRIOR_CURSOR}), encoding="utf-8")
+    return calls, saved
+
+
+def test_build_hold_user_carries_transmission():
+    """输入块要带关注码+名称、板块/宏观结论；缺席段给占位；命中新闻要 cap。"""
+    results = {
+        N.MICRO: {"themes": [{"name": "聚酯", "logic": "景气回升", "strength": 2,
+                              "catalyst": "油价回落"}]},
+        N.MACRO: {"view": "中性偏多", "bias": 0.3},
+    }
+    txt = N.build_hold_user({"600309.SH": "万华化学"}, results, [])
+    assert "600309.SH 万华化学" in txt
+    assert "聚酯" in txt and "中性偏多" in txt
+
+    empty = N.build_hold_user({"600309.SH": "万华化学"}, {}, [])
+    assert empty.count(N.HOLD_NO_OUTPUT) == 2       # macro/micro 缺席 → 占位，不抛
+
+    hits = [{"title": f"新闻{i}", "source_name": "财联社", "enrichment": {}}
+            for i in range(40)]
+    capped = N.build_hold_user({"600309.SH": "万华化学"}, {}, hits)
+    assert "新闻0" in capped and "新闻29" in capped and "新闻30" not in capped
+
+
+def test_run_pipeline_runs_hold_without_hit_articles(monkeypatch, tmp_path):
+    """核心回归：标题一条都没点名关注池 → 持仓情报照样跑（板块→个股传导）。"""
+    calls, saved = _setup_pipeline(monkeypatch, tmp_path)
+
+    assert N.run_pipeline(since_iso=SINCE, window_until=UNTIL,
+                          stages=N.ALL_STAGES, force=True) == 0
+
+    assert N.HOLD in calls
+    assert calls.index(N.HOLD) > calls.index(N.MACRO)
+    assert calls.index(N.HOLD) > calls.index(N.MICRO)   # 串行在 macro/micro 之后
+    assert "600309.SH" in saved["hold_user"] and "万华化学" in saved["hold_user"]
+    assert "聚酯" in saved["hold_user"]                 # 板块结论进了输入
+    # 主编保真转写 → latest.json.holdings 有内容（此前恒为 []）；
+    # 主编给关注池补的中性填充行（001312.SZ）必须被丢弃
+    assert [h["code"] for h in saved["brief"]["holdings"]] == ["600309.SH"]
+    assert saved["brief"]["segments"][N.HOLD].get("skipped") is not True
+    # 全量跑 → 游标推进
+    assert saved["state"]["last_end"] == UNTIL
+
+
+def test_chief_holdings_drops_filler_and_dupes():
+    """2026-09-09 实录：HOLD 给 1 行、主编吐 21 行（关注池填充 + 重复）→ 只留 1 行。
+
+    主编把段名「持仓情报」填进 source 列 → 换回 HOLD 段的原值，
+    否则晚间复盘的 by_source 分桶会把「板块传导/财联社」全并成一个桶。
+    """
+    hold = {"per_stock": [{"code": "600309.SH", "name": "万华化学", "verdict": "利空",
+                           "impact": -1, "event_type": "其他", "source": "板块传导"}]}
+    rows = [{"code": "600309.SH", "name": "万华化学", "verdict": "利空", "impact": -1,
+             "event_type": "其他", "source": "持仓情报", "headline": "油价上行"},
+            {"code": "001312.SZ", "name": "福恩股份", "verdict": "中性", "impact": 0,
+             "event_type": "未命中", "source": "持仓情报"},
+            {"code": "600309.SH", "name": "万华化学", "verdict": "利空", "impact": -1,
+             "event_type": "其他", "source": "持仓情报"}]
+
+    kept = N._chief_holdings(rows, hold)
+
+    assert [r["code"] for r in kept] == ["600309.SH"]
+    assert kept[0]["source"] == "板块传导"
+    assert kept[0]["event_type"] == "其他"
+
+
+def test_chief_holdings_empty_without_hold_segment():
+    """HOLD 没跑/无输出 → 主编无「输入出现过的票」可转写，不得凭空留行。"""
+    rows = [{"code": "600309.SH", "verdict": "利好", "impact": 1}]
+
+    assert N._chief_holdings(rows, None) == []
+    assert N._chief_holdings(rows, {"skipped": True}) == []
+    assert N._chief_holdings(rows, {"per_stock": []}) == []
+
+
+def test_chief_holdings_normalizes_code_suffix_case():
+    hold = {"per_stock": [{"code": "9880.HK", "source": "财联社"}]}
+    rows = [{"code": "9880.hk", "name": "优必选"}]
+
+    kept = N._chief_holdings(rows, hold)
+
+    assert [r["code"] for r in kept] == ["9880.hk"]
+    assert kept[0]["source"] == "财联社"
+
+
+def test_run_pipeline_skips_hold_when_no_evidence(monkeypatch, tmp_path):
+    """macro/micro 全空且无命中新闻 → 不跑持仓（防对着一串代码脑补传导链）。"""
+    calls, saved = _setup_pipeline(monkeypatch, tmp_path, segments_ok=False)
+
+    assert N.run_pipeline(since_iso=SINCE, window_until=UNTIL,
+                          stages=N.ALL_STAGES, force=True) == 0
+
+    assert N.HOLD not in calls
+    assert saved["brief"]["segments"][N.HOLD] == {"skipped": True}
+
+
+def test_run_pipeline_skips_hold_when_no_watch_codes(monkeypatch, tmp_path):
+    calls, saved = _setup_pipeline(monkeypatch, tmp_path, watch={})
+
+    assert N.run_pipeline(since_iso=SINCE, window_until=UNTIL,
+                          stages=N.ALL_STAGES, force=True) == 0
+
+    assert N.HOLD not in calls
+    assert saved["brief"]["segments"][N.HOLD] == {"skipped": True}
+
+
+def test_stage_single_run_keeps_cursor(monkeypatch, tmp_path):
+    """--stage 单跑（手动调试/补段）不得推进 last_end，否则这段新闻被永久跳过。"""
+    calls, saved = _setup_pipeline(monkeypatch, tmp_path)
+
+    assert N.run_pipeline(since_iso=SINCE, window_until=UNTIL,
+                          stages=(N.HOLD,), force=True) == 0
+
+    assert calls == [N.HOLD]                    # 单跑只调该段
+    assert saved["state"]["last_end"] == PRIOR_CURSOR
+    assert "brief" not in saved                 # 单跑不经主编 → 不写 latest.json
+
+
+def test_hold_pipe_row_parses_event_type_and_source():
+    """7 列协议不变：事件类型取冒号前枚举词，headline 取冒号后传导链，来源区分推断/命中。"""
+    d = N.parse_pipe_lines(
+        "H | 600309.SH | 万华化学 | 利好 | 1 | 涨价：MDI挂牌价上调→聚氨酯龙头成本传导 | 板块传导",
+        "holdings")
+    h = d["per_stock"][0]
+    assert h["event_type"] == "涨价"
+    assert h["headline"] == "MDI挂牌价上调→聚氨酯龙头成本传导"
+    assert h["source"] == "板块传导"
+    assert h["verdict"] == "利好" and h["impact"] == 1
 
 
 def test_review_collect_rows_tolerates_skipped_and_garbage_micro():

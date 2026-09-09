@@ -260,7 +260,8 @@ fi
 
 # 2c. 因子库新鲜度：alpha_library 分区滞后日K ≥5 自然日 → 提醒重跑
 #     （alpha_library_factors.py 已进夜间 cron：scripts/alpha_library_refresh.sh，
-#      北京 01:30 增量刷新；仍滞后说明 cron 没跑成/内存闸门连续跳过，查 cron_run.log）
+#      北京 01:30 全量刷新（实测 ~80 分钟/峰值 RSS ~24GB，内存<30GB 或分区不可写
+#      自动跳过）；仍滞后说明 cron 没跑成/闸门连续跳过，查 alpha_library/cron_run.log）
 if [ $((NOW % 1800)) -lt 300 ]; then   # ~每 30 分钟检查一次，防刷屏
     KL_DT=$(ls /home/zbox/projects/quantmind/data/quantdb/1_kline_data/daily_backward 2>/dev/null \
         | grep -oE '[0-9]{8}' | sort | tail -1)

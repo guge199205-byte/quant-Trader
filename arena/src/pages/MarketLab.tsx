@@ -1,33 +1,31 @@
-/** 行情回测：quantdb 日线看盘 / 单标的回测 / 批量回测（策略排行 + 单策略选股）/ Pine 策略库。
+/** 行情回测：工作台（策略库 + 单标的回测同屏）/ 策略排行 / 单策略选股。
  *
  * 数据：quantdb（容器 /data/quantdb 只读挂载），全市场日线，三种复权口径。
- * 回测：PyneCore 运行时 + backend/services/lab_strategies/*.py 六个模板。
+ * 回测：PyneCore 运行时 + backend/services/lab_strategies/*.py 六个模板，
+ *       以及 Pine 策略库经宿主 worker 转写后在 bwrap 沙箱里的回测产物。
  * 批量结果：scripts/lab_batch_backtest.py 跑出的 data/lab_batch/*.json（页面只读）。
- * 策略库：桌面 TradingView 语料索引 data/pine_library/index.json（scripts/pine_library_index.py）。
  */
 import { useState } from 'react';
 import BatchPanel, { type LabView } from '../components/lab/BatchPanel';
-import SingleBacktest from '../components/lab/SingleBacktest';
-import StrategyLibrary from '../components/lab/StrategyLibrary';
+import Workbench from '../components/lab/Workbench';
 import './MarketLab.css';
 
-type Tab = 'single' | LabView | 'library';
+type Tab = 'workbench' | LabView;
 
 const TABS: { id: Tab; label: string; hint: string }[] = [
-  { id: 'single', label: '单标的回测', hint: 'K线 + 逐笔 + 净值' },
+  { id: 'workbench', label: '工作台', hint: '策略库 + 单标的回测同屏，K线标买卖点' },
   { id: 'rank', label: '策略排行', hint: '一个池子，哪个策略最强' },
   { id: 'screener', label: '单策略选股', hint: '一个策略，该买哪几只' },
-  { id: 'library', label: '策略库', hint: '桌面 TradingView 语料，按分类浏览/编辑' },
 ];
 
 export default function MarketLab() {
-  const [tab, setTab] = useState<Tab>('single');
+  const [tab, setTab] = useState<Tab>('workbench');
   const [symbol, setSymbol] = useState('600309.SH');
 
-  // 选股页点一行 → 跳到单标的回测看这只票
+  // 选股页点一行 → 跳到工作台看这只票
   const pickSymbol = (code: string) => {
     setSymbol(code);
-    setTab('single');
+    setTab('workbench');
   };
 
   return (
@@ -48,13 +46,11 @@ export default function MarketLab() {
         </nav>
       </header>
 
-      {tab === 'single' ? (
-        <SingleBacktest symbol={symbol} onSymbol={setSymbol} />
-      ) : tab === 'library' ? (
-        <StrategyLibrary />
-      ) : (
-        <BatchPanel view={tab} onPickSymbol={pickSymbol} />
-      )}
+      {/* 工作台常挂载、切 tab 只隐藏：否则每次切回都要重拉 1001 条策略库 */}
+      <div className={tab === 'workbench' ? '' : 'lab-hidden'}>
+        <Workbench symbol={symbol} onSymbol={setSymbol} />
+      </div>
+      {tab !== 'workbench' && <BatchPanel view={tab} onPickSymbol={pickSymbol} />}
     </div>
   );
 }

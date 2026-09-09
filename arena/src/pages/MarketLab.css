@@ -957,3 +957,339 @@
     height: 360px;
   }
 }
+
+/* ---------- 工作台：三栏（策略 / K线结果 / 运行与备注） ---------- */
+
+.lab-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 0 0 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid #e6e6e6;
+}
+
+.lab-wb {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: start;
+}
+
+.lab-hidden {
+  display: none;
+}
+
+/* 左栏 */
+.lab-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: calc(100vh - 210px);
+  min-height: 520px;
+  border: 2px solid #000;
+  background: #fff;
+  padding: 8px;
+}
+
+.lab-rail-sec {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.lab-rail-grow {
+  flex: 1 1 auto;
+}
+
+.lab-rail-sec + .lab-rail-sec {
+  padding-top: 10px;
+  border-top: 1px solid #000;
+}
+
+.lab-rail-title {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-bottom: 1px solid #000;
+}
+
+.lab-rail-count {
+  margin-left: auto;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: #999;
+}
+
+.lab-rail-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.lab-rail-filter select,
+.lab-rail-filter input {
+  width: 100%;
+  padding: 5px 7px;
+  font-size: 11px;
+  font-family: inherit;
+  border: 1.5px solid #000;
+  background: #fff;
+  color: #000;
+  outline: none;
+}
+
+.lab-tpl-list,
+.lab-pine-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.lab-tpl-list li {
+  padding: 6px 7px;
+  border: 1px solid transparent;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: pointer;
+}
+
+.lab-tpl-list li:hover {
+  background: #fafafa;
+}
+
+.lab-tpl-list li.on {
+  background: #000;
+  color: #fff;
+}
+
+.lab-tpl-list .n {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.lab-tpl-list .d {
+  display: block;
+  margin-top: 2px;
+  font-size: 9px;
+  line-height: 1.5;
+  color: #777;
+}
+
+.lab-tpl-list li.on .d {
+  color: #ccc;
+}
+
+.lab-pine-list {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.lab-pine-list li {
+  padding: 5px 7px;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: pointer;
+}
+
+.lab-pine-list li:hover {
+  background: #fafafa;
+}
+
+.lab-pine-list li.on {
+  background: #000;
+  color: #fff;
+}
+
+.lab-pine-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.lab-pine-row .i {
+  font-size: 9px;
+  font-family: 'Courier New', monospace;
+  color: #bbb;
+}
+
+.lab-pine-row .n {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lab-pine-row .b {
+  display: flex;
+  gap: 3px;
+  flex: 0 0 auto;
+}
+
+.lab-pine-row em {
+  padding: 0 3px;
+  font-size: 8px;
+  font-style: normal;
+  font-family: 'Courier New', monospace;
+  border: 1px solid #1a9e5c;
+  color: #1a9e5c;
+}
+
+.lab-pine-row em.edited {
+  border-color: #a9701a;
+  color: #a9701a;
+}
+
+.lab-pine-row em.rep {
+  border-color: #555;
+  color: #555;
+}
+
+.lab-pine-list li.on .lab-pine-row em {
+  border-color: #ccc;
+  color: #ccc;
+}
+
+.lab-pine-sub {
+  margin-top: 2px;
+  font-size: 9px;
+  font-family: 'Courier New', monospace;
+  color: #999;
+}
+
+.lab-pine-sub .dot {
+  margin: 0 5px 0 7px;
+}
+
+/* 中栏 */
+.lab-center {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.lab-center .lab-table-wrap {
+  max-height: 360px;
+}
+
+.lab-tag-src {
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  border: 1px solid #ccc;
+  color: #666;
+}
+
+.lab-warn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+  border: 1.5px solid #e8a33d;
+  border-left-width: 5px;
+  background: #fff9f0;
+  color: #a9701a;
+}
+
+.lab-warn button {
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  border: 1.5px solid #a9701a;
+  background: #fff;
+  color: #a9701a;
+  cursor: pointer;
+}
+
+.lab-warn button:hover {
+  background: #a9701a;
+  color: #fff;
+}
+
+/* 右栏：备注 / 对话 */
+.lab-subtabs {
+  display: flex;
+  margin-bottom: 9px;
+  border-bottom: 1px solid #000;
+}
+
+.lab-subtabs button {
+  padding: 4px 12px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  border: 1.5px solid #000;
+  border-bottom: none;
+  background: #fff;
+  color: #000;
+  cursor: pointer;
+}
+
+.lab-subtabs button.on {
+  background: #000;
+  color: #fff;
+}
+
+.lab-soon {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-family: 'Courier New', monospace;
+  border: 1px dashed #bbb;
+  color: #999;
+}
+
+.lab-src {
+  margin-top: 10px;
+}
+
+.lab-src summary {
+  padding: 5px 0;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  border-bottom: 1px solid #000;
+}
+
+.lab-src .lab-lib-editor {
+  height: 320px;
+  margin-top: 8px;
+}
+
+@media (max-width: 1280px) {
+  .lab-wb {
+    grid-template-columns: 260px minmax(0, 1fr) 280px;
+  }
+}
+
+@media (max-width: 1080px) {
+  .lab-wb {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lab-rail {
+    max-height: 460px;
+  }
+}

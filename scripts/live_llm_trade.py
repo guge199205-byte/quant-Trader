@@ -31,6 +31,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -70,6 +71,12 @@ PICKS_JSON = ROOT / ".." / "projects" / "quantmind" / "data" / "reports" / "stoc
 PER_STOCK_PCT = 0.2   # 单票买入 ≤ 剩余额度 20%
 MAX_NEW_BUYS = 3      # 新开仓上限：单轮 + 当日累计（风险预算 max_new_buys 覆盖）
 SELL_LIMIT_DOWN = -9.9  # 跌停不接
+
+# 单实例锁 + 当日执行状态（09:35 主入口与 10:05/11:05 补跑共用）
+LOCK_FILE = ROOT / "logs" / "live_llm_trade.lock"
+STATE_FILE = ROOT / "logs" / "live_llm_trade_state.json"
+ACCT_QUERY_ATTEMPTS = 3       # 桥账户查询重试次数（断线/假活）
+ACCT_QUERY_SLEEP_SEC = 60     # 重试间隔
 
 
 def _apply_risk_budget() -> None:
@@ -294,33 +301,156 @@ def sell_one(broker, code: str, volume: int, limit: float, agent: str | None) ->
     return result
 
 
+# ---------- 单实例锁 / 当日状态 / 断线重试 ----------
+
+_LOCK_FH: list = []
+
+
+def _acquire_lock() -> bool:
+    """单实例锁：09:35 主入口与 10:05/11:05 补跑不得并发（并发 = 重复下单）。
+
+    没有锁就无法区分「另一班正在跑」与「上一班中途崩了」——补跑判据依赖这个区分。
+    """
+    import fcntl
+
+    try:
+        fh = open(LOCK_FILE, "a+")
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    _LOCK_FH.append(fh)  # 保持引用防 GC 释放锁
+    return True
+
+
+def _read_state() -> dict:
+    try:
+        d = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def _write_state(day: str, **kw) -> None:
+    """当日执行状态原子落盘（仅 --execute 路径调用；dry-run 不写，免得卡住当天补跑）。
+
+    字段：day / started_ts / orders_attempted / ok / note。
+    orders_attempted 一旦为真不会被后续合并写抹掉（除新一轮启动显式重置）。
+    """
+    cur = _read_state()
+    cur.update({"day": day, **kw})
+    tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(cur, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(STATE_FILE)
+    except OSError as exc:  # 状态写不进去不该掀翻调仓
+        print(f"  ⚠️ 执行状态写入失败: {exc}")
+
+
+def _query_account_with_retry(attempts: int = ACCT_QUERY_ATTEMPTS,
+                              sleep: float = ACCT_QUERY_SLEEP_SEC):
+    """桥账户查询 + 断线重试 → (broker, acct)。全败抛 BrokerError。
+
+    每轮**新建** broker：桥址自动发现（tdx_bridge._post → bridge_discovery）每实例
+    只做一次，复用实例等于放弃第 2/3 次发现机会。判据 = 抛异常 **或** 资产<=0
+    （桥假活返回空资产不抛异常，2026-09-04 实录）。
+    """
+    from agent_tools.brokers.base import BrokerError
+
+    last = "未知"
+    for i in range(1, attempts + 1):
+        broker = TdxBridgeBroker()
+        try:
+            acct = broker._account_query()
+            asset = float((acct.get("asset") or {}).get("asset") or 0)
+            if asset > 0:
+                return broker, acct
+            last = f"桥返回资产 {asset:,.0f}（断线/假活）"
+        except Exception as exc:  # noqa: BLE001
+            last = str(exc)
+        print(f"  ⚠️ 桥账户查询第 {i}/{attempts} 次失败：{last}")
+        if i < attempts:
+            time.sleep(sleep)
+    raise BrokerError(f"桥账户查询重试 {attempts} 次仍失败：{last}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="模型自主调仓（候选池 + 持仓 → LLM 决策 → 桥执行）")
     ap.add_argument("--execute", action="store_true", help="真下单（默认仅 dry-run 决策演练）")
     ap.add_argument("--agents", default="", help="只跑指定 agent（逗号分隔；默认全部 enabled）")
     ap.add_argument("--top", type=int, default=20, help="候选池上限（默认 20）")
+    ap.add_argument("--catch-up", action="store_true",
+                    help="当日补跑：今天没成功且一单都没动过才执行（须配合 --execute）")
     args = ap.parse_args()
 
     # 交易日历闸门：法定节假日休市不分析（cron 1-5 覆盖不到法定假日）
     from trading_cal import is_trading_day, why_not
 
-    if not is_trading_day(now_cn().date()):
-        print(f"⏭️ {now_cn():%F %T} 非交易日（{why_not(now_cn().date())}），跳过模型自主调仓")
+    today = now_cn().date()
+    if not is_trading_day(today):
+        print(f"⏭️ {now_cn():%F %T} 非交易日（{why_not(today)}），跳过模型自主调仓")
         return 0
+
+    if args.catch_up:
+        if not args.execute:
+            print("⏭️ --catch-up 必须配合 --execute，跳过")
+            return 0
+        from live_hourly_analysis import in_trading_window
+
+        if not in_trading_window(now_cn()):
+            print(f"⏭️ {now_cn():%F %T} 不在 A股交易时段，不补跑")
+            return 0
+
+    if not _acquire_lock():
+        print(f"⏭️ {now_cn():%F %T} 已有另一班在跑（{LOCK_FILE.name}），跳过本轮")
+        return 0
+
+    if args.catch_up:
+        st = _read_state()
+        st = st if st.get("day") == today.isoformat() else {}
+        if st.get("ok") is True:
+            print(f"⏭️ 当日调仓已成功完成（{st.get('note') or 'ok'}），无需补跑")
+            return 0
+        if st.get("orders_attempted"):
+            print("⏭️ 当日已下过单（orders_attempted），补跑可能重复下单 → 跳过，请人工确认")
+            return 0
 
     mode = "🔴 实盘执行" if args.execute else "🟡 DRY-RUN 决策演练（不下单）"
     print(f"{mode}  {now_cn():%F %T}")
     if not args.execute:
         print("ℹ️  LLM 决策会真实调用（看模型判断质量），仅不下单")
 
-    broker = TdxBridgeBroker()
-    acct = broker._account_query()
+    try:
+        return _run(args)
+    except Exception:  # noqa: BLE001 未预料异常也要落状态、留全栈（2026-09-09 裸崩无痕）
+        print("❌ 调仓执行异常中断：")
+        traceback.print_exc()
+        if args.execute:
+            _write_state(today.isoformat(), ok=False,
+                         note=f"crashed: {sys.exc_info()[1]}")
+        return 1
+
+
+def _run(args) -> int:
+    from agent_tools.brokers.base import BrokerError
+
+    day = now_cn().date().isoformat()
+
+    def mark(**kw) -> None:
+        """当日执行状态（仅 --execute 落盘，dry-run 不写）。"""
+        if args.execute:
+            _write_state(day, **kw)
+
+    mark(started_ts=now_cn().isoformat(), orders_attempted=False, ok=None, note="")
+
+    try:
+        broker, acct = _query_account_with_retry()
+    except BrokerError as exc:
+        # 2026-09-07/09-09 实录：09:25-10:26 桥断线 → 裸崩退出，全天 0 笔交易且零告警
+        print(f"❌ 桥账户查询重试 {ACCT_QUERY_ATTEMPTS} 次仍失败：{exc}")
+        mark(ok=False, note="bridge_account_query")
+        return 1
     asset = float((acct.get("asset") or {}).get("asset") or 0)
     cash = float((acct.get("asset") or {}).get("cash") or 0)
-    if asset <= 0:
-        # 桥断线/假活护栏：空数据喂给 LLM 只会产出空决策（2026-09-04 09:35 白烧 3 轮）
-        print(f"⏭️ 桥返回资产 {asset}（断线/无效），跳过本轮调仓，不调 LLM")
-        return 0
     positions = [p for p in (acct.get("positions") or [])
                  if float(p.get("total_volume") or 0) > 0]
     holdings = holding_rows(broker, positions)
@@ -329,6 +459,7 @@ def main() -> int:
     pool, direction = load_pool(args.top)
     if not pool:
         print("❌ 无候选池（picks.json 缺失或为空），终止")
+        mark(ok=False, note="no_pool")
         return 1
     pool_table = pool_rows(pool)
     print(f"📋 候选池 {len(pool)} 只  大盘: {direction.get('direction', '—')}")
@@ -338,6 +469,7 @@ def main() -> int:
     agents = [a.strip() for a in args.agents.split(",") if a.strip()] or enabled_agents()
     ledger = load_ledger()
     ok = 0
+    partial_notes: list[str] = []   # 局部失败（不影响整体收尾判定）
     for agent in agents:
         # 账本 positions 是 {code: {volume, cost_price, ...}} 字典（live_ledger 内部结构）
         mine = set((ledger.get("agents") or {}).get(agent, {}).get("positions", {}))
@@ -440,6 +572,9 @@ def main() -> int:
         if not args.execute:
             ok += 1
             continue
+        if sells or buys:
+            # 真正要动单了：此后崩溃一律不许补跑（补跑会重复下单）
+            mark(orders_attempted=True)
 
         # 执行：先卖后买（先补记在途成交，再下新单）
         try:
@@ -505,9 +640,22 @@ def main() -> int:
                 log_line({"ts": now_cn().isoformat(), "mode": "execute", "agent": agent,
                           "code": code, "volume": vol, "error": str(exc)})
             time.sleep(1)  # 桥限流
-        # 卖出回款后账户现金可能变化，重新查一次
-        acct2 = broker._account_query()
-        cash = float((acct2.get("asset") or {}).get("cash") or 0)
+        # 卖出回款后账户现金可能变化，重新查一次（只在真要买入时才查）。
+        # 此处已在卖出**之后**：查询重试全败**不能**落 ok:false——那会诱导补跑重复卖出。
+        # 正确语义 = 跳过该 agent 的买入段、继续其他 agent，收尾记 ok:true + note。
+        cash_ok = True
+        if buys:
+            try:
+                broker, acct2 = _query_account_with_retry()
+                cash = float((acct2.get("asset") or {}).get("cash") or 0)
+            except BrokerError as exc:
+                cash_ok = False
+                print(f"  ⚠️ [{agent}] 卖出后账户复查失败（{exc}）→ 跳过本 agent 买入段"
+                      f"（卖出已成交，不回滚、不重复）")
+                partial_notes.append(f"{agent}:acct2_failed")
+        if not cash_ok:
+            ok += 1
+            continue
         ledger = load_ledger()
         for code, pct, _ in buys:
             remaining = agent_remaining(ledger, agent)
@@ -581,6 +729,8 @@ def main() -> int:
 
     print(f"\n{'✅ 调仓执行完成' if args.execute else '🟡 决策演练完成（--execute 才下单）'}"
           f"：{ok}/{len(agents)} agent 成功")
+    if args.execute:
+        mark(ok=True, note="; ".join(partial_notes))
     return 0
 
 

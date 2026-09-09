@@ -207,19 +207,30 @@ def _fresh_price(rec, now, max_age_min: int) -> tuple[float | None, float | None
     return price, age, False
 
 
+def budget_filter_note(pct: float) -> str:
+    """候选池已按资金量裁剪的提示词说明（09:35 主入口与整点轮共用同一句，防口径漂移）。"""
+    return (f"候选池已按你的资金量剔除买不起的标的（单票预算 = 剩余额度×{pct:.0%}；"
+            "最小一手 100 股、科创板 200 股都超预算的票不会出现在表里），"
+            "表里没有的代码不要报买入。")
+
+
 def filter_affordable(pool: list, budget: float, max_age_min: int = 45,
                       path: Path | None = None, now=None) -> tuple[list, list]:
     """按该 agent 的单票预算裁候选池：买不起的整行**不推给模型**。
 
     budget = 单票预算（剩余额度 × 单票比例，且不超虚拟现金），由调用方按 agent 算。
-    判据 = 最小可买股数（科创板 200，其余 100）× 现价 > budget × 1.02 容差
-    （与 compute_order 同口径，见 ashare_rules.MIN_LOT_SLACK）。
+    判据与 compute_order **同构**（不是"最小一手 ≤ 预算"的近似）：先按预算取整到
+    可申报量（主板/创业板 100 股整数倍、科创板/北交所抬到起报量），再判
+    raw_vol ≤ 0 或 raw_vol×价 > 预算×1.02（限价买按现价+1% 报，见 MIN_LOT_SLACK）。
+    近似写法会在主板留出 2% 的漂移窗口（价 ∈ (预算/100, 预算×1.02/100]：提示词保留、
+    下单 raw_vol 归零被拒）——2026-09-09 code review 实录，故改为同构。
 
     取不到实时价 / 行情过期的标的**保留**（fail-open）：没价不等于买不起，
     下单前 compute_order 还会按最小申报量再拦一次；这里宁可少筛，不可误删。
     返回 (保留的候选, 剔除的 [(code, name, 最小可买金额, 最小可买股数)])。
     """
-    from ashare_rules import MIN_LOT_SLACK, min_buy_cost, min_buy_qty
+    from ashare_rules import (MIN_LOT_SLACK, min_buy_cost, min_buy_qty,
+                              round_buy_qty)
 
     src = path or (ROOT / "data" / "l2_factors_live.json")
     try:
@@ -229,6 +240,7 @@ def filter_affordable(pool: list, budget: float, max_age_min: int = 45,
     if not isinstance(factors, dict):
         return list(pool or []), []
     now = now or datetime.now().astimezone()
+    budget = float(budget or 0)
     kept, dropped = [], []
     for p in pool or []:
         code = str(p.get("code") or "").strip()
@@ -236,9 +248,10 @@ def filter_affordable(pool: list, budget: float, max_age_min: int = 45,
         if price is None:
             kept.append(p)          # 没价/过期 → 无法判资金，放行给下单闸门兜
             continue
-        need = min_buy_cost(code, price)
-        if need > float(budget or 0) * MIN_LOT_SLACK:
-            dropped.append((code, str(p.get("name") or ""), need, min_buy_qty(code)))
+        raw_vol = round_buy_qty(code, int(budget / price)) if budget > 0 else 0
+        if raw_vol <= 0 or raw_vol * price > budget * MIN_LOT_SLACK:
+            dropped.append((code, str(p.get("name") or ""), min_buy_cost(code, price),
+                            min_buy_qty(code)))
             continue
         kept.append(p)
     return kept, dropped

@@ -204,6 +204,8 @@ DECISION_SCHEMA = (
 def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
                  direction: dict, quota_remaining: float,
                  pool: list | None = None) -> str:
+    from live_prompt_context import budget_filter_note
+
     lines = [
         f"现在是北京时间 {now_cn():%F %T}（开盘后）。你是 {agent} 的 A股实盘调仓决策模型，"
         f"管理 ¥{AGENT_QUOTA:,.0f} 虚拟额度（已用 ¥{agent_used(load_ledger(), agent):,.0f}，"
@@ -258,9 +260,7 @@ def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
         "允许换仓（同轮先 sell 再 buy），以信号分数+板块主线+新闻分子综合权衡，不必拘泥原有持仓。",
         f"3. sell 的 pct = 卖出可卖量的比例（0~1）；buy 的 pct = 使用剩余额度的比例"
         f"（每票 ≤{PER_STOCK_PCT:.0%}，当日新开仓 ≤{MAX_NEW_BUYS} 只；超出的会被闸门裁掉）。"
-        f"候选池已按你的资金量剔除买不起的标的（单票预算 = 剩余额度×{PER_STOCK_PCT:.0%}"
-        f"；最小一手 100 股、科创板 200 股都超预算的票不会出现在表里），"
-        "表里没有的代码不要报买入。",
+        + budget_filter_note(PER_STOCK_PCT),
         "4. T+1：可卖量 0 的持仓不能卖。ST/*ST/退市整理股与黑名单标的**不可买入**（闸门硬拦）。",
         "5. 输出**严格 JSON**（不要 markdown 代码块、不要额外文字），格式：",
         DECISION_SCHEMA,

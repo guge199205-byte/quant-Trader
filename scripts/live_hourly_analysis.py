@@ -630,11 +630,12 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
     # 候选池实时行情（非持仓）：换仓/新开仓的定价依据。此前持仓 agent 既拿不到
     # 池内价格、闸门也不放行非持仓买入 → "允许换仓"实际无法执行（2026-09-08 修复）
     if pool:
-        from live_prompt_context import build_pool_quote_block
+        from live_prompt_context import budget_filter_note, build_pool_quote_block
 
         qb = build_pool_quote_block(pool)
         if qb:
-            lines += ["", "以下为候选池（**不是你的持仓**）——新开仓/换仓只能从池内选：", qb]
+            lines += ["", "以下为候选池（**不是你的持仓**）——新开仓/换仓只能从池内选：", qb,
+                      budget_filter_note(PER_STOCK_PCT)]
     # 上一轮建议（记忆一致性：防整点之间决策反复横跳）
     if last_decisions:
         lines += ["", "【上一轮你的建议（已按此执行或挂单）】", ""]
@@ -812,7 +813,7 @@ def build_flat_content(pool: list, direction: dict, cash: float, agent: str,
         f"初始额度 ¥10 万）。你名下**没有持仓（空仓）**，可用虚拟现金 ¥{cash:,.0f}。",
         "本轮任务：从候选池里决定是否建仓、建哪些（你也可以选择继续空仓观望）。",
         "",
-        "候选池（20 只，按综合评分排序；score=综合分，fusion=融合分。"
+        "候选池（按综合评分排序；score=综合分，fusion=融合分。"
         "池内没有方向标签——是否买入/换仓由你按 分数+大盘+板块+新闻分子 综合判断，"
         "任何 HOLD/BUY 侧标签一律不作为依据）：",
         "",
@@ -825,6 +826,10 @@ def build_flat_content(pool: list, direction: dict, cash: float, agent: str,
         lines.append(f"（其余 {len(pool) - 8} 只与今日此前轮次一致，按评分降序：{rest}）")
     else:
         lines += pool_rows(pool)
+    # 资金量裁剪说明（与 09:35 主入口同一句）：池子已按该 agent 的单票预算剔除买不起的
+    from live_prompt_context import budget_filter_note
+
+    lines += ["", budget_filter_note(PER_STOCK_PCT)]
     # 池内实时价（桥口径）：无价 → 模型无法定价 → 只能空转/挂 watch（哨兵不执行买单）
     from live_prompt_context import build_pool_quote_block, risk_warning_block
 

@@ -172,28 +172,54 @@ def test_empty_pool_or_broken_file_is_noop(tmp_path):
     assert P.filter_affordable(pool, 20000.0, path=bad, now=NOW) == (pool, [])
 
 
-def test_two_layer_guard_agrees_on_same_price(tmp_path):
-    """提示词侧剔除与下单侧硬拦必须同口径：同一只票、同一个价，两边结论一致。
-    （两层各自实现会漂移——2026-09-09 把最小可买量抽到 ashare_rules 就是为此）"""
+def test_two_layer_guard_agrees_across_price_sweep(tmp_path):
+    """提示词侧剔除与下单侧硬拦必须逐价一致（kept ⇔ compute_order ok）。
+
+    2026-09-09 code review 实录：近似判据（最小一手 ≤ 预算×1.02）在主板/创业板
+    留出 2% 漂移窗口（价 ∈ (预算/100, 预算×1.02/100]：提示词保留、下单 raw_vol 归零
+    被拒）。改为与 compute_order 同构的取整判据后，两侧逐价一致。
+    """
     import live_trade_picks as T
 
-    f = _factors_file(tmp_path, {"688183.SH": _rec(price=120.0)})
-    pool = [{"code": "688183.SH", "name": "生益电子"}]
-    kept, dropped = P.filter_affordable(pool, 20000.0, path=f, now=NOW)
-    assert kept == [] and dropped[0][2] == 24000.0
-    bars = [{"close": 120.0, "open": 120.0, "volume": 1000},
-            {"close": 120.0, "open": 120.0, "volume": 1000}]
-    o = T.compute_order(bars, 100000.0, 0.2, "688183.SH")  # 预算同为 ¥20,000
-    assert o["ok"] is False and "最小可买 200 股需 ¥24,000" in o["reason"]
+    cash, pct = 100000.0, 0.2
+    budget = cash * pct  # ¥20,000
+    cases = {
+        "600309.SH": (10.0, 199.0, 200.0, 201.0, 204.0, 204.5, 300.0),   # 主板
+        "688183.SH": (50.0, 99.0, 100.0, 101.0, 102.1, 120.0),           # 科创板 200 股起
+    }
+    for code, prices in cases.items():
+        for px in prices:
+            f = _factors_file(tmp_path, {code: _rec(price=px)})
+            kept, _dropped = P.filter_affordable(
+                [{"code": code, "name": "X"}], budget, path=f, now=NOW)
+            bars = [{"close": px, "open": px, "volume": 1000}] * 2
+            o = T.compute_order(bars, cash, pct, code)
+            assert bool(kept) == o["ok"], \
+                f"{code} @¥{px}: filter={bool(kept)} order={o['ok']} {o.get('reason')}"
+
+
+def test_main_board_just_over_budget_dropped(tmp_path):
+    """主板 2% 窗口必须剔除：¥201×100 股 > ¥20,000 预算，下单会 raw_vol=0 被拒。"""
+    f = _factors_file(tmp_path, {"600309.SH": _rec(price=201.0)})
+    kept, dropped = P.filter_affordable([{"code": "600309.SH", "name": "万华化学"}],
+                                        20000.0, path=f, now=NOW)
+    assert kept == [] and dropped[0][2] == 20100.0
 
 
 def test_llm_trade_prompt_declares_budget_filter():
-    """提示词必须说明池子已按资金量裁过——否则模型会把"表里没有"当成不存在。"""
+    """提示词必须说明池子已按资金量裁过——否则模型会把"表里没有"当成不存在。
+    09:35 主入口与整点轮两条提示词共用同一句（budget_filter_note）。"""
+    import live_hourly_analysis as L
     import live_llm_trade as T
 
+    note = "候选池已按你的资金量剔除买不起的标的"
     out = T.build_prompt("a1", [], ["| 1 | 600362.SH | 江西铜业 | 有色 | 8 | 7 | — |"],
                          {}, 100000.0)
-    assert "候选池已按你的资金量剔除买不起的标的" in out
+    assert note in out and "表里没有的代码不要报买入" in out
+    flat = L.build_flat_content([{"rank": 1, "code": "600362.SH", "name": "江西铜业",
+                                  "industry": "有色", "score": 0.8, "fusion": 0.02,
+                                  "remark": "r"}], {}, 100000.0, "a1")
+    assert note in flat
 
 
 # ---------------------------------------------------------------- 日级新开仓上限

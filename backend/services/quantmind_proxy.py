@@ -7,9 +7,9 @@ arena 前端通过本代理调用 quantmind 后端（127.0.0.1:8000，容器在�
 本代理仅透传，不落地任何凭据。
 """
 
+import asyncio
 import logging
 import os
-import threading
 import time
 from typing import Optional
 
@@ -29,14 +29,19 @@ QM_TENANT = "default"
 # JWT 有效期未知，保守缓存 6 小时；401 时强制重登重试
 _TOKEN_TTL_SEC = 6 * 3600
 
-_token_lock = threading.Lock()
+# 必须用 asyncio.Lock，**不能**用 threading.Lock：get_token 是协程，持锁期间要 await 登录。
+# threading.Lock 的 acquire 会阻塞**事件循环线程**——第二个并发请求一进来就把循环钉死，
+# 持锁者永远排不上调度、锁永不释放（2026-09-09 事故：重启后缓存为空 + 数据平台页 5 个
+# 并发代理请求 → 整个 API 静默冻死，端口在听、0% CPU、无 traceback，只能重启容器）。
+# 见 tests/test_quantmind_proxy_lock.py
+_token_lock = asyncio.Lock()
 _token_cache: dict[str, Optional[str]] = {"value": None}
 _token_cache["expires_at"] = 0.0
 
 _SKIP_HEADERS = {"host", "content-length", "transfer-encoding", "authorization", "connection"}
 _ALLOWED_METHODS = ("GET", "POST", "PUT", "DELETE")
 
-_client: Optional[httpx.Client] = None
+_client: Optional[httpx.AsyncClient] = None
 
 
 async def _get_client() -> httpx.AsyncClient:
@@ -63,8 +68,8 @@ async def _login() -> str:
 
 
 async def get_token(force: bool = False) -> str:
-    """线程安全地取 token；过期或 force 时重新登录。"""
-    with _token_lock:
+    """并发安全地取 token；过期或 force 时重新登录（同一时刻只允许一个登录在飞）。"""
+    async with _token_lock:
         if (
             force
             or not _token_cache.get("value")

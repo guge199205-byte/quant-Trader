@@ -172,6 +172,17 @@ def get_status():
     }
 
 
+@app.get("/api/ping")
+async def ping():
+    """事件循环探活（async 路由，不碰线程池、不碰外部服务）。
+
+    scripts/hang_probe.sh 用它区分两种故障：sync 掉+async 活=线程池饿死；
+    两者同时掉=事件循环被锁死（2026-09-09 的 quantmind token 死锁就是这个形态）。
+    刻意保持 async 且零依赖——探针本身不能成为新的故障源。
+    """
+    return {"success": True, "data": "pong"}
+
+
 @app.get("/api/markets")
 def get_markets():
     cfg = config()
@@ -2246,7 +2257,20 @@ def pine_library_job(item_id: str):
 
 
 def main():
+    import faulthandler
+    import signal
+
     import uvicorn
+
+    # 静默挂死取证：事件循环被锁住时端口照听、日志零 traceback、外部只能干等。
+    # 注册 SIGUSR1 后 `docker exec baymax-api kill -USR1 1` 会把**全部线程**的
+    # Python 栈打到 stderr（docker logs 可见）。注意 chain=False——SIGUSR1 默认动作
+    # 是终止进程，不能让它链到默认处理器；也注意必须在主线程注册。
+    # 别再用「另起一个 python 进程 dump」的老办法：它只看得到自己的线程。
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    except (AttributeError, ValueError, OSError):
+        pass
 
     cfg = load_backend_config()
     server = cfg.get("server", {})

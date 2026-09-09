@@ -219,9 +219,14 @@ def in_close_auction(now) -> bool:
     return 14 * 60 + 57 <= hm < 15 * 60
 
 
-def run_watch(broker, dry_run: bool = False, after_hours: bool = False) -> int:
-    """轮询全部条件位，返回本轮触发笔数。"""
+def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None) -> int:
+    """轮询全部条件位，返回本轮触发笔数。
+
+    now：本轮基准时刻（北京时区），用于收盘集合竞价护栏；缺省取当前时间。
+    """
     from live_fills import reconcile
+
+    now = now or now_cn()
 
     try:
         reconcile(broker)  # 先补记在途成交，再守条件位
@@ -338,7 +343,7 @@ def main() -> int:
     from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
 
     broker = TdxBridgeBroker()
-    fired = run_watch(broker, dry_run=args.dry_run, after_hours=ah)
+    fired = run_watch(broker, dry_run=args.dry_run, after_hours=ah, now=now)
     if fired:
         print(f"[{now:%F %T}] ⚠️ 条件位触发 {fired} 笔")
     return 0

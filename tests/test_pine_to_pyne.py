@@ -298,6 +298,387 @@ class TestImportChecks:
         assert not any("对表达式直接取历史" in p for p in ptp.static_check(code))
 
 
+class TestTypeImports:
+    """PersistentSeries 是 2026-09-09 才加进提示词的名字，漏 import 是运行时 NameError。"""
+
+    def test_missing_persistent_series_import_flagged(self):
+        code = GOOD.replace("up: Series[bool] = f > s",
+                            "flag: PersistentSeries[bool] = False\n    up: Series[bool] = f > s")
+        assert any("PersistentSeries 但没从 pynecore.types 导入" in p
+                   for p in ptp.static_check(code))
+
+    def test_imported_persistent_series_passes(self):
+        code = GOOD.replace("from pynecore.types import Series",
+                            "from pynecore.types import PersistentSeries, Series")
+        code = code.replace("up: Series[bool] = f > s",
+                            "flag: PersistentSeries[bool] = False\n    up: Series[bool] = f > s")
+        assert not any("PersistentSeries" in p for p in ptp.static_check(code))
+
+    def test_persistent_series_does_not_require_plain_series(self):
+        """`PersistentSeries[bool]` 里含 Series 字样，别误报成缺 Series 导入。"""
+        code = GOOD.replace("from pynecore.types import Series",
+                            "from pynecore.types import PersistentSeries")
+        code = code.replace("up: Series[bool] = f > s",
+                            "flag: PersistentSeries[bool] = False\n"
+                            "    up: PersistentSeries[bool] = f > s")
+        assert not any("Series" in p for p in ptp.static_check(code)), ptp.static_check(code)
+
+
+class TestFixHistory:
+    """pynecore 里只有 `x: Series[...]` 声明的名字才有历史，普通赋值/解包/参数都没有。
+
+    实测（600309.SH 真回测）：`s = ta.sma(close,20)` 后 `s[1]`、`a,b,c = ta.bb(...)`
+    后 `b[1]`、`def f(src, n)` 里 `src[i]` 全都抛 TypeError: 'float' object is not
+    subscriptable；补上声明后三种都正常。模型连修两轮也修不好，所以机械补。
+    """
+
+    def test_plain_assign_upgraded(self):
+        code = GOOD.replace("    f = ta.sma(close, fast)",
+                            "    f = ta.sma(close, fast)\n    g = ta.sma(close, slow)")
+        code = code.replace("    up: Series[bool] = f > s", "    up: Series[bool] = f > g[1]")
+        got, notes = ptp.fix_history(code)
+        assert "    g: Series[float] = ta.sma(close, slow)" in got
+        assert notes == ["`g = ...` 升级成 `g: Series[float] = ...`（普通赋值不留历史）"]
+
+    def test_unpack_gets_same_name_declaration(self):
+        code = GOOD.replace("    f = ta.sma(close, fast)",
+                            "    mid, up_band, low_band = ta.bb(close, fast, 2.0)")
+        code = code.replace("    up: Series[bool] = f > s", "    up: Series[bool] = up_band[1] > s")
+        got, notes = ptp.fix_history(code)
+        assert ("    mid, up_band, low_band = ta.bb(close, fast, 2.0)\n"
+                "    up_band: Series[float] = up_band\n") in got
+        assert notes == ["解包值 up_band 后补一行 `up_band: Series[float] = up_band`"]
+
+    def test_unannotated_param_annotated(self):
+        code = GOOD.replace("    f = ta.sma(close, fast)",
+                            "    def sum_n(src, n):\n"
+                            "        total = 0.0\n"
+                            "        for i in range(n):\n"
+                            "            total += src[i]\n"
+                            "        return total\n"
+                            "    f = sum_n(close, fast)")
+        got, _ = ptp.fix_history(code)
+        assert "def sum_n(src: Series[float], n):" in got
+
+    def test_container_subscript_untouched(self):
+        """`parts = sess.split('-')` 的下标是正常 Python，加了注解反而会把策略搞坏。"""
+        code = GOOD.replace("    f = ta.sma(close, fast)",
+                            '    parts = "09-15".split("-")\n'
+                            "    f = ta.sma(close, int(parts[0]))")
+        assert ptp.fix_history(code) == (code, [])
+
+    def test_already_declared_is_untouched(self):
+        code = GOOD.replace("    f = ta.sma(close, fast)",
+                            "    f: Series[float] = ta.sma(close, fast)")
+        assert ptp.fix_history(code) == (code, [])
+
+    def test_builtin_price_series_untouched(self):
+        code = GOOD.replace("    up: Series[bool] = f > s", "    up: Series[bool] = close[1] > s")
+        assert ptp.fix_history(code) == (code, [])
+
+    def test_idempotent(self):
+        code = GOOD.replace("    f = ta.sma(close, fast)",
+                            "    mid, up_band, low_band = ta.bb(close, fast, 2.0)")
+        code = code.replace("    up: Series[bool] = f > s", "    up: Series[bool] = up_band[1] > s")
+        once, _ = ptp.fix_history(code)
+        assert ptp.fix_history(once) == (once, [])
+
+    def test_syntax_error_left_alone(self):
+        bad = "def main(:\n"
+        assert ptp.fix_history(bad) == (bad, [])
+
+
+class TestConditionalSeries:
+    """分支里的 Series 声明只在那个分支执行，其它分支的赋值走 set()，空缓冲上 set()
+    返回 na（pynecore transformers/series.py 原话），整个变量恒为 na。实测 0165 的
+    main_ma_val、0521 的 os 全 bar nan → 0 笔成交。改法：链前 hoist 一条声明。
+    """
+
+    IF_ELSE = ("    if fast > slow:\n"
+               "        x: Series[float] = close * 2.0\n"
+               "    else:\n"
+               "        x = close * 3.0\n")
+
+    def test_if_else_hoisted_before_chain(self):
+        code = GOOD.replace("    up: Series[bool] = f > s", self.IF_ELSE + "    up: Series[bool] = x > s")
+        got, notes = ptp.fix_conditional_series(code)
+        assert "    x: Series[float] = float('nan')\n    if fast > slow:" in got
+        assert "        x = close * 2.0\n" in got
+        assert "x: Series[float] = close * 2.0" not in got
+        assert notes == ["`x` 的 Series 声明从分支里提到 if 链之前"
+                         "（分支里的声明只在那一支生效，其它分支的取值/历史会错位）"]
+
+    def test_if_elif_else_all_branches_plain(self):
+        code = GOOD.replace("    up: Series[bool] = f > s",
+                            "    if fast == 1:\n"
+                            "        x: Series[float] = close\n"
+                            "    elif fast == 2:\n"
+                            "        x = open\n"
+                            "    else:\n"
+                            "        x = high\n"
+                            "    up: Series[bool] = x > s")
+        got, _ = ptp.fix_conditional_series(code)
+        assert "    x: Series[float] = float('nan')\n    if fast == 1:" in got
+        assert "        x = close\n" in got
+        assert got.count("Series[float]") == 1
+
+    def test_all_branches_annotated_hoisted(self):
+        """两个分支各写一条声明也不行：读的是最后注册的槽，先注册那支的历史冻住
+        （实测 probe_Y：z[1] 永远停在第一根 bar）——要全部降级成普通赋值。"""
+        code = GOOD.replace("    up: Series[bool] = f > s",
+                            "    if fast == 1:\n"
+                            "        x: Series[float] = close\n"
+                            "    else:\n"
+                            "        x: Series[float] = open\n"
+                            "    up: Series[bool] = x > s")
+        got, notes = ptp.fix_conditional_series(code)
+        assert "    x: Series[float] = float('nan')\n    if fast == 1:" in got
+        assert got.count("Series[float]") == 1
+        assert "        x = close\n" in got and "        x = open\n" in got
+        assert len(notes) == 1
+
+    def test_helper_returning_in_every_branch_untouched(self):
+        """纯辅助函数按类型算完就 return，没有跨 bar 语义，别报也别改（0059 的 ma_func）。"""
+        code = GOOD.replace("    f = ta.sma(close, fast)",
+                            "    def pick(mode):\n"
+                            "        if mode == 1:\n"
+                            "            x: Series[float] = close\n"
+                            "            return x\n"
+                            "        else:\n"
+                            "            x: Series[float] = open\n"
+                            "            return x\n"
+                            "    f = ta.sma(close, pick(fast))")
+        assert ptp.fix_conditional_series(code) == (code, [])
+        assert not any("Series 声明写在 if 分支里" in p for p in ptp.static_check(code))
+
+    def test_no_else_reported_not_fixed(self):
+        """没有 else：有路径不赋值，hoist 后那条路径会变 na（原语义是保留旧值），不敢机械改。"""
+        code = GOOD.replace("    up: Series[bool] = f > s",
+                            "    if fast > slow:\n"
+                            "        x: Series[float] = close\n"
+                            "    elif fast < slow:\n"
+                            "        x = open\n"
+                            "    up: Series[bool] = x > s")
+        assert ptp.fix_conditional_series(code) == (code, [])
+        assert any("x" in p and "Series 声明写在 if 分支里" in p
+                   for p in ptp.static_check(code))
+
+    def test_duplicate_declaration_reported(self):
+        """0521 的写法：顶层一条 PersistentSeries + 分支里又一条 Series——同名两条声明。"""
+        code = GOOD.replace("    up: Series[bool] = f > s",
+                            "    x: PersistentSeries[float] = 0.0\n"
+                            "    if fast > slow:\n"
+                            "        x: Series[float] = close\n"
+                            "    else:\n"
+                            "        x = open\n"
+                            "    up: Series[bool] = x > s")
+        assert ptp.fix_conditional_series(code) == (code, [])
+        assert any("x" in p and "Series 声明写在 if 分支里" in p
+                   for p in ptp.static_check(code))
+
+    def test_read_before_chain_reported_not_fixed(self):
+        code = GOOD.replace("    up: Series[bool] = f > s",
+                            "    y: Series[float] = x * 2.0\n"
+                            "    if fast > slow:\n"
+                            "        x: Series[float] = close\n"
+                            "    else:\n"
+                            "        x = open\n"
+                            "    up: Series[bool] = y > s")
+        assert ptp.fix_conditional_series(code) == (code, [])
+        assert any("x" in p and "Series 声明写在 if 分支里" in p
+                   for p in ptp.static_check(code))
+
+    def test_same_branch_add_then_set_untouched(self):
+        """同一分支里 add 之后再 set 是安全的（缓冲已经喂过），不能误报。"""
+        code = GOOD.replace("    up: Series[bool] = f > s",
+                            "    if fast > slow:\n"
+                            "        x: Series[float] = close\n"
+                            "        x = x * 2.0\n"
+                            "    up: Series[bool] = x > s")
+        assert ptp.fix_conditional_series(code) == (code, [])
+        assert not any("x" in p and "Series 声明写在 if 分支里" in p
+                       for p in ptp.static_check(code))
+
+    def test_lone_conditional_declaration_untouched(self):
+        """只有一个分支里声明、没有别处赋值：没有 set() 问题，保守不动。"""
+        code = GOOD.replace("    up: Series[bool] = f > s",
+                            "    if fast > slow:\n"
+                            "        x: Series[float] = close\n"
+                            "    up: Series[bool] = x > s")
+        assert ptp.fix_conditional_series(code) == (code, [])
+        assert not any("Series 声明写在 if 分支里" in p for p in ptp.static_check(code))
+
+    def test_idempotent(self):
+        code = GOOD.replace("    up: Series[bool] = f > s", self.IF_ELSE + "    up: Series[bool] = x > s")
+        once, _ = ptp.fix_conditional_series(code)
+        assert ptp.fix_conditional_series(once) == (once, [])
+
+    def test_autofix_includes_conditional(self):
+        code = GOOD.replace("    up: Series[bool] = f > s", self.IF_ELSE + "    up: Series[bool] = x > s")
+        got, notes = ptp.autofix(code)
+        assert "    x: Series[float] = float('nan')\n    if fast > slow:" in got
+        assert any("提到 if 链之前" in n for n in notes)
+
+
+class TestPersistentHistory:
+    """Persistent 没有历史（`p[1]` 抛 TypeError）；Persistent[list] 的 `[i]` 是列表下标。"""
+
+    def test_persistent_with_history_read_flagged(self):
+        code = GOOD.replace("    up: Series[bool] = f > s",
+                            "    p: Persistent[float] = 0.0\n"
+                            "    up: Series[bool] = p[1] > s")
+        assert any("p" in x and "没有历史" in x for x in ptp.static_check(code))
+
+    def test_persistent_list_index_not_flagged(self):
+        code = GOOD.replace("    up: Series[bool] = f > s",
+                            "    a: Persistent[list] = []\n"
+                            "    a.append(close)\n"
+                            "    up: Series[bool] = a[0] > s")
+        assert not any("没有历史" in x for x in ptp.static_check(code))
+
+    def test_persistent_series_history_read_passes(self):
+        code = GOOD.replace("    up: Series[bool] = f > s",
+                            "    p: PersistentSeries[float] = 0.0\n"
+                            "    up: Series[bool] = p[1] > s")
+        assert not any("没有历史" in x for x in ptp.static_check(code))
+
+    def test_fix_history_does_not_duplicate_declaration(self):
+        """0521 踩过：fix_history 只认 Series，给 PersistentSeries 声明的名字又补一条 Series。"""
+        code = GOOD.replace("    up: Series[bool] = f > s",
+                            "    p: PersistentSeries[float] = 0.0\n"
+                            "    up: Series[bool] = p[1] > s")
+        assert ptp.fix_history(code) == (code, [])
+
+
+class TestListContainer:
+    """Pine 数组装进 PersistentSeries 时 `a[i]` 是历史取值不是列表下标——实测 0521 报
+    `TypeError: '>=' not supported between instances of 'list' and 'int'`。"""
+
+    def test_persistent_series_list_flagged(self):
+        code = GOOD.replace("    f = ta.sma(close, fast)",
+                            "    a: PersistentSeries[list] = []\n"
+                            "    f = ta.sma(close, fast)")
+        assert any("PersistentSeries[list]" in p and "Persistent[list]" in p
+                   for p in ptp.static_check(code))
+
+    def test_persistent_list_passes(self):
+        code = GOOD.replace("    f = ta.sma(close, fast)",
+                            "    a: Persistent[list] = []\n"
+                            "    f = ta.sma(close, fast)")
+        assert not any("PersistentSeries[list]" in p for p in ptp.static_check(code))
+
+
+class TestListRepeat:
+    """`[初值] * n` 的乘数在 pyne 里是浮点——input 参数是浮点、`int()` 被翻成 safe_int()
+    也返回浮点——`list * float` 直接 TypeError（实测 0248/0253/0260 全挂在这）。"""
+
+    def _code(self, stmt: str) -> str:
+        return GOOD.replace("    f = ta.sma(close, fast)",
+                            f"    {stmt}\n    f = ta.sma(close, fast)")
+
+    def test_float_multiplier_rewritten(self):
+        code, notes = ptp.fix_list_repeat(self._code("a: Persistent[list] = [False] * slow"))
+        assert "a: Persistent[list] = [False for _ in range(slow)]" in code
+        assert any("range(slow)" in n for n in notes), notes
+
+    def test_pine_int_cast_rewritten(self):
+        code, _ = ptp.fix_list_repeat(self._code("a: Persistent[list] = [False] * int(slow)"))
+        assert "[False for _ in range(int(slow))]" in code
+
+    def test_reversed_order_rewritten(self):
+        code, _ = ptp.fix_list_repeat(self._code("a: Persistent[list] = slow * [0.0]"))
+        assert "[0.0 for _ in range(slow)]" in code
+
+    def test_int_literal_left_alone(self):
+        src = self._code("a: Persistent[list] = [False] * 20")
+        assert ptp.fix_list_repeat(src) == (src, [])
+
+    def test_multi_element_reported_not_fixed(self):
+        src = self._code("a: Persistent[list] = [False, True] * slow")
+        assert ptp.fix_list_repeat(src) == (src, [])
+        assert any("array.new_bool" in p for p in ptp.static_check(src)), ptp.static_check(src)
+
+    def test_non_constant_element_reported(self):
+        src = self._code("a: Persistent[list] = [close] * slow")
+        assert ptp.fix_list_repeat(src) == (src, [])
+        assert any("array.new_bool" in p for p in ptp.static_check(src))
+
+    def test_autofix_integration(self):
+        code, notes = ptp.autofix(self._code("a: Persistent[list] = [False] * slow"))
+        assert "[False for _ in range(slow)]" in code
+        assert any("range(slow)" in n for n in notes), notes
+
+    def test_idempotent(self):
+        once, _ = ptp.fix_list_repeat(self._code("a: Persistent[list] = [False] * slow"))
+        assert ptp.fix_list_repeat(once) == (once, [])
+
+
+class TestImportFix:
+    """漏 import 是实测最高频的失败（模型修两轮仍会漏），能机械补的就别留给模型。"""
+
+    def test_lib_name_added(self):
+        src = GOOD.replace("    f = ta.sma(close, fast)",
+                           "    f = ta.sma(close, fast)\n    tf = timeframe.period")
+        code, notes = ptp.fix_imports(src)
+        assert "from pynecore.lib import close, input, script, strategy, ta, timeframe" in code
+        assert any("timeframe" in n for n in notes), notes
+
+    def test_type_name_appended(self):
+        src = GOOD.replace("    f = ta.sma(close, fast)",
+                           "    a: Persistent[list] = []\n    f = ta.sma(close, fast)")
+        code, notes = ptp.fix_imports(src)
+        assert "from pynecore.types import Series, Persistent" in code
+        assert any("Persistent" in n for n in notes)
+
+    def test_type_import_line_inserted(self):
+        src = GOOD.replace("from pynecore.types import Series\n", "")
+        code, _ = ptp.fix_imports(src)
+        assert "from pynecore.types import Series" in code
+
+    def test_defined_name_not_imported(self):
+        src = GOOD.replace("    f = ta.sma(close, fast)",
+                           '    session = "09:00"\n    f = ta.sma(close, fast)')
+        assert ptp.fix_imports(src) == (src, [])
+
+    def test_static_check_clean_after_fix(self):
+        src = GOOD.replace("    f = ta.sma(close, fast)",
+                           "    f = ta.sma(close, fast)\n    tf = timeframe.period")
+        code, _ = ptp.fix_imports(src)
+        assert not any("导入" in p for p in ptp.static_check(code))
+
+    def test_autofix_integration(self):
+        src = GOOD.replace("    f = ta.sma(close, fast)",
+                           "    f = ta.sma(close, fast)\n    tf = timeframe.period")
+        code, notes = ptp.autofix(src)
+        assert "timeframe" in code.splitlines()[5]
+        assert any("timeframe" in n for n in notes)
+
+    def test_idempotent(self):
+        src = GOOD.replace("    f = ta.sma(close, fast)",
+                           "    f = ta.sma(close, fast)\n    tf = timeframe.period")
+        once, _ = ptp.fix_imports(src)
+        assert ptp.fix_imports(once) == (once, [])
+
+
+class TestHistoryProblems:
+    def test_reports_ambiguous_history_read(self):
+        """名字既当参数又被赋值（都还是标量）时机械改不了，静态闸要报出来让模型改。"""
+        code = GOOD.replace("    f = ta.sma(close, fast)",
+                            "    def scale(src, n):\n"
+                            "        src = src * 2.0\n"
+                            "        return src[n]\n"
+                            "    f = scale(close, fast)")
+        probs = ptp.static_check(code)
+        assert any("src" in p and "Series" in p for p in probs), probs
+
+    def test_container_binding_is_not_reported(self):
+        """`parts = sess.split('-')` 的下标是正常 Python，静态闸不能误报。"""
+        code = GOOD.replace("    f = ta.sma(close, fast)",
+                            '    parts = "09-15".split("-")\n'
+                            "    f = ta.sma(close, int(parts[0]))")
+        assert not any("parts" in p for p in ptp.static_check(code))
+
+
 class TestSizingCheck:
     def test_tiny_percent_position_flagged(self):
         code = GOOD.replace(

@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -101,11 +102,25 @@ def main(fast=input(5, "快线周期"), slow=input(20, "慢线周期")):
    （`(high + low)[1]` 会抛 TypeError），先赋值给变量再索引。
    `ta.macd` / `ta.bb` / `ta.dmi` / `ta.kc` / `ta.supertrend` 返回**元组**，必须解包：
    `macd_line, signal_line, hist = ta.macd(close, f, s, sig)`。
+   **同一个变量在 if/elif/else 里赋值时，声明只能写在链外一次**。`if c: x: Series[float] = a`
+   / `else: x = b` 这种写法里，分支里的声明只在那个分支执行，其它分支的 `x = b` 是「覆盖
+   当前值」、缓冲没被喂过 → x 恒为 nan（实测这类策略 0 成交）。正确写法是分支里只算普通值、
+   链后声明一次：
+   ```python
+   if c:
+       raw = ta.ema(close, n)
+   else:
+       raw = ta.sma(close, n)
+   x: Series[float] = raw
+   ```
 7. 不加未来函数：判断与开平仓只用当前及历史 bar。
 8. 保持策略原意，宁可简化也不要臆造新逻辑；简化处在文件头注释里写清楚。
 9. 输出必须是**纯 Python**，Pine 写法一律翻译掉——这是最常见的翻车点（会直接语法错误）：
    - 三元 `cond ? a : b` → `a if cond else b`
-   - 不要 `var` 关键字（直接赋值；要保留状态的用带 `Series[...]` 标注的变量）
+   - **`var` 要翻成持久变量**：Pine 的 `var x = ...`（跨 bar 保留、只初始化一次）→
+     `x: PersistentSeries[<类型>] = ...`（`from pynecore.types import PersistentSeries`）。
+     写成 `Series[...]` 会**每根 bar 重置**，状态永远存不住（实测这类策略 46% 一笔不成交）。
+     反之，每根 bar 都要重新计算的值必须用 `Series[...]`——PersistentSeries 的初始值只算一次。
    - 不要 `:=` 赋值（用 `=`）
    - 缺失值用 `float('nan')`；取值用 `nz(x, 默认值)`；判断用 `na(x)`（`na` 是函数，不是值）
 10. 用到的内置名必须 import 齐（第一行 `from pynecore.lib import ...`）——漏一个就是运行时
@@ -123,6 +138,16 @@ def main(fast=input(5, "快线周期"), slow=input(20, "慢线周期")):
 - 交叉：`ta.crossover(a, b)` `ta.crossunder(a, b)`
 - 其它：`ta.change(x)` `ta.stdev(close, n)` `math.abs/max/min/round`（`from pynecore.lib import math`）
 - 缺失值：`nz(x, 默认值)` 取值、`na(x)` 判断（`na` 是函数）；字面缺失值写 `float('nan')`
+- 跨 bar 状态（Pine 的 `var`）：`from pynecore.types import PersistentSeries` 后写
+  `flag: PersistentSeries[bool] = False`，同样支持 `flag[1]`
+- Pine 数组（`array.new_*` / `array.push` / `array.get` / `array.size` / `array.shift`）→
+  Python list：`a: Persistent[list] = []`（`from pynecore.types import Persistent`）声明一次，
+  然后 `a.append(v)` / `a[i]` / `len(a)` / `a.pop(0)`。**别写 `PersistentSeries[list]`**——
+  它的 `a[i]` 是「i 根 bar 前的值」而不是列表下标（实测 0521 因此报
+  `TypeError: '>=' not supported between 'list' and 'int'`）。
+  定长初始化用 `array.new_bool(n, False)` / `array.new_float(n, 0.0)` / `array.new_int(n, 0)`，
+  **不要写 `[False] * n`**——n 在 pyne 里是浮点，list × float 会
+  `TypeError: can't multiply sequence by non-int of type 'float'`（实测 0248/0253/0260）。
 - 开平仓：`strategy.entry('L', strategy.long)` `strategy.close('L')` `strategy.position_size`
 - 常量：`strategy.long` `strategy.percent_of_equity` `strategy.commission.percent`
 """
@@ -343,6 +368,498 @@ def depine(code: str) -> tuple[str, list[str]]:
     return code, notes
 
 
+def autofix(code: str) -> tuple[str, list[str]]:
+    """候选落盘前的机械改写：Pine 残留（depine）+ 缺 Series 声明（fix_history）
+    + 分支里的 Series 声明（fix_conditional_series）+ 列表重复的浮点乘数（fix_list_repeat）
+    + 漏 import（fix_imports，放最后——前面几步可能引入新名字）。"""
+    code, notes = depine(code)
+    code, hist = fix_history(code)
+    code, cond = fix_conditional_series(code)
+    code, rep = fix_list_repeat(code)
+    code, imp = fix_imports(code)
+    return code, notes + hist + cond + rep + imp
+
+
+# --- 取历史的名字必须是 Series 变量 -------------------------------------------
+# pynecore 里普通赋值 / 解包 / 未标注的参数都只是「当前值」，对它取历史必抛
+# TypeError: 'float' object is not subscriptable。只有 `x: Series[float] = ...`
+# 声明的名字才进状态槽、才有历史（实测：`s = ta.sma(close,20)` 后 `s[1]` 挂；
+# `a, b, c = ta.bb(...)` 后 `b[1]` 挂；`def f(src, n)` 里 `src[i]` 挂；
+# 补上声明后三种都正常）。模型自己连修两轮也修不好（0065/0165/0334/0521/0572），
+# 所以照 depine 的路子机械补声明。
+_SERIES_FLOAT = "Series[float]"
+_PRICE_SERIES = frozenset({"open", "high", "low", "close", "volume", "hl2", "hlc3",
+                           "ohlc4", "hlcc4", "bid", "ask"})
+# pynecore.lib 的序列（顶层名，`dayofmonth[1]` 合法），不能当普通变量处理。
+_LIB_SERIES = frozenset({"bar_index", "last_bar_index", "time", "time_close",
+                         "time_tradingday", "hour", "minute", "second", "dayofweek",
+                         "dayofmonth", "weekofyear", "month", "year"})
+_MULTI_TA = ("bb", "dmi", "kc", "macd", "supertrend")
+# 返回标量的调用；返回列表/字符串的调用（split/keys/…）下标是正常 Python，别动。
+_SCALAR_CALLS = frozenset({"na", "nz", "fixnan", "input", "timestamp"})
+_SCALAR_NS = frozenset({"ta", "math", "strategy", "request", "syminfo", "barstate",
+                        "timeframe"})
+
+
+def _scalar_rhs(node: ast.AST) -> bool:
+    """右值是否「只可能是当前值」的标量表达式（容器的下标是正常 Python，别乱加注解）。"""
+    if isinstance(node, ast.Constant):
+        return not isinstance(node.value, (str, bytes, list, tuple, dict, set))
+    if isinstance(node, (ast.BinOp, ast.UnaryOp, ast.Compare, ast.BoolOp, ast.IfExp,
+                         ast.Attribute)):
+        return True
+    if isinstance(node, ast.Name):
+        return node.id in _PRICE_SERIES or node.id in _LIB_SERIES
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Name):
+            return func.id in _SCALAR_CALLS
+        if isinstance(func, ast.Attribute):
+            return func.attr in _SCALAR_CALLS or ast.unparse(func.value) in _SCALAR_NS
+    return False
+
+
+_SERIES_TYPES = ("PersistentSeries", "Persistent", "Series")
+
+
+def _decl_kind(annotation: ast.expr) -> str | None:
+    """声明种类；`PersistentSeries` 必须排在 `Persistent`/`Series` 前（startswith 会串）。"""
+    text = ast.unparse(annotation)
+    for kind in _SERIES_TYPES:
+        if text.startswith(kind):
+            return kind
+    return None
+
+
+class _Scope:
+    """一个函数体的绑定表：谁被 Series 声明过、谁只是当前值。"""
+
+    __slots__ = ("parent", "children", "ann", "ann_text", "params", "unpacks", "assigns", "subs")
+
+    def __init__(self, parent: "_Scope | None"):
+        self.parent = parent
+        self.children: list[_Scope] = []
+        self.ann: set[str] = set()                       # Series[...] 声明（含参数注解）
+        self.ann_text: dict[str, str] = {}               # 名字 → 注解原文（区分 Persistent 系）
+        self.params: dict[str, ast.arg] = {}             # 未标注的参数
+        self.unpacks: dict[str, list[ast.Assign]] = {}   # 解包自 ta.<多返回值>()
+        self.assigns: dict[str, list[ast.Assign]] = {}   # 普通赋值
+        self.subs: dict[str, list[ast.Subscript]] = {}   # 被下标的名字
+        if parent is not None:
+            parent.children.append(self)
+
+
+def _scan_scopes(code: str) -> "_Scope | None":
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None          # 语法错误交给静态闸报，这里不猜
+
+    root = _Scope(None)
+
+    def walk(node: ast.AST, scope: _Scope) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            inner = _Scope(scope)
+            for arg in node.args.args + node.args.kwonlyargs:
+                kind = _decl_kind(arg.annotation) if arg.annotation is not None else None
+                if kind:
+                    inner.ann.add(arg.arg)
+                    inner.ann_text[arg.arg] = ast.unparse(arg.annotation)
+                else:
+                    inner.params[arg.arg] = arg
+            for stmt in node.body:
+                walk(stmt, inner)
+            return
+        if isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name):
+                kind = _decl_kind(node.annotation)
+                if kind:
+                    scope.ann.add(node.target.id)
+                    scope.ann_text[node.target.id] = ast.unparse(node.annotation)
+            if node.value is not None:
+                walk(node.value, scope)
+            return
+        if isinstance(node, ast.Assign):
+            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                scope.assigns.setdefault(node.targets[0].id, []).append(node)
+            elif len(node.targets) == 1 and isinstance(node.targets[0], ast.Tuple):
+                if re.match(r"ta\.(%s)\s*\(" % "|".join(_MULTI_TA),
+                            ast.unparse(node.value)):
+                    for elt in node.targets[0].elts:
+                        if isinstance(elt, ast.Name):
+                            scope.unpacks.setdefault(elt.id, []).append(node)
+            walk(node.value, scope)
+            return
+        if isinstance(node, ast.Subscript):
+            if isinstance(node.value, ast.Name):
+                scope.subs.setdefault(node.value.id, []).append(node)
+        for child in ast.iter_child_nodes(node):
+            walk(child, scope)
+
+    walk(tree, root)
+    return root
+
+
+def _bindings(scope: _Scope, name: str) -> list[tuple[str, ast.AST]]:
+    out: list[tuple[str, ast.AST]] = []
+    if name in scope.params:
+        out.append(("param", scope.params[name]))
+    out += [("unpack", node) for node in scope.unpacks.get(name, [])]
+    out += [("assign", node) for node in scope.assigns.get(name, [])]
+    return out
+
+
+def _series_needed(code: str) -> list[tuple[str, str, ast.AST, bool]]:
+    """找出「被下标取历史、但 pynecore 里不留历史」的名字。
+
+    返回 (名字, 修法, 绑定节点, 是否「确定是标量但机械改不动」)。
+    修法只有三种无歧义的：param（给参数加注解）、unpack（解包后补一行同名声明）、
+    assign（普通赋值升级成 Series 赋值）。同一个名字在同一作用域有多种绑定时不机械改，
+    只留给静态闸报出来（能确定是标量的话）。
+    """
+    root = _scan_scopes(code)
+    if root is None:
+        return []
+    out: list[tuple[str, str, ast.AST, bool]] = []
+
+    def resolve(scope: _Scope, name: str):
+        while scope is not None:
+            if name in scope.ann:
+                return None
+            binds = _bindings(scope, name)
+            if binds:
+                kinds = {kind for kind, _ in binds}
+                # 混着参数/解包/赋值时判断不了该改哪处；只有全是标量才敢说它需要 Series
+                scalar = all(_scalar_rhs(a.value) for a in scope.assigns.get(name, []))
+                if len(kinds) > 1:
+                    return (binds[0][0], binds[0][1], True) if scalar else None
+                kind, node = binds[0]
+                if kind == "param":
+                    return ("param", node, False)
+                if kind == "unpack":
+                    return ("unpack", node, False)
+                if scalar:
+                    return ("assign", scope.assigns[name][0], False)
+                return None
+            scope = scope.parent
+        return None
+
+    def visit(scope: _Scope) -> None:
+        for name in scope.subs:
+            if name in _PRICE_SERIES:
+                continue
+            got = resolve(scope, name)
+            if got:
+                out.append((name, got[0], got[1], got[2]))
+        for child in scope.children:
+            visit(child)
+
+    visit(root)
+    return out
+
+
+def fix_history(code: str) -> tuple[str, list[str]]:
+    """给「被下标取历史」的名字机械补上 Series 声明（见上面实测记录）。"""
+    needed = [item for item in _series_needed(code) if not item[3]]
+    if not needed:
+        return code, []
+    lines = code.splitlines(keepends=True)
+    edits: list[tuple[int, int, str]] = []
+    notes: list[str] = []
+    for name, kind, node, _ in needed:
+        if kind == "param":
+            edits.append((node.end_lineno, node.end_col_offset, f": {_SERIES_FLOAT}"))
+            notes.append(f"给参数 {name} 补 `: Series[float]`（参数下标取历史）")
+        elif kind == "assign":
+            target = node.targets[0]
+            edits.append((target.end_lineno, target.end_col_offset, f": {_SERIES_FLOAT}"))
+            notes.append(f"`{name} = ...` 升级成 `{name}: Series[float] = ...`（普通赋值不留历史）")
+        else:
+            indent = " " * node.col_offset
+            end = len(lines[node.end_lineno - 1].rstrip("\n"))
+            edits.append((node.end_lineno, end,
+                          f"\n{indent}{name}: {_SERIES_FLOAT} = {name}"))
+            notes.append(f"解包值 {name} 后补一行 `{name}: Series[float] = {name}`")
+    for lineno, col, text in sorted(edits, reverse=True):
+        line = lines[lineno - 1]
+        lines[lineno - 1] = line[:col] + text + line[col:]
+    return "".join(lines), notes
+
+
+# --- 条件分支里的 Series 声明 ---------------------------------------------------
+# pynecore 把同名普通赋值写成 `x = __state__[N].set(...)`，而 set() 在「本 bar 还没
+# add() 过」的空缓冲上返回 na 且什么都不存（transformers/series.py 原话：set() on an
+# empty buffer answers na and stores nothing）。所以「声明写在某个分支里、其它分支普通
+# 赋值」会让整条链恒为 na——实测 0165 的 main_ma_val 全 bar nan（0 笔成交），0521 的
+# os 同理。修法：链前 hoist 一条声明，默认值只为把缓冲喂起来，各分支随后 set() 覆盖。
+_CHAIN_DEFAULTS = {"float": "float('nan')", "bool": "False", "int": "0", "str": "''"}
+
+
+def _ann_elem(annotation: ast.expr) -> str | None:
+    """`Series[float]` → 'float'；PersistentSeries / 嵌套容器一律返回 None（不碰）。"""
+    m = re.fullmatch(r"Series\[\s*(\w+)\s*\]", ast.unparse(annotation))
+    return m.group(1) if m else None
+
+
+def _if_chain(node: ast.If) -> tuple[list[list[ast.stmt]], bool]:
+    """if/elif/else 链的各个分支体，以及末尾是不是 else（所有路径都赋值）。"""
+    bodies = [node.body]
+    cur = node
+    while len(cur.orelse) == 1 and isinstance(cur.orelse[0], ast.If):
+        cur = cur.orelse[0]
+        bodies.append(cur.body)
+    if cur.orelse:
+        bodies.append(cur.orelse)
+        return bodies, True
+    return bodies, False
+
+
+def _bindings_in(node: ast.AST | list) -> list[tuple[str, str, ast.AST]]:
+    """子树（或语句列表）里按源码顺序的绑定 (名字, 种类, 节点)；嵌套函数的绑定不算。"""
+    out: list[tuple[str, str, ast.AST]] = []
+
+    def go(n: ast.AST) -> None:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return
+        if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+            out.append((n.target.id, "ann", n))
+        elif isinstance(n, ast.Assign):
+            for t in n.targets:
+                names = [t] if isinstance(t, ast.Name) else (
+                    list(t.elts) if isinstance(t, (ast.Tuple, ast.List)) else [])
+                for elt in names:
+                    if isinstance(elt, ast.Name):
+                        out.append((elt.id, "plain", n))
+        elif isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name):
+            out.append((n.target.id, "plain", n))
+        for child in ast.iter_child_nodes(n):
+            go(child)
+
+    for stmt in node if isinstance(node, list) else [node]:
+        go(stmt)
+    return out
+
+
+def _loads_name(node: ast.AST, name: str) -> bool:
+    return any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
+               for n in ast.walk(node))
+
+
+def _cond_series_hits(code: str) -> list[tuple[str, int, bool, str]]:
+    """(名字, 声明行号, 是否机械可修, 严重度)：Series 声明落在 if 链的分支体里，同名另有绑定。
+
+    两种坏法：
+    - ``mixed``（有分支写普通赋值）：那个分支走 set()，空缓冲上返回 na → **整个变量恒为 na**，
+      实测 0165 的 main_ma_val 全 bar nan、0 笔成交。
+    - ``multi``（每个分支都写声明）：值本身没问题，但读的是最后注册的槽，先注册那支的历史会
+      冻住（实测 probe_Y：z[1] 永远停在第一根 bar）——不读历史就暂时看不出来。
+
+    只有「链有 else、每个分支都赋值、所有绑定都在链内、链前没读过」才敢机械改。
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    out: list[tuple[str, int, bool, str]] = []
+    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        fn_binds = _bindings_in(fn.body)
+        for idx, stmt in enumerate(fn.body):
+            if not isinstance(stmt, ast.If):
+                continue
+            bodies, has_else = _if_chain(stmt)
+            chain_names = {b[0] for body in bodies for b in _bindings_in(body)}
+            for name in sorted(chain_names):
+                # 分支体的直接语句里的 Series 声明（候选）
+                cand = [(i, s) for i, body in enumerate(bodies) for s in body
+                        if isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name)
+                        and s.target.id == name and _ann_elem(s.annotation) is not None
+                        and s.value is not None]
+                if not cand:
+                    continue
+                # 同一分支内的其它绑定是安全的（add 过再 set），只看别的分支 / 链外
+                same_branch = {id(b[2]) for b in _bindings_in(bodies[cand[0][0]])}
+                others = [(n, k, node) for n, k, node in fn_binds
+                          if n == name and id(node) not in same_branch]
+                if not others:
+                    continue
+                # 每支都当场 return（纯辅助函数，如 ma_func 里按类型算完就返回）：
+                # 没有跨 bar 语义，别报也别改。
+                bind_bodies = [i for i, body in enumerate(bodies)
+                               if name in {b[0] for b in _bindings_in(body)}]
+                if bind_bodies and all(bodies[i] and isinstance(bodies[i][-1], (ast.Return, ast.Raise))
+                                       for i in bind_bodies):
+                    continue
+                anns_all = [b for b in fn_binds if b[0] == name and b[1] == "ann"]
+                elems = {_ann_elem(b[2].annotation) for b in anns_all}
+                fixable = (has_else and len(elems) == 1 and None not in elems
+                           and len(anns_all) == len(cand)      # 声明都是分支体的直接语句
+                           and all(stmt.lineno <= node.lineno <= stmt.end_lineno
+                                   for _, _, node in others)
+                           and all(name in {b[0] for b in _bindings_in(body)} for body in bodies)
+                           and not any(_loads_name(s, name) for s in fn.body[:idx]))
+                severity = "mixed" if any(k == "plain" for _, k, _ in others) else "multi"
+                out.append((name, cand[0][1].lineno, fixable, severity))
+    return out
+
+
+def fix_conditional_series(code: str) -> tuple[str, list[str]]:
+    """把「分支里声明 Series、其它分支普通赋值」机械改成链前声明 + 分支赋值。"""
+    hits = [h for h in _cond_series_hits(code) if h[2]]
+    if not hits:
+        return code, []
+    tree = ast.parse(code)
+    lines = code.splitlines(keepends=True)
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line))
+
+    def abs_off(lineno: int, col: int) -> int:
+        return starts[lineno - 1] + col
+
+    edits: list[tuple[int, int, str]] = []
+    notes: list[str] = []
+    done: set[tuple[str, int]] = set()
+    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        for stmt in fn.body:
+            if not isinstance(stmt, ast.If):
+                continue
+            hoist: list[str] = []
+            for name, lineno, _, _ in hits:
+                if (name, lineno) in done or lineno < stmt.lineno or lineno > stmt.end_lineno:
+                    continue
+                ann_nodes = [n for n in ast.walk(stmt)
+                             if isinstance(n, ast.AnnAssign)
+                             and isinstance(n.target, ast.Name) and n.target.id == name
+                             and _ann_elem(n.annotation) is not None and n.value is not None]
+                if not ann_nodes:
+                    continue
+                elems = {_ann_elem(n.annotation) for n in ann_nodes}
+                if len(elems) != 1:
+                    continue
+                done.add((name, lineno))
+                elem = next(iter(elems))
+                for ann_node in ann_nodes:
+                    edits.append(
+                        (abs_off(ann_node.target.end_lineno, ann_node.target.end_col_offset),
+                         abs_off(ann_node.value.lineno, ann_node.value.col_offset), " = "))
+                hoist.append(f"{name}: Series[{elem}] = {_CHAIN_DEFAULTS[elem]}")
+                notes.append(f"`{name}` 的 Series 声明从分支里提到 if 链之前"
+                             f"（分支里的声明只在那一支生效，其它分支的取值/历史会错位）")
+            if hoist:
+                indent = " " * stmt.col_offset
+                edits.append((abs_off(stmt.lineno, stmt.col_offset), abs_off(stmt.lineno, stmt.col_offset),
+                              "".join(f"{line}\n{indent}" for line in hoist)))
+    if not edits:
+        return code, []
+    for start, end, text in sorted(edits, reverse=True):
+        code = code[:start] + text + code[end:]
+    return code, notes
+
+
+def _cond_series_problems(code: str) -> list[str]:
+    """fix_conditional_series 改不动的那部分：让模型自己把声明提到链外。"""
+    out: list[str] = []
+    for name, lineno, fixable, severity in _cond_series_hits(code):
+        if fixable:
+            continue
+        if severity == "mixed":
+            why = ("分支里的声明只在那个分支执行，其它分支的赋值走 set()，空缓冲上 set() "
+                   "返回 na——整个变量恒为 na")
+        else:
+            why = ("每个分支各写一条声明，读的是最后注册的槽，先注册那支的历史会冻住"
+                   "（z[1] 停在第一根 bar）")
+        out.append(f"`{name}`（第 {lineno} 行）的 Series 声明写在 if 分支里、同名另有赋值：{why}。"
+                   f"改成：各分支只算普通值，链后写一条 `{name}: Series[float] = <值>`；"
+                   f"或链前写 `{name}: Series[float] = float('nan')` 再让分支赋值")
+    return out
+
+
+def _is_int_literal(node: ast.expr) -> bool:
+    return (isinstance(node, ast.Constant) and isinstance(node.value, int)
+            and not isinstance(node.value, bool))
+
+
+def _list_and_mult(node: ast.BinOp) -> tuple[ast.List, ast.expr]:
+    """`[x] * n` 的两侧：返回 (列表字面量, 乘数)。"""
+    if isinstance(node.left, ast.List):
+        return node.left, node.right
+    return node.right, node.left  # type: ignore[return-value]
+
+
+def _list_repeat_hits(code: str) -> list[tuple[ast.BinOp, bool, str]]:
+    """`[初值] * n`：n 是浮点时 Python 直接 `TypeError: can't multiply sequence by non-int`。
+
+    pyne 脚本里「Pine int」运行期就是浮点——`input()` 的参数、`int(x)` 转换（被翻成
+    `safe_int()`，返回 float）都是，只有字面量是原生 int（实测 probe：`[False] * 20` 过、
+    `[False] * n` / `[False] * int(n)` 都抛 TypeError；0248/0253/0260 全挂在这）。
+    返回 (节点, 是否可机械修, 说明)；单个常量元素的列表能机械改成 `[x for _ in range(n)]`。
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    out: list[tuple[ast.BinOp, bool, str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)):
+            continue
+        if not (isinstance(node.left, ast.List) or isinstance(node.right, ast.List)):
+            continue
+        lst, mult = _list_and_mult(node)
+        if isinstance(mult, ast.List) or _is_int_literal(mult):
+            continue  # 字面量乘数是原生 int，合法
+        why = ("列表乘法的乘数在 pyne 里是浮点（input 参数、int() 转换都是浮点），"
+               "list × float 会 TypeError")
+        fixable = len(lst.elts) == 1 and isinstance(lst.elts[0], ast.Constant)
+        out.append((node, fixable, why))
+    return out
+
+
+def fix_list_repeat(code: str) -> tuple[str, list[str]]:
+    """`[初值] * n` → `[初值 for _ in range(n)]`（range 的实参会被原生截断成 int）。"""
+    hits = [h for h in _list_repeat_hits(code) if h[1]]
+    if not hits:
+        return code, []
+    lines = code.splitlines(keepends=True)
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line))
+
+    def abs_off(lineno: int, col: int) -> int:
+        return starts[lineno - 1] + col
+
+    edits: list[tuple[int, int, str]] = []
+    notes: list[str] = []
+    for node, _, _ in hits:
+        lst, mult = _list_and_mult(node)
+        elem_src = ast.get_source_segment(code, lst.elts[0])
+        mult_src = ast.get_source_segment(code, mult)
+        old_src = ast.get_source_segment(code, node)
+        if not (elem_src and mult_src and old_src):
+            continue
+        new = f"[{elem_src} for _ in range({mult_src})]"
+        edits.append((abs_off(node.lineno, node.col_offset),
+                      abs_off(node.end_lineno, node.end_col_offset), new))
+        notes.append(f"`{old_src}` → `{new}`（乘数是浮点，list × float 会 TypeError）")
+    if not edits:
+        return code, []
+    for start, end, text in sorted(edits, reverse=True):
+        code = code[:start] + text + code[end:]
+    return code, notes
+
+
+def _list_repeat_problems(code: str) -> list[str]:
+    """fix_list_repeat 改不动的那部分（多元素/非常量元素列表重复）。"""
+    out: list[str] = []
+    for node, fixable, why in _list_repeat_hits(code):
+        if fixable:
+            continue
+        src = ast.get_source_segment(code, node) or "?"
+        out.append(f"`{src}`（第 {node.lineno} 行）：{why}。改成 "
+                   f"`array.new_bool/new_float/new_int(n, 初值)`（`from pynecore.lib import array`）"
+                   f"或 `[初值 for _ in range(n)]`")
+    return out
+
+
 # pynecore.lib 里必须显式导入的名字——漏一个就是运行时 NameError（实测最高频的翻车点）。
 _LIB_NAMES = (
     "close", "open", "high", "low", "volume", "hl2", "hlc3", "ohlc4",
@@ -355,6 +872,8 @@ _LIB_NAMES = (
 _DEF_RE = re.compile(r"^\s*def\s+(\w+)\s*\(([^)]*)\)", re.M)
 _TARGET_RE = re.compile(r"^\s*(\w+)\s*(?::[^=\n]+)?=", re.M)
 _IMPORT_RE = re.compile(r"from\s+pynecore\.lib\s+import\s+([^\n]+)")
+# 补 import 用：拆成「前缀 + 名字列表」两组，替换时只重写名字那截
+_LIB_IMPORT_RE = re.compile(r"(from\s+pynecore\.lib\s+import\s+)([^\n]+)")
 # 这些 ta 函数在 pynecore 里返回元组，赋给单个变量后下标会拿到「另一个指标」而不是历史值。
 _MULTI_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*(?::\s*[^=\n]+?)?\s*=\s*"
                        r"ta\.(bb|dmi|kc|macd|supertrend)\s*\(", re.M)
@@ -382,16 +901,86 @@ def _defined_names(code: str) -> set[str]:
     return names
 
 
-def _import_problems(code: str) -> list[str]:
+def _missing_lib_names(code: str) -> list[str]:
+    """用了但没导入的 pynecore.lib 顶层名（漏一个就是运行时 NameError）。"""
     imported = _imported_names(code)
     defined = _defined_names(code)
     clean = _strip_strings_and_comments(code)
+    return [name for name in _LIB_NAMES
+            if name not in imported and name not in defined
+            and re.search(rf"(?<![\w.]){re.escape(name)}(?![\w])", clean)]
+
+
+def _import_problems(code: str) -> list[str]:
+    return [f"用了 {name} 但没从 pynecore.lib 导入" for name in _missing_lib_names(code)]
+
+
+_TYPES_RE = re.compile(r"from\s+pynecore\.types\s+import\s+([^\n]+)")
+
+
+def _missing_type_names(code: str) -> list[str]:
+    imported: set[str] = set()
+    for m in _TYPES_RE.finditer(code):
+        for part in m.group(1).split(","):
+            name = part.strip().split(" as ")[0].strip()
+            if name:
+                imported.add(name)
+    clean = _strip_strings_and_comments(code)
+    return [name for name in ("Series", "Persistent", "PersistentSeries")
+            if name not in imported and re.search(rf"\b{name}\s*\[", clean)]
+
+
+def _type_import_problems(code: str) -> list[str]:
+    """`PersistentSeries` 漏 import 也是运行时 NameError——规则里新加的名字，单独查一道。"""
+    return [f"用了 {name} 但没从 pynecore.types 导入"
+            f"（`from pynecore.types import {name}`）" for name in _missing_type_names(code)]
+
+
+def fix_imports(code: str) -> tuple[str, list[str]]:
+    """漏 import 的 lib / types 名机械补进已有 import 行——实测最高频的失败，模型修两轮仍会漏。
+
+    只动 import 行本身，其它一个字不改；补的名字都是 pynecore.lib 的顶层名，
+    代码里用到却没导入时必然 NameError，补上只可能变好。
+    """
+    notes: list[str] = []
+    missing = _missing_lib_names(code)
+    if missing:
+        m = _LIB_IMPORT_RE.search(code)
+        if m:
+            names = [n.strip() for n in m.group(2).split(",") if n.strip()]
+            added = [n for n in missing if n not in names]
+            if added:
+                code = (code[:m.start()] + m.group(1) + ", ".join(names + added)
+                        + code[m.end():])
+                notes.append(f"补 import：{'、'.join(added)}")
+    missing_t = _missing_type_names(code)
+    if missing_t:
+        m = _TYPES_RE.search(code)
+        if m:
+            names = [n.strip() for n in m.group(1).split(",") if n.strip()]
+            added = [n for n in missing_t if n not in names]
+            if added:
+                code = (code[:m.start()] + "from pynecore.types import "
+                        + ", ".join(names + added) + code[m.end():])
+                notes.append(f"补 types import：{'、'.join(added)}")
+        else:
+            anchor = _LIB_IMPORT_RE.search(code)
+            if anchor:
+                code = (code[:anchor.end()] + "\nfrom pynecore.types import "
+                        + ", ".join(missing_t) + code[anchor.end():])
+                notes.append(f"补 types import：{'、'.join(missing_t)}")
+    return code, notes
+
+
+def _list_container_problems(code: str) -> list[str]:
+    """`PersistentSeries[list]` 装列表：`a[i]` 会被当成「i 根 bar 前的值」而不是列表下标。"""
     out: list[str] = []
-    for name in _LIB_NAMES:
-        if name in imported or name in defined:
-            continue
-        if re.search(rf"(?<![\w.]){re.escape(name)}(?![\w])", clean):
-            out.append(f"用了 {name} 但没从 pynecore.lib 导入")
+    for m in re.finditer(r"^\s*(\w+)\s*:\s*PersistentSeries\s*\[\s*list\s*\]", code, re.M):
+        out.append(f"`{m.group(1)}: PersistentSeries[list]` 装不了列表："
+                   f"它的 `{m.group(1)}[i]` 是「i 根 bar 前的值」不是列表下标（实测 0521 报 "
+                   f"TypeError: '>=' not supported between 'list' and 'int'）。"
+                   f"改成 `{m.group(1)}: Persistent[list] = []`"
+                   f"（from pynecore.types import Persistent）")
     return out
 
 
@@ -426,6 +1015,45 @@ def _sizing_problems(code: str) -> list[str]:
             f"统一改成 initial_capital=100000 / default_qty_value=95"]
 
 
+def _history_problems(code: str) -> list[str]:
+    """fix_history 改不动的那部分：名字有多处绑定，只有模型能决定怎么改。"""
+    out: list[str] = []
+    for name, _, _, ambiguous in _series_needed(code):
+        if ambiguous:
+            out.append(f"对 {name} 取历史但它没有 Series 声明、又有多处赋值/参数："
+                       f"改成 `{name}: Series[float] = ...` 声明一次，"
+                       f"其它地方用 `{name} = ...` 重新赋值")
+    return out
+
+
+def _persistent_history_problems(code: str) -> list[str]:
+    """`Persistent` 没有历史（`p[1]` 抛 TypeError）——被下标读到时得换 PersistentSeries。
+
+    `Persistent[list]` 的 `[i]` 是正常列表下标，不算历史读，别误报。
+    """
+    root = _scan_scopes(code)
+    if root is None:
+        return []
+    out: list[str] = []
+
+    def visit(scope: _Scope) -> None:
+        for name in scope.subs:
+            cur = scope
+            while cur is not None:
+                if name in cur.ann:
+                    text = cur.ann_text.get(name, "")
+                    if text.startswith("Persistent[") and not text.startswith("Persistent[list"):
+                        out.append(f"对 {name} 取历史（{name}[n]）但它是 `{text}`（没有历史）："
+                                   f"改成 PersistentSeries[...]")
+                    break
+                cur = cur.parent
+        for child in scope.children:
+            visit(child)
+
+    visit(root)
+    return out
+
+
 def static_check(code: str) -> list[str]:
     """语法 + 危险调用 + 导入/命名空间静态检查。返回问题列表（空 = 通过）。"""
     problems: list[str] = []
@@ -438,6 +1066,12 @@ def static_check(code: str) -> list[str]:
             problems.append(f"缺少必需结构：{need}")
     problems += _namespace_problems(code)
     problems += _import_problems(code)
+    problems += _type_import_problems(code)
+    problems += _history_problems(code)
+    problems += _persistent_history_problems(code)
+    problems += _cond_series_problems(code)
+    problems += _list_container_problems(code)
+    problems += _list_repeat_problems(code)
     problems += _sizing_problems(code)
     try:
         compile(code, "<candidate>", "exec")
@@ -478,15 +1112,40 @@ REPAIR_PROMPT = """你上一次的转写没通过静态检查 / 回测。下面�
 
 - 取历史值：`ta.atr(n)[1]`、`(high + low)[1]` 都会抛 TypeError。先赋值再索引：
   `atr_val: Series[float] = ta.atr(n)`，然后写 `atr_val[1]`。
+- 取历史的名字必须是 Series 变量（普通赋值/解包/参数都只剩当前值）：
+  `s = ta.sma(close, 20)` 之后写 `s[1]` 会抛 TypeError，改成
+  `s: Series[float] = ta.sma(close, 20)`；`a, b, c = ta.bb(close, 20, 2)` 之后要取
+  `b[1]`，紧跟解包补一行 `b: Series[float] = b`；辅助函数的参数被下标时加注解
+  `def f(src: Series[float], n: int)`。
 - 元组返回：`m = ta.macd(close, 12, 26, 9)` 拿到的是元组，下标取到的是别的指标；
   改成 `macd_line, signal_line, hist = ta.macd(close, 12, 26, 9)`。
 - 缺 import：用到的名字（na / nz / bar_index / time / timeframe / timestamp …）都要写进
   `from pynecore.lib import ...`，用不到的就从 import 里删掉。`ta.bar_index` 不存在，
   用 `from pynecore.lib import bar_index` 后写裸名 `bar_index`。
 - 缺失值：`math.isnan` / `math.nan` 不存在——判断用 `na(x)`，字面值写 `float('nan')`。
-- Pine 语法残留：`cond ? a : b` → `a if cond else b`；`x := v` → `x = v`；删掉 `var`。
+- Pine 的 `var`（跨 bar 保留状态）必须用 `PersistentSeries`：
+  `flag: Series[bool] = False` 每根 bar 都会重置，状态永远存不住（实测这类策略 0 成交）；
+  改成 `flag: PersistentSeries[bool] = False`（`from pynecore.types import PersistentSeries`）。
+  注意：PersistentSeries 的初始值只算一次，**每根 bar 都要重算的值仍用 `Series[...]`**。
+- 分支里声明 Series：`if c: x: Series[float] = a` / `else: x = b` 里分支里的声明只在那个
+  分支执行，其它分支的 `x = b` 撞上没喂过的空缓冲 → x 恒为 nan（实测 0 成交）。改成
+  分支只算普通值、链后声明一次：
+  `if c: raw = a` / `else: raw = b` / `x: Series[float] = raw`。
+- 列表容器：`a: PersistentSeries[list] = []` 的 `a[i]` 是「i 根 bar 前的值」，不是列表
+  下标（会拿到 list 或 na）——改成 `a: Persistent[list] = []`
+  （`from pynecore.types import Persistent`），`a.append(v)` / `a[i]` / `len(a)` 照常用。
+- 列表实参别传进 `Series[...]` 标注的参数：参数被标注成 Series 后，`x[i]` 变成「i 根 bar
+  前的值」——传进去的是列表就整个返回列表，`bar_index - x[i]` 报
+  `TypeError: unsupported operand type(s) for -: 'float' and 'list'`（实测 0159）。
+  列表参数的注解直接去掉（裸参数就是普通 Python 值，`x[i]` 是正常下标）。
+- Pine 语法残留：`cond ? a : b` → `a if cond else b`；`x := v` → `x = v`；`var x = ...`
+  按上面的持久变量规则翻成 `PersistentSeries`。
 - 仓位：装饰器统一 `initial_capital=100000` / `default_qty_value=95`（percent_of_equity）。
-- 列表长度：`[False] * n` 里的 n 必须是 int，写成 `int(n_levels)`。
+- 列表初始化：**别写 `[初值] * n`**——pyne 里 n 是浮点（`input()` 的参数、`int()` 转换都是
+  浮点：`int()` 被翻成 `safe_int()` 返回 float），list × float 直接
+  `TypeError: can't multiply sequence by non-int of type 'float'`（实测 0248/0253/0260）。
+  改成 `array.new_bool(n, False)` / `array.new_float(n, 0.0)` / `array.new_int(n, 0)`
+  （`from pynecore.lib import array`），或 `[False for _ in range(n)]`（range 的实参会被截断）。
 """
 
 
@@ -509,7 +1168,7 @@ def transpile(item_id: str, model: str = MODEL) -> dict:
     if truncated:
         raise RuntimeError("模型输出被 max_tokens 截断（关思考与开思考都试过了）")
     code = extract_code(raw)
-    code, fixes = depine(code)
+    code, fixes = autofix(code)
     (out / "candidate.py").write_text(code, encoding="utf-8")
     problems = static_check(code)
     meta = {"id": item_id, "title": got.get("title"), "category": got.get("category"),
@@ -541,7 +1200,7 @@ def repair(item_id: str, error: str, model: str = MODEL) -> dict:
     if truncated:
         raise RuntimeError("修复输出被 max_tokens 截断")
     new_code = extract_code(raw)
-    new_code, fixes = depine(new_code)
+    new_code, fixes = autofix(new_code)
     cand.write_text(new_code, encoding="utf-8")
     problems = static_check(new_code)
     meta = json.loads(meta_path.read_text(encoding="utf-8"))

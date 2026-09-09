@@ -814,6 +814,13 @@ def test_hold_pipe_row_parses_event_type_and_source():
     assert h["verdict"] == "利好" and h["impact"] == 1
 
 
+def test_gate_chunk_smaller_than_general_chunk():
+    """门卫批 35 / 其余段 50——只调门卫，别放大 micro 的调用次数。"""
+    assert N.GATE_CHUNK == 35
+    assert N.CHUNK == 50
+    assert N._MAX_TOKENS[N.HOLD] == 5000
+
+
 def test_review_collect_rows_tolerates_skipped_and_garbage_micro():
     """段整体 skipped / sentiment 脏值 / tickers 缺失 → 不崩、不产生假信号。"""
     briefs = [{"holdings": [], "segments": {"news-micro": {"skipped": True}}},

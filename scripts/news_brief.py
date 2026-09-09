@@ -1059,8 +1059,12 @@ def load_watch_codes() -> tuple[dict, list]:
 # 编排
 # ============================================================
 
-CHUNK = 50           # 单批进门卫的条数（100 条 × 逐条判决行曾必触 max_tokens 截断，
+CHUNK = 50           # 单批进 macro/micro 的条数（100 条 × 逐条判决行曾必触 max_tokens 截断，
                      # 2026-09-08 午后两期全灭实录 → 批减半 + 预算放宽双保险）
+GATE_CHUNK = 35      # 门卫批单独更小：门卫是「逐条判决」型任务，输入越长越容易长思考
+                     # 吃满预算（2026-09-09 实测 323 条/7 批仍有 2 次截断）。
+                     # 代价：批数 7→10、调用 +40%，整期更慢；用 state.last_run
+                     # 的 truncations/gate_fallback_batches 做前后对比，不达标再回调。
 GATE_SKIP_MAX_RATIO = 0.5   # 单批剔除比例上限：过半 → 判门卫失准，该批剔除作废
 _JSON_TAIL = ("\n\n严格只输出 JSON：不要任何解释/思考过程/分析草稿/markdown 代码块，"
               "回答的首字符必须是 {。")
@@ -1242,7 +1246,7 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
     g_macro, g_micro, h_art, g_skip = [], [], [], 0
     if GATE in stages:
         rel_idx: dict = {}
-        chunks = list(_chunked(arts))
+        chunks = list(_chunked(arts, GATE_CHUNK))
         print(f"[{AGENT_CN[GATE]}] 并行 {len(chunks)} 批 × {len(chunks[0]) if chunks else 0}")
 
         def _gate_chunk(chunk: list) -> dict:

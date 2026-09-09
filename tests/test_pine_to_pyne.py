@@ -25,7 +25,9 @@ from pynecore.lib import close, input, script, strategy, ta
 from pynecore.types import Series
 
 
-@script.strategy("双均线交叉", overlay=True, pyramiding=0)
+@script.strategy("双均线交叉", overlay=True, pyramiding=0,
+                 default_qty_type=strategy.percent_of_equity, default_qty_value=95,
+                 initial_capital=100000)
 def main(fast=input(5, "快线"), slow=input(20, "慢线")):
     f = ta.sma(close, fast)
     s = ta.sma(close, slow)
@@ -680,21 +682,67 @@ class TestHistoryProblems:
 
 
 class TestSizingCheck:
-    def test_tiny_percent_position_flagged(self):
-        code = GOOD.replace(
-            '@script.strategy("双均线交叉", overlay=True, pyramiding=0)',
-            '@script.strategy("双均线交叉", overlay=True, pyramiding=0,\n'
-            '                 default_qty_type=strategy.percent_of_equity, default_qty_value=1,\n'
-            '                 initial_capital=1000)')
-        assert any("仓位金额过小" in p for p in ptp.static_check(code))
+    """口径闸校验**取值**：跨策略比较的前提是同一本金 + 同一仓位类型。"""
 
     def test_template_sizing_passes(self):
+        assert not any("仓位口径" in p for p in ptp.static_check(GOOD))
+
+    def test_tiny_percent_position_flagged(self):
+        """小本金 × 小百分比：A 股按手成交会算出不足 1 股，整场 0 笔。"""
+        code = (GOOD.replace("initial_capital=100000", "initial_capital=1000")
+                    .replace("default_qty_value=95", "default_qty_value=1"))
+        assert any("仓位口径必须与库内统一" in p for p in ptp.static_check(code))
+
+    def test_fixed_qty_flagged(self):
+        """固定手数配不同本金 = 杠杆随本金变（实测 58 份偏离里最要命的一类）。"""
+        code = (GOOD.replace("default_qty_type=strategy.percent_of_equity",
+                             "default_qty_type=strategy.fixed")
+                    .replace("default_qty_value=95", "default_qty_value=1"))
+        assert any("percent_of_equity" in p for p in ptp.static_check(code))
+
+    def test_missing_sizing_flagged(self):
         code = GOOD.replace(
-            '@script.strategy("双均线交叉", overlay=True, pyramiding=0)',
-            '@script.strategy("双均线交叉", overlay=True, pyramiding=0,\n'
-            '                 default_qty_type=strategy.percent_of_equity, default_qty_value=95,\n'
-            '                 initial_capital=100000)')
-        assert not any("仓位金额过小" in p for p in ptp.static_check(code))
+            "                 default_qty_type=strategy.percent_of_equity,"
+            " default_qty_value=95,\n                 initial_capital=100000", "")
+        assert any("缺少统一口径的仓位参数" in p for p in ptp.static_check(code))
+
+    def test_wrong_capital_flagged(self):
+        code = GOOD.replace("initial_capital=100000", "initial_capital=10000")
+        assert any("10000" in p for p in ptp.static_check(code))
+
+
+class TestRefreshProblems:
+    """复用已有候选时必须用**当前**闸门重算——否则收紧规则后重跑等于白跑。"""
+
+    def test_recomputes_and_writes_meta(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ptp, "OUT_DIR", tmp_path)
+        d = tmp_path / "0001"
+        d.mkdir()
+        (d / "candidate.py").write_text(
+            GOOD.replace("initial_capital=100000", "initial_capital=10000"),
+            encoding="utf-8")
+        (d / "meta.json").write_text(json.dumps({"title": "甲", "problems": []}),
+                                     encoding="utf-8")
+
+        meta = ptp._refresh_problems("0001", {"title": "甲", "problems": []})
+
+        assert meta["problems"] and "仓位口径" in meta["problems"][0]
+        saved = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        assert saved["problems"] == meta["problems"] and saved["title"] == "甲"
+
+    def test_unchanged_problems_returns_same_dict(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ptp, "OUT_DIR", tmp_path)
+        d = tmp_path / "0001"
+        d.mkdir()
+        (d / "candidate.py").write_text(GOOD, encoding="utf-8")
+        meta = {"title": "甲", "problems": []}
+        assert ptp._refresh_problems("0001", meta) is meta
+        assert not (d / "meta.json").exists()      # 没变就别写盘
+
+    def test_missing_candidate_is_noop(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ptp, "OUT_DIR", tmp_path)
+        meta = {"problems": ["旧的"]}
+        assert ptp._refresh_problems("0001", meta) is meta
 
 
 class TestListTranspile:

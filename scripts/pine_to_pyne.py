@@ -127,8 +127,10 @@ def main(fast=input(5, "快线周期"), slow=input(20, "慢线周期")):
    NameError，这是实测最高频的失败。注意 `bar_index` / `time` / `na` / `nz` 是**顶层名字**，
    不在 `ta.` 下（`ta.bar_index` 会报 AttributeError）；`pynecore.lib.math` 里没有
    `isnan` / `nan`，判断缺失用 `na(x)`、字面缺失值写 `float('nan')`。
-11. 装饰器参数一律用模板里的 `initial_capital=100000` / `default_qty_value=95`，不要沿用原策略
-   的小本金（1000 本金 × 1% 仓位在 A 股算出不足 1 股，整场 0 笔成交，等于白跑）。
+11. 装饰器参数一律用模板里的 `initial_capital=100000` / `default_qty_value=95` /
+    `default_qty_type=strategy.percent_of_equity`，不要沿用原策略的仓位口径
+    （小本金 × 1% 仓位在 A 股算出不足 1 股、整场 0 笔成交；固定手数配不同本金
+    等于杠杆随本金变，跨策略收益不可比）。静态闸会**校验取值**，写错会被打回重修。
 12. 输出**只有一个 python 代码块**，不要解释文字。
 
 ## 常用库
@@ -999,20 +1001,37 @@ def _namespace_problems(code: str) -> list[str]:
     return out
 
 
+MANDATED_CAPITAL = 100000
+MANDATED_QTY_PCT = 95
+MANDATED_QTY_TYPE = "percent_of_equity"
+MANDATED_DECORATOR = (f"initial_capital={MANDATED_CAPITAL} / "
+                      f"default_qty_value={MANDATED_QTY_PCT} / "
+                      f"default_qty_type=strategy.{MANDATED_QTY_TYPE}")
+
+
 def _sizing_problems(code: str) -> list[str]:
-    """本金×仓位太小 → A股算出不足 1 股 → 整场 0 笔成交，看起来像「策略不灵」其实是白跑。"""
+    """本金 × 仓位口径必须**取值**统一，不只是「写了」。
+
+    1001 条策略要横向比，就得同一本金、同一仓位口径：固定手数/现金额配不同本金
+    等于杠杆随本金变，收益率根本不可比（实测 189 份候选里 62 份偏离，
+    0001 就是 10000 本金 + 100% 仓位）；本金过小还会算出不足 1 股、整场 0 笔成交，
+    看起来像「策略不灵」其实是白跑。
+    """
     clean = _strip_strings_and_comments(code)
-    cap = re.search(r"initial_capital\s*=\s*([0-9_]+)", clean)
-    qty = re.search(r"default_qty_value\s*=\s*([0-9.]+)", clean)
+    num = r"([0-9_]+(?:\.[0-9]+)?)"
+    cap = re.search(rf"initial_capital\s*=\s*{num}", clean)
+    qty = re.search(rf"default_qty_value\s*=\s*{num}", clean)
     typ = re.search(r"default_qty_type\s*=\s*strategy\.(\w+)", clean)
-    if not (cap and qty and typ) or typ.group(1) != "percent_of_equity":
+    if not (cap and qty and typ):
+        return [f"装饰器缺少统一口径的仓位参数：必须写 {MANDATED_DECORATOR}"]
+    got = (f"initial_capital={cap.group(1)} / default_qty_value={qty.group(1)} / "
+           f"default_qty_type=strategy.{typ.group(1)}")
+    if (typ.group(1) == MANDATED_QTY_TYPE
+            and float(cap.group(1).replace("_", "")) == MANDATED_CAPITAL
+            and float(qty.group(1).replace("_", "")) == MANDATED_QTY_PCT):
         return []
-    amount = int(cap.group(1).replace("_", "")) * float(qty.group(1)) / 100
-    if amount >= 1000:
-        return []
-    return [f"仓位金额过小（本金 {cap.group(1)} × {qty.group(1)}% ≈ {amount:.0f} 元）："
-            f"A股按手成交会算出不足 1 股、整场 0 笔成交，"
-            f"统一改成 initial_capital=100000 / default_qty_value=95"]
+    return [f"仓位口径必须与库内统一：当前 {got}，改成 {MANDATED_DECORATOR}。"
+            f"固定手数/现金额配不同本金 = 杠杆随本金变，跨策略收益不可比"]
 
 
 def _history_problems(code: str) -> list[str]:
@@ -1078,6 +1097,25 @@ def static_check(code: str) -> list[str]:
     except SyntaxError as exc:
         problems.append(f"语法错误：{exc.msg}（第 {exc.lineno} 行）")
     return problems
+
+
+def _refresh_problems(item_id: str, meta: dict) -> dict:
+    """用**当前**闸门重算 problems 并回写 meta.json。
+
+    闸门会随规则收紧（2026-09-09 起校验本金/仓位取值）——不重算的话，
+    复用已有候选的老产物会拿旧结论绕过新规则，重跑一遍等于白跑。
+    """
+    cand = OUT_DIR / item_id / "candidate.py"
+    if not cand.exists():
+        return meta
+    problems = static_check(cand.read_text(encoding="utf-8"))
+    if problems == (meta.get("problems") or []):
+        return meta
+    meta = {**meta, "problems": problems,
+            "checked": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    (OUT_DIR / item_id / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return meta
 
 
 def _load_pine(item_id: str) -> dict:
@@ -1314,9 +1352,11 @@ def main() -> int:
         if not cand.exists() or not meta_path.exists():
             print(f"没有候选文件：{cand}（先转写一次）")
             return 2
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta = _refresh_problems(
+            args.id, json.loads(meta_path.read_text(encoding="utf-8")))
     elif cand.exists() and meta_path.exists() and not args.force:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta = _refresh_problems(
+            args.id, json.loads(meta_path.read_text(encoding="utf-8")))
         print(f"复用已有候选：{meta.get('title')}（--force 可重新转写）")
     else:
         try:

@@ -1,52 +1,151 @@
-/* Leaderboard —— 终端风样式 */
+/* Leaderboard —— 终端记分牌风（2026-09-10 改版）
+   设计基调：新粗野 + 交易所大屏。大数当主角、名次分级、收益率带量级条、
+   表格双层层头（核心绩效 / 交易明细），次级指标退到细条带。 */
 
-.leaderboard-header {
+/* ---------- 页头 ---------- */
+.lb-head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
+  align-items: flex-end;
+  margin-bottom: 14px;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
 }
-
-.leaderboard-title {
-  font-size: 24px;
+.lb-title {
+  font-size: 30px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: -0.5px;
+  line-height: 1;
+  font-family: 'Courier New', monospace;
+}
+.lb-sub {
+  margin-top: 6px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--text-tertiary);
+  font-family: 'Courier New', monospace;
+  text-transform: uppercase;
+}
+
+.market-chips { display: flex; gap: 0; }
+
+/* ---------- 战报带：池子（主）+ 三项头名（次） ---------- */
+.lb-hero {
+  display: grid;
+  grid-template-columns: 1.7fr 1fr 1fr 1fr;
+  gap: 0;
+  border: 2px solid #000;
+  background: #fff;
+  margin-bottom: 0;               /* 与下方细条带拼成一块（硬阴影留给表格） */
+}
+.lb-pool {
+  padding: 18px 20px 16px;
+  border-right: 2px solid #000;
+  background:
+    repeating-linear-gradient(45deg, transparent 0 6px, rgba(0,0,0,0.025) 6px 7px);
+}
+.lb-pool-k,
+.lb-tile-k {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  font-family: 'Courier New', monospace;
+}
+.lb-pool-v {
+  font-size: clamp(26px, 2.4vw, 38px);
+  font-weight: 700;
+  line-height: 1.05;
+  margin-top: 8px;
+  font-family: 'Courier New', monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -1px;
+}
+.lb-cur { font-size: 0.55em; color: var(--text-tertiary); margin-right: 2px; }
+.lb-pool-sep { color: #bbb; margin: 0 10px; font-weight: 400; }
+.lb-pool-s {
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--text-tertiary);
   font-family: 'Courier New', monospace;
 }
 
-.market-chips {
+.lb-tile {
+  padding: 14px 16px;
+  border-right: 1px solid #ddd;
   display: flex;
-  gap: 0;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+.lb-tile:last-child { border-right: none; }
+.lb-tile-v {
+  margin-top: 8px;
+  font-size: 17px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lb-tile-logo { margin-right: 5px; }
+.lb-tile-s {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: 'Courier New', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.leaderboard-stats {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
+/* ---------- 次级指标细条带 ---------- */
+.lb-ticker {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex-wrap: wrap;
+  border: 1px solid #000;
+  border-top: none;
+  background: var(--bg-tertiary);
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
   margin-bottom: 20px;
 }
-
-@media (max-width: 900px) {
-  .leaderboard-stats { grid-template-columns: repeat(2, 1fr); }
+.lb-ticker-item {
+  padding: 7px 14px;
+  border-right: 1px solid #000;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.lb-ticker-item b { font-weight: 700; color: var(--text-primary); }
+.lb-ticker-note {
+  padding: 7px 14px;
+  margin-left: auto;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
 }
 
-@media (max-width: 560px) {
-  .leaderboard-stats { grid-template-columns: 1fr; }
-  .leaderboard-title { font-size: 20px; }
-  .leaderboard-table td { padding: 10px 8px; font-size: 10px; }
-  .leaderboard-table th { padding: 10px 8px; font-size: 8.5px; }
-  .market-cell { font-size: 8px; padding: 1px 6px; }
-  .model-logo-cell { font-size: 13px; }
+/* 平板：池子独占一行，三格里两格并排（只删右列右框、贴池子那行去上框，避免错格） */
+@media (max-width: 1100px) {
+  .lb-hero { grid-template-columns: 1fr 1fr; }
+  .lb-pool { grid-column: 1 / -1; border-right: none; border-bottom: 2px solid #000; }
+  .lb-tile { border-top: 1px solid #ddd; }
+  .lb-tile:nth-child(2), .lb-tile:nth-child(3) { border-top: none; }
+  .lb-tile:nth-child(odd) { border-right: none; }
 }
 
-/* 表格 */
+/* ---------- 排名表 ---------- */
 .leaderboard-table-wrap {
   border: 2px solid #000;
   overflow-x: auto;
   background: #fff;
+  box-shadow: 5px 5px 0 #000;      /* 硬阴影：新粗野的签名（下方留白由 footer 承担） */
+  margin-bottom: 22px;
 }
 
 .leaderboard-table {
@@ -57,8 +156,27 @@
 
 .leaderboard-table thead { background: #f5f5f5; }
 
+/* 双层层头：分组标签行 */
+.lb-group-row th {
+  padding: 5px 12px 4px;
+  font-size: 8px;
+  letter-spacing: 0.18em;
+  color: #999;
+  text-transform: uppercase;
+  border-bottom: 1px solid #ddd;
+  cursor: default;
+  text-align: left;
+}
+.lb-group-row th.lb-group {
+  color: #555;
+  border-left: 1px solid #ddd;
+}
+.lb-group-row th.lb-group-dim { color: #aaa; }
+.lb-group-row th:hover { color: inherit; }
+.lb-group-spacer { background: #fff; }
+
 .leaderboard-table th {
-  padding: 12px;
+  padding: 9px 12px;
   text-align: left;
   font-size: 9px;
   color: #666;
@@ -69,13 +187,18 @@
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f5f5f5;
 }
+.lb-group-row th { position: static; }
 
 .leaderboard-table th:hover { color: #10a37f; }
 
 .leaderboard-table td {
-  padding: 14px 12px;
-  border-bottom: 1px solid #000;
+  padding: 11px 12px;
+  border-bottom: 1px solid #e2e2e2;
   color: #333;
   font-size: 11px;
   white-space: nowrap;
@@ -83,8 +206,46 @@
 }
 
 .leaderboard-table tbody tr { transition: background 0.15s; cursor: pointer; }
-.leaderboard-table tbody tr:hover { background: rgba(0, 0, 0, 0.03); }
-.leaderboard-table tbody tr.top-performer { background: rgba(16, 163, 127, 0.06); }
+.leaderboard-table tbody tr:hover { background: rgba(0, 0, 0, 0.035); }
+.leaderboard-table tbody tr.top-performer { background: rgba(16, 163, 127, 0.05); }
+.leaderboard-table tbody tr.top-performer:hover { background: rgba(16, 163, 127, 0.09); }
+/* 榜首：左侧黑条，扫一眼就知道谁是第一 */
+.lb-row-first td:first-child { box-shadow: inset 4px 0 0 #000; }
+.leaderboard-table tbody tr:last-child td { border-bottom: none; }
+
+/* 明细列降噪：浅一档的字色 + 列头细字 */
+.lb-dim-col { color: #8a8a8a; }
+th.lb-dim-col { color: #aaa; }
+
+/* 名次徽章分级 */
+.lb-rank { width: 30px; min-width: 30px; height: 30px; font-size: 12px; }
+.lb-rank.top3 { font-size: 14px; }
+.lb-rank-1 {
+  background: #000;
+  color: #fff;
+  border-color: #000;
+  box-shadow: 3px 3px 0 #10a37f;
+}
+
+/* 收益率 + 量级条 */
+.lb-ret { display: flex; align-items: center; gap: 8px; }
+.lb-ret-v { min-width: 54px; font-weight: 700; }
+.lb-ret-bar {
+  position: relative;
+  display: inline-block;
+  width: 64px;
+  height: 6px;
+  background: #eee;
+  border: 1px solid #ddd;
+  flex: none;
+}
+.lb-ret-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+}
+.lb-ret-bar i.up-bar { background: var(--up-color); }
+.lb-ret-bar i.down-bar { background: var(--down-color); }
 
 .model-cell {
   display: flex;
@@ -104,13 +265,21 @@
   border: 1px solid #000;
 }
 
-.leaderboard-footer {
+/* ---------- 页脚 ---------- */
+.lb-footer {
   margin-top: 12px;
-  text-align: center;
   font-size: 10px;
-  color: #666;
+  color: var(--text-tertiary);
   font-family: 'Courier New', monospace;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.04em;
+  text-align: right;
+}
+.lb-footer-k {
+  margin-right: 8px;
+  padding: 1px 6px;
+  border: 1px solid #ccc;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
 }
 
 /* 融合页：排行榜表格下方模型卡片区块标题 */
@@ -130,4 +299,22 @@
   font-family: 'Courier New', monospace;
   letter-spacing: 0.5px;
   text-transform: uppercase;
+}
+
+/* 手机：单列堆叠（三格全部竖排，贴池子的第 1 格去上框） */
+@media (max-width: 620px) {
+  .lb-hero { grid-template-columns: 1fr; }
+  .lb-tile { border-right: none; }
+  .lb-tile:nth-child(3) { border-top: 1px solid #ddd; }
+}
+
+@media (max-width: 560px) {
+  .lb-title { font-size: 22px; }
+  .leaderboard-table td { padding: 10px 8px; font-size: 10px; }
+  .leaderboard-table th { padding: 8px; font-size: 8.5px; }
+  .lb-group-row th { padding: 4px 8px; }
+  .market-cell { font-size: 8px; padding: 1px 6px; }
+  .model-logo-cell { font-size: 13px; }
+  .lb-ret-bar { display: none; }
+  .lb-ticker-note { display: none; }
 }

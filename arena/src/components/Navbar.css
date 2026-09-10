@@ -73,11 +73,23 @@
   letter-spacing: 0.5px;
   transition: color 0.2s;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  white-space: nowrap;
 }
 
 .navbar-menu-center li a:hover,
 .navbar-menu-center li a.active {
   color: #10a37f;
+}
+
+/* 中屏（平板横屏）：菜单跟随收缩，不折行、不压到 logo */
+@media (max-width: 1000px) {
+  .navbar-menu-center {
+    gap: 13px;
+  }
+  .navbar-menu-center li a {
+    font-size: 10.5px;
+    letter-spacing: 0.2px;
+  }
 }
 
 @media (max-width: 768px) {

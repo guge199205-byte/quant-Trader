@@ -1,64 +1,8 @@
-/* 交易智能体（AI-HARNESS 嵌入页）— 终端风 */
+/* 交易智能体（AI-HARNESS 嵌入页）——整页就是工作区 */
 
-.hs-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 14px 0;
-  border-bottom: 2px solid #000;
-  margin-bottom: 14px;
-}
-
-.hs-title {
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  line-height: 1.9;
-}
-
-.hs-badge {
-  display: inline-block;
-  margin-left: 8px;
-  padding: 1px 8px;
-  font-size: 9px;
-  font-weight: 700;
-  border: 1.5px solid #000;
-  background: #000;
-  color: #fff;
-  vertical-align: 3px;
-  letter-spacing: 0.15em;
-}
-
-/* 副标题紧跟 badge 之后，随标题一起换行（第二行） */
-.hs-sub {
-  display: inline-block;
-  margin-left: 12px;
-  font-size: 10px;
-  font-weight: 400;
-  color: #666;
-  letter-spacing: 0.3px;
-  vertical-align: 4px;
-}
-
-.hs-btn {
-  padding: 4px 12px;
-  font-size: 10px;
-  font-weight: 700;
-  font-family: 'Courier New', monospace;
-  border: 1.5px solid #000;
-  background: #fff;
-  color: #000;
-  cursor: pointer;
-  transition: all 0.15s;
-  text-decoration: none;
-  display: inline-block;
-}
-
-.hs-btn:hover {
-  background: #000;
-  color: #fff;
+.hs-page {
+  padding: 10px 12px;
+  max-width: none;
 }
 
 .hs-frame-wrap {
@@ -69,7 +13,19 @@
 .hs-frame {
   display: block;
   width: 100%;
-  height: calc(100vh - 210px);
-  min-height: 480px;
+  /* 视口 − 导航(56) − 页面留白 − 边框：整页不出滚动条 */
+  height: calc(100vh - 94px);
+  min-height: 520px;
   border: none;
+}
+
+@media (max-width: 640px) {
+  .hs-page {
+    padding: 8px;
+  }
+
+  .hs-frame {
+    height: calc(100vh - 90px);
+    min-height: 420px;
+  }
 }

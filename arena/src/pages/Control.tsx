@@ -8,12 +8,15 @@ import {
   fetchLiveAccount,
   fetchLiveEquity,
   fetchLiveLedger,
+  fetchLiveTrades,
   fetchMetrics,
   fetchOverview,
+  fetchQmtAccount,
   marketMeta,
 } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
 import { fmtDate, fmtMoney, fmtPct, pnlClass } from '../utils/format';
+import { fmtAgo, fmtDateTime } from '../utils/datetime';
 import TradingSettings from './TradingSettings';
 import './Control.css';
 
@@ -42,14 +45,15 @@ interface TradingStatus {
 }
 
 async function fetchExchangeStatus() {
-  const [tdx, tiger, futu, ib, rt] = await Promise.all([
+  const [tdx, tiger, futu, ib, qmt, rt] = await Promise.all([
     api.get('/tdx/config').then((r) => r.data as TdxStatus).catch(() => null),
     api.get('/broker-config/tiger').then((r) => r.data as BrokerStatus).catch(() => null),
     api.get('/broker-config/futu').then((r) => r.data as BrokerStatus).catch(() => null),
     api.get('/broker-config/ib').then((r) => r.data as BrokerStatus).catch(() => null),
+    api.get('/broker-config/qmt').then((r) => r.data as BrokerStatus).catch(() => null),
     api.get('/real-trading/status').then((r) => r.data as TradingStatus).catch(() => null),
   ]);
-  const brokers = [tiger, futu, ib]
+  const brokers = [tiger, futu, ib, qmt]
     .filter((b): b is BrokerStatus => !!b)
     .map((b) => ({ broker: b.broker, label: b.label, fields: b.fields, loaded: true }));
   return { tdx, brokers, rt };
@@ -73,13 +77,44 @@ export default function Control() {
   const liveAcct = usePolling(() => fetchLiveAccount(), [], 20000);
   const liveLedger = usePolling(() => fetchLiveLedger(), [], 20000);
   const liveEquity = usePolling(() => fetchLiveEquity(), [], 20000);
+  // 迅投 QMT(A股, 只读镜像账户): QMT 桥不可达时为 null → 面板显示降级提示
+  const qmtAcct = usePolling(fetchQmtAccount, [], 30000);
+  // 实盘成交回报（通达信桥，秒级）：页头「最近成交」用它，别拿模拟盘落库时间冒充
+  const liveTrades = usePolling(() => fetchLiveTrades(), [], 30000);
+
+  // 最近一笔实盘成交时刻（ISO 混杂时区时按时间戳比大小，不比字符串）
+  const lastFillTs = useMemo(() => {
+    let best: string | null = null;
+    let bestMs = -Infinity;
+    for (const t of liveTrades.data ?? []) {
+      const ms = Date.parse(t.ts ?? '');
+      if (Number.isFinite(ms) && ms > bestMs) {
+        bestMs = ms;
+        best = t.ts ?? null;
+      }
+    }
+    return best;
+  }, [liveTrades.data]);
+
+  // QMT 持仓按市值降序（50 只全列，大仓位在前）
+  const qmtPositions = useMemo(
+    () => [...(qmtAcct.data?.positions ?? [])].sort((a, b) => b.position_value - a.position_value),
+    [qmtAcct.data],
+  );
 
   const ageText = useMemo(() => {
     const age = metrics.data?.latest_trade_age_sec;
-    if (age == null) return '无交易记录';
+    if (age == null) return '无记录';
     if (age < 60) return `${age} 秒前`;
     if (age < 3600) return `${Math.floor(age / 60)} 分钟前`;
-    return `${Math.floor(age / 3600)} 小时前`;
+    if (age < 86400) return `${Math.floor(age / 3600)} 小时前`;
+    return `${Math.floor(age / 86400)} 天前`;
+  }, [metrics.data]);
+
+  /** 服务端数据时刻（不是浏览器渲染时刻 —— 页面卡住时两者会差很多） */
+  const generatedAt = useMemo(() => {
+    const g = metrics.data?.generated_at;
+    return g ? new Date(g * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
   }, [metrics.data]);
 
   if (overview.error) {
@@ -88,46 +123,49 @@ export default function Control() {
 
   return (
     <div className="page">
-      <div className="control-header">
+      {/* 紧凑页头：标题 / 视图 tab / 服务灯 / 数据时效 一行排布，窄屏自动换行 */}
+      <div className="control-bar">
         <h1 className="control-title">总控台</h1>
+        <div className="tabs control-tabs">
+          <button
+            className={`tab ${view === 'overview' ? 'active' : ''}`}
+            onClick={() => setParams({})}
+          >
+            总控
+          </button>
+          <button
+            className={`tab ${view === 'exchange' ? 'active' : ''}`}
+            onClick={() => setParams({ view: 'exchange' })}
+          >
+            交易所设置
+          </button>
+        </div>
+        <div className="svc-row">
+          {Object.entries(metrics.data?.services ?? {}).length === 0 && (
+            <span className="dim" style={{ fontSize: 11 }}>服务状态加载中…</span>
+          )}
+          {Object.entries(metrics.data?.services ?? {}).map(([k, v]) => (
+            <span className="svc-chip" key={k} title={`${SERVICE_NAMES[k] ?? k}${v === 'up' ? ' 正常' : ' 掉线'}`}>
+              <span className={`svc-dot ${v === 'up' ? 'svc-up' : 'svc-down'}`} />
+              {SERVICE_NAMES[k] ?? k}
+            </span>
+          ))}
+        </div>
         <span className="control-refresh">
-          更新于 {new Date().toLocaleTimeString('zh-CN')} · 最近交易 {ageText} · 30 秒自动刷新
+          <em>数据时刻</em>
+          {generatedAt}
+          <em>最近实盘成交</em>
+          {lastFillTs ? `${fmtDateTime(lastFillTs)}（${fmtAgo(lastFillTs)}）` : '—'}
+          <em>模拟盘落库</em>
+          {ageText}
+          <em>自动刷新</em>20–30s
         </span>
-      </div>
-
-      {/* 视图 tab：总控 / 交易所设置（原 /trading 页已并入） */}
-      <div className="tabs" style={{ marginBottom: 14 }}>
-        <button
-          className={`tab ${view === 'overview' ? 'active' : ''}`}
-          onClick={() => setParams({})}
-        >
-          总控
-        </button>
-        <button
-          className={`tab ${view === 'exchange' ? 'active' : ''}`}
-          onClick={() => setParams({ view: 'exchange' })}
-        >
-          交易所设置
-        </button>
       </div>
 
       {view === 'exchange' ? (
         <TradingSettings embedded />
       ) : (
       <>
-      {/* 服务健康条 */}
-      <div className="svc-row">
-        {Object.entries(metrics.data?.services ?? {}).length === 0 && (
-          <span className="dim" style={{ fontSize: 11 }}>服务状态加载中…</span>
-        )}
-        {Object.entries(metrics.data?.services ?? {}).map(([k, v]) => (
-          <span className="svc-chip" key={k}>
-            <span className={`svc-dot ${v === 'up' ? 'svc-up' : 'svc-down'}`} />
-            {SERVICE_NAMES[k] ?? k} {v === 'up' ? '正常' : '掉线'}
-          </span>
-        ))}
-      </div>
-
       {/* 交易所状态 + A股实盘分账：两列并排 */}
       <div className="control-grid control-grid-2">
       <section className="mk-section" style={{ border: '2px solid #000', padding: '10px 14px' }}>
@@ -200,6 +238,7 @@ export default function Control() {
                 {Object.entries(liveLedger.data?.agents ?? {}).map(([name, ag]: [string, AgentLedger]) => {
                   const pts = liveEquity.data?.agents?.[name] ?? [];
                   const nav = pts.length ? pts[pts.length - 1].value : null;
+                  // 百分点数（5 = +5%）：与 Live.tsx / pnl_pct 全局约定一致，勿再喂给 fmtPct（它会 ×100）
                   const ret = nav != null ? (nav / (ag.quota || 100000) - 1) * 100 : null;
                   const posCount = Object.keys(ag.positions ?? {}).length;
                   return (
@@ -209,7 +248,7 @@ export default function Control() {
                         {nav != null ? fmtMoney(nav, '¥', 0) : '—'}
                       </td>
                       <td className={ret != null ? pnlClass(ret) : 'dim'}>
-                        {ret != null ? fmtPct(ret) : '—'}
+                        {ret != null ? `${ret >= 0 ? '+' : ''}${ret.toFixed(2)}%` : '—'}
                       </td>
                       <td className="dim">
                         ¥{Math.round(ag.used).toLocaleString('zh-CN')} / ¥{Math.round(ag.quota).toLocaleString('zh-CN')}
@@ -233,6 +272,83 @@ export default function Control() {
         </section>
       )}
       </div>
+
+      {/* 迅投 QMT 只读镜像账户：总资产卡 + 持仓明细（阶段一只读，不下单） */}
+      {qmtAcct.data ? (
+        <section className="mk-section">
+          <div className="mk-head">
+            <span>⚡ 迅投 QMT（只读）</span>
+            <span className="mk-count">
+              {qmtAcct.error ? '⚠ 刷新失败，显示上次数据 · ' : ''}
+              账号 {qmtAcct.data.account_id} · 总资产 {fmtMoney(qmtAcct.data.asset, '¥', 0)}
+              {' '}· 可用 {fmtMoney(qmtAcct.data.cash, '¥', 0)}
+              {' '}· 市值 {fmtMoney(qmtAcct.data.market_value, '¥', 0)}
+              {' '}· {qmtAcct.data.positions.length} 只持仓
+            </span>
+          </div>
+          {qmtPositions.length === 0 ? (
+            <div className="mk-empty">账户当前空仓</div>
+          ) : (
+            <div className="table-wrap mk-table qmt-pos-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>持仓</th>
+                    <th>可用</th>
+                    <th>成本</th>
+                    <th>现价</th>
+                    <th>市值</th>
+                    <th>浮动盈亏</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {qmtPositions.map((p) => {
+                    // 成本为负（摊薄成本法）时绝对盈亏有效、百分比无意义 → 只显 ¥；
+                    // 成本/现价任一为 0（桥侧「拿不到」）→ 整格留白
+                    const showPnl = p.last_price > 0 && p.cost_price !== 0;
+                    const showPct = showPnl && p.cost_price > 0;
+                    return (
+                      <tr key={p.stock_code}>
+                        <td className="dim">{p.stock_code}</td>
+                        <td style={{ fontWeight: 700 }}>{p.name}</td>
+                        <td>{p.total_volume.toLocaleString('zh-CN')}</td>
+                        <td className="dim">{p.available_volume.toLocaleString('zh-CN')}</td>
+                        <td className="dim">{p.cost_price !== 0 ? p.cost_price.toFixed(3) : '—'}</td>
+                        <td>{p.last_price > 0 ? p.last_price.toFixed(3) : '—'}</td>
+                        <td>{fmtMoney(p.position_value, '¥', 0)}</td>
+                        <td className={showPnl ? pnlClass(p.pnl) : 'dim'}>
+                          {showPnl
+                            ? `${p.pnl >= 0 ? '+' : ''}${fmtMoney(p.pnl, '¥', 0)}${showPct ? ` (${p.pnl_pct >= 0 ? '+' : ''}${p.pnl_pct.toFixed(2)}%)` : ''}`
+                            : '—'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : (
+        <section className="mk-section">
+          <div className="mk-head">
+            <span>⚡ 迅投 QMT（只读）</span>
+            <span className="mk-count">
+              {qmtAcct.loading ? '加载中' : qmtAcct.error ? '查询失败' : '未连接'}
+            </span>
+          </div>
+          <div className="mk-empty">
+            {/* 三种状态分开：首轮在途时别报「未连接」误警 */}
+            {qmtAcct.loading
+              ? 'QMT 账户连接中…'
+              : qmtAcct.error
+                ? `QMT 查询失败：${qmtAcct.error}`
+                : 'QMT 桥未连接——确认 Windows 大 QMT 策略在运行，或在「交易所设置 → 迅投 QMT」检查配置。'}
+          </div>
+        </section>
+      )}
 
       {/* 三市场区块：cn/hk/us 三列并排 */}
       <div className="control-grid control-grid-3">

@@ -50,7 +50,8 @@ export default function BatchPanel({
   if (!runs.length && !err) {
     return (
       <div className="lab-empty">
-        还没有批量回测结果。先在服务器上跑一批：
+        <b>还没有批量回测结果</b>
+        先在服务器上跑一批，跑完这里会出现策略排行与选股：
         <code>pine_lab/.venv/bin/python scripts/lab_batch_backtest.py --pool hs300</code>
       </div>
     );
@@ -82,11 +83,14 @@ export default function BatchPanel({
         </div>
       </div>
 
-      <p className="lab-note lab-note-top">
-        跑新批次（服务器上执行，跑批吃 CPU 不进 API 进程）：
-        <code>pine_lab/.venv/bin/python scripts/lab_batch_backtest.py --pool hs300</code>
-        ，池子可换 sz50 / zz500 / zz1000 / all（全市场，按流通市值降序，配 --limit N）。
-      </p>
+      <details className="lab-cmd">
+        <summary>跑新批次 · 在服务器上执行（跑批吃 CPU，不进 API 进程）</summary>
+        <div className="lab-cmd-body">
+          在仓库根目录执行：
+          <code>pine_lab/.venv/bin/python scripts/lab_batch_backtest.py --pool hs300</code>
+          池子可换 sz50 / zz500 / zz1000 / all（全市场，按流通市值降序，配 --limit N 限量）。
+        </div>
+      </details>
 
       {err && <div className="lab-err">{err}</div>}
       {busy && !detail && <div className="lab-empty">加载中…</div>}

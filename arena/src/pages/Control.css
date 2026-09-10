@@ -1,34 +1,66 @@
 /* 总控台 —— 参考 nof0 monitor.html，coke 视觉 */
 
-.control-header {
+/* 紧凑页头：一行装下「标题 / 视图 tab / 服务灯 / 数据时效」，
+   窄屏按 flex-wrap 折行（原先是三行满宽区块，顶部太占地方） */
+.control-bar {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 14px;
+  align-items: center;
+  gap: 10px 12px;
   flex-wrap: wrap;
-  gap: 6px;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border: 2px solid #000;
+  background: #fff;
 }
 
 .control-title {
-  font-size: 24px;
+  font-size: 17px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   font-family: 'Courier New', monospace;
 }
 
+.control-tabs { margin-bottom: 0; }
+
 .control-refresh {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
   font-size: 10px;
-  color: #666;
+  color: #444;
   font-family: 'Courier New', monospace;
+  font-variant-numeric: tabular-nums;
 }
 
-/* 服务健康条：等宽网格徽章（原零散 chips 一行挤着 → 乱，改 grid 对齐） */
+.control-refresh em {
+  font-style: normal;
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #aaa;
+  border-left: 1px solid #ddd;
+  padding-left: 6px;
+}
+
+.control-refresh em:first-child { border-left: none; padding-left: 0; }
+
+/* 服务健康灯：行内小徽章（原来每个 170px 起、被 grid 拉满整行 → 顶部太宽） */
 .svc-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 8px;
-  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 0;
+}
+
+.svc-row .svc-chip {
+  padding: 2px 7px;
+  border-width: 1.5px;
+  font-size: 10px;
+  gap: 5px;
 }
 
 .svc-chip {
@@ -179,4 +211,18 @@
 .mk-table .data th:first-child,
 .mk-table .data td:first-child {
   padding-left: 12px;
+}
+
+/* QMT 持仓：50 只全列会把三市场区块顶出屏幕 → 卡内纵向滚动，表头吸顶 */
+.qmt-pos-wrap {
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.qmt-pos-wrap .data thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  /* 与全站表头底色一致（globals.css table.data thead），否则吸顶行白底融进行 */
+  background: var(--bg-tertiary, #f5f5f5);
 }

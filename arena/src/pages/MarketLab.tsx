@@ -31,16 +31,19 @@ export default function MarketLab() {
   return (
     <div className="lab-page">
       <header className="lab-head">
-        <h1>行情回测</h1>
+        <div className="lab-title">
+          <h1>行情回测</h1>
+          <div className="lab-sub">quantdb 全市场日线 · 三档复权 · 宿主沙箱里跑策略</div>
+        </div>
         <nav className="lab-tabs">
           {TABS.map((t) => (
             <button
               key={t.id}
               className={tab === t.id ? 'on' : ''}
               onClick={() => setTab(t.id)}
-              title={t.hint}
             >
-              {t.label}
+              <span className="t">{t.label}</span>
+              <span className="h">{t.hint}</span>
             </button>
           ))}
         </nav>

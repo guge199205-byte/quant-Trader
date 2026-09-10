@@ -7,28 +7,14 @@ import './Harness.css';
    dsh settings 可用），basic auth 与 3081 同一份凭据。
    iframe 地址用当前 hostname 自适应：localhost/127.0.0.1/局域网 IP
    都能保持"同站点"。首次进入在页面内输入一次 admin 凭据。
+   整页只放工作区本身，不额外占一行抬头。
    ============================================================ */
 
-// 新窗口入口同样自适应：localhost/127.0.0.1 → dsh 直连（免 auth），
-// 局域网 IP → dsh-proxy（<lan-ip>:3081 + basic auth）
-const DSH_URL = `http://${window.location.hostname}:3081`;
 const DSH_PROXIED_URL = `http://${window.location.hostname}:8093`;
 
 export default function Harness() {
   return (
-    <div className="page">
-      <div className="hs-header">
-        <div>
-          <div className="hs-title">
-            交易智能体 <span className="hs-badge">AI-HARNESS</span>
-            <span className="hs-sub">DeepSeek Harness 工作区嵌入 · 挂载 MCP 交易工具（行情/搜索/交易/计算/记忆）· 首次进入在页面内输入 admin 凭据</span>
-          </div>
-        </div>
-        <a className="hs-btn" href={DSH_URL} target="_blank" rel="noopener noreferrer">
-          新窗口打开 ↗
-        </a>
-      </div>
-
+    <div className="page hs-page">
       <div className="hs-frame-wrap">
         <iframe
           src={DSH_PROXIED_URL}

@@ -15,11 +15,12 @@ const TRADE_ROWS = 60;
 
 function StatCards({ result }: { result: LabResult }) {
   const st = result.stats;
-  const cards: { label: string; value: string; tone?: 'up' | 'down' }[] = [
+  const cards: { label: string; value: string; tone?: 'up' | 'down'; hero?: boolean }[] = [
     {
       label: '策略净收益',
       value: `${fmtMoney(st['Net profit']?.value, result.unit)} (${fmtPct(st['Net profit']?.pct)})`,
       tone: (st['Net profit']?.pct ?? 0) >= 0 ? 'up' : 'down',
+      hero: true,
     },
     { label: '买入持有', value: fmtPct(st['Buy & hold return']?.pct) },
     { label: '最大回撤', value: fmtPct(-(st['Max equity drawdown']?.pct ?? 0)) },
@@ -33,7 +34,7 @@ function StatCards({ result }: { result: LabResult }) {
   return (
     <div className="lab-stats">
       {cards.map((c) => (
-        <div key={c.label} className={`lab-stat ${c.tone ?? ''}`}>
+        <div key={c.label} className={`lab-stat ${c.tone ?? ''} ${c.hero ? 'hero' : ''}`}>
           <span className="k">{c.label}</span>
           <span className="v">{c.value}</span>
         </div>
@@ -181,22 +182,34 @@ export default function ResultView({
           showIndicators={showIndicators}
         />
         <div className="lab-hint">
-          quantdb 日线 · {bars.length} 根 · {bars[0]?.date ?? '—'} ~{' '}
-          {bars[bars.length - 1]?.date ?? '—'}
-          <button className="lab-span" onClick={onToggleSpan}>
-            {fullSpan ? '近 600 根' : '全历史'}
-          </button>
-          <button className="lab-span" onClick={onToggleMarkers}>
-            {showMarkers ? '隐藏成交点' : '显示成交点'}
-          </button>
-          {hasIndicators && (
-            <button className="lab-span" onClick={onToggleIndicators}>
-              {showIndicators ? '隐藏指标' : '显示指标'}
+          <span>
+            quantdb 日线 · {bars.length} 根 · {bars[0]?.date ?? '—'} ~{' '}
+            {bars[bars.length - 1]?.date ?? '—'}
+          </span>
+          <div className="lab-tools">
+            <button className="lab-span" onClick={onToggleSpan}>
+              {fullSpan ? '近 600 根' : '全历史'}
             </button>
-          )}
+            <button className="lab-span" onClick={onToggleMarkers}>
+              {showMarkers ? '隐藏成交点' : '显示成交点'}
+            </button>
+            {hasIndicators && (
+              <button className="lab-span" onClick={onToggleIndicators}>
+                {showIndicators ? '隐藏指标' : '显示指标'}
+              </button>
+            )}
+          </div>
         </div>
         {hasIndicators && showIndicators && result && <IndicatorLegend result={result} />}
       </section>
+
+      {!result && (
+        <div className="lab-empty">
+          <b>还没有回测结果</b>
+          左栏挑一个策略（内置模板或 Pine 库）→ 右栏点运行：K 线上标出买卖点，
+          下面给出净值曲线、九项统计与逐笔明细。
+        </div>
+      )}
 
       {result && (
         <>

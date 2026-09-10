@@ -10,7 +10,8 @@ export default function StrategyList({ wb }: { wb: Workbench }) {
     <aside className="lab-rail">
       <section className="lab-rail-sec">
         <div className="lab-rail-title">
-          内置模板<span className="lab-rail-count">{wb.strategies.length}</span>
+          <span className="t">内置模板</span>
+          <span className="lab-rail-count">{wb.strategies.length}</span>
         </div>
         <ul className="lab-tpl-list">
           {wb.strategies.map((s) => (
@@ -36,7 +37,7 @@ export default function StrategyList({ wb }: { wb: Workbench }) {
 
       <section className="lab-rail-sec lab-rail-grow">
         <div className="lab-rail-title">
-          Pine 策略库
+          <span className="t">Pine 策略库</span>
           <span className="lab-rail-count">{wb.list?.filtered ?? 0}</span>
         </div>
 

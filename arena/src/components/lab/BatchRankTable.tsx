@@ -11,7 +11,7 @@ function Bar({ v, max }: { v: number | null; max: number }) {
   if (v === null) return null;
   const w = Math.min(100, (Math.abs(v) / (max || 1)) * 100);
   return (
-    <span className="lab-bar">
+    <span className="lab-mag">
       <i className={v >= 0 ? 'pos' : 'neg'} style={{ width: `${w}%` }} />
     </span>
   );
@@ -23,8 +23,42 @@ export default function BatchRankTable({ detail }: { detail: LabBatchDetail }) {
 
   if (!rows.length) return <div className="lab-empty">该批次没有聚合结果。</div>;
 
+  // 结论先行：谁最赚 / 谁风险收益比最好 / 谁最常跑赢躺着不动
+  const pick = (f: (r: LabBatchRank) => number | null) =>
+    rows.reduce((a, b) => ((f(b) ?? -Infinity) > (f(a) ?? -Infinity) ? b : a));
+  const topRet = pick((r) => r.mean_net_pct);
+  const topSharpe = pick((r) => r.mean_sharpe);
+  const topBeat = pick((r) => r.beat_bh_pct);
+
   return (
     <div className="lab-batch-body">
+      <div className="lab-hero">
+        <div className="lab-hero-cell">
+          <div className="lab-hero-k">最强策略 · 均值净收益</div>
+          <div className="lab-hero-v">{topRet.name}</div>
+          <div className={`lab-hero-s ${tone(topRet.mean_net_pct)}`}>
+            {fmt(topRet.mean_net_pct, 1, '%')} · {topRet.symbols} 只标的均值
+          </div>
+        </div>
+        <div className="lab-hero-cell">
+          <div className="lab-hero-k">最高夏普</div>
+          <div className="lab-hero-v">{topSharpe.name}</div>
+          <div className="lab-hero-s">夏普 {fmt(topSharpe.mean_sharpe, 2)}</div>
+        </div>
+        <div className="lab-hero-cell">
+          <div className="lab-hero-k">跑赢持有最多</div>
+          <div className="lab-hero-v">{topBeat.name}</div>
+          <div className="lab-hero-s">跑赢 {fmt(topBeat.beat_bh_pct, 1, '%')} 的标的</div>
+        </div>
+        <div className="lab-hero-cell">
+          <div className="lab-hero-k">本批规模</div>
+          <div className="lab-hero-v">{detail.universe} 标的</div>
+          <div className="lab-hero-s">
+            {rows.length} 个策略 · {detail.counts?.rows ?? 0} 行结果
+          </div>
+        </div>
+      </div>
+
       <div className="lab-table-wrap lab-table-tall">
         <table className="lab-rank">
           <thead>
@@ -44,7 +78,9 @@ export default function BatchRankTable({ detail }: { detail: LabBatchDetail }) {
           <tbody>
             {rows.map((r: LabBatchRank, i) => (
               <tr key={r.strategy}>
-                <td className="idx">{i + 1}</td>
+                <td className="idx">
+                  <span className={`lab-idx ${i === 0 ? 'top' : i < 3 ? 'medal' : ''}`}>{i + 1}</span>
+                </td>
                 <td className="name">{r.name}</td>
                 <td className="num">{r.symbols}</td>
                 <td className={`num ${tone(r.mean_net_pct)}`}>

@@ -23,6 +23,13 @@ const fmtPct = (v: number | null, d = 1) =>
 
 const tone = (v: number | null) => (v === null ? '' : v >= 0 ? 'up' : 'down');
 
+const median = (xs: number[]) => {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+
 export default function BatchScreener({
   runId,
   strategies,
@@ -62,6 +69,20 @@ export default function BatchScreener({
     (r) => r.net_pct !== null && r.buy_hold_pct !== null && r.net_pct > r.buy_hold_pct,
   ).length;
 
+  // 结论带：这策略在全池的典型表现（中位数比均值抗极值，更接近"随便买一只"的体验）
+  const withNet = rows.filter((r) => r.net_pct !== null);
+  const medNet = median(withNet.map((r) => r.net_pct as number));
+  const medExcess = median(
+    withNet
+      .filter((r) => r.buy_hold_pct !== null)
+      .map((r) => (r.net_pct as number) - (r.buy_hold_pct as number)),
+  );
+  const best = withNet.reduce<LabBatchRow | null>(
+    (a, b) => (a === null || (b.net_pct ?? -Infinity) > (a.net_pct ?? -Infinity) ? b : a),
+    null,
+  );
+  const winPct = rows.length ? (winners / rows.length) * 100 : null;
+
   return (
     <div className="lab-batch-body">
       <div className="lab-screen-bar">
@@ -92,6 +113,37 @@ export default function BatchScreener({
 
       {err && <div className="lab-err">{err}</div>}
 
+      {rows.length > 0 && (
+        <div className="lab-hero">
+          <div className="lab-hero-cell">
+            <div className="lab-hero-k">跑赢买入持有</div>
+            <div className="lab-hero-v">
+              {winners} / {rows.length} 只
+            </div>
+            <div className="lab-hero-s">
+              {winPct === null ? '—' : `${winPct.toFixed(1)}% 的标的里择时打得过躺着`}
+            </div>
+          </div>
+          <div className="lab-hero-cell">
+            <div className="lab-hero-k">中位策略收益</div>
+            <div className={`lab-hero-v ${tone(medNet)}`}>{fmtPct(medNet)}</div>
+            <div className="lab-hero-s">一半标的比它好、一半比它差</div>
+          </div>
+          <div className="lab-hero-cell">
+            <div className="lab-hero-k">中位超额</div>
+            <div className={`lab-hero-v ${tone(medExcess)}`}>{fmtPct(medExcess)}</div>
+            <div className="lab-hero-s">策略收益 − 买入持有</div>
+          </div>
+          <div className="lab-hero-cell">
+            <div className="lab-hero-k">全池最赚</div>
+            <div className="lab-hero-v">{best ? best.name || best.symbol : '—'}</div>
+            <div className={`lab-hero-s ${tone(best?.net_pct ?? null)}`}>
+              {best ? `${fmtPct(best.net_pct)} · ${best.symbol}` : ''}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="lab-table-wrap lab-table-tall">
         <table className="lab-rank">
           <thead>
@@ -115,7 +167,9 @@ export default function BatchScreener({
                 r.net_pct !== null && r.buy_hold_pct !== null ? r.net_pct - r.buy_hold_pct : null;
               return (
                 <tr key={r.symbol} onClick={() => onPickSymbol(r.symbol)} title="点击查看该标的K线与逐笔">
-                  <td className="idx">{i + 1}</td>
+                  <td className="idx">
+                    <span className={`lab-idx ${i === 0 ? 'top' : i < 3 ? 'medal' : ''}`}>{i + 1}</span>
+                  </td>
                   <td className="name">
                     {r.name || r.symbol}
                     <span className="code">{r.symbol}</span>

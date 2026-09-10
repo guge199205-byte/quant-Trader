@@ -60,6 +60,12 @@ export default function Leaderboard() {
 
   const sortArrow = (k: SortKey) => (sortKey === k ? (sortDesc ? ' ▲' : ' ▼') : '');
 
+  // 收益率量级条：以当前筛选内最大 |收益率| 为满格，一眼看出领先幅度
+  const maxAbsRet = useMemo(
+    () => Math.max(...visible.map((r) => Math.abs(r.summary.total_return ?? 0)), 0.0001),
+    [visible],
+  );
+
   // 顶部统计（7 卡，coke leaderboard-stats）—— 统计随市场 filter 切换：
   // 基于 visible（filter 后）而非 rows（全市场汇总），否则切 A股/美股/港股统计卡纹丝不动。
   // 币种分开：us 是 $，cn/hk 是 ¥，混加无意义
@@ -99,8 +105,13 @@ export default function Leaderboard() {
 
   return (
     <div className="page">
-      <div className="leaderboard-header">
-        <h1 className="leaderboard-title">模型排行榜</h1>
+      <div className="lb-head">
+        <div>
+          <h1 className="lb-title">模型排行榜</h1>
+          <div className="lb-sub">
+            第 1 赛季 · 08-24 ~ 08-28 回放 · 每 30 秒刷新
+          </div>
+        </div>
         <div className="market-chips">
           {([
             ['all', '全部'],
@@ -120,70 +131,78 @@ export default function Leaderboard() {
         </div>
       </div>
 
-      <div className="leaderboard-stats">
-        <div className="stat-item">
-          <div className="stat-label">模拟盘资金池</div>
-          <div className="stat-value" style={{ fontSize: 15 }}>
-            {stats.poolUsd != null
-              ? `$${Math.round(stats.poolUsd).toLocaleString('en-US')} / ¥${Math.round(stats.poolCny).toLocaleString('zh-CN')}`
-              : '—'}
+      {/* 战报带：池子大数 + 三项头名（等权卡片墙改为有主次的记分牌） */}
+      <div className="lb-hero">
+        <div className="lb-pool">
+          <div className="lb-pool-k">模拟盘资金池</div>
+          <div className="lb-pool-v">
+            {stats.poolUsd != null ? (
+              <>
+                <span className="lb-cur">$</span>
+                {Math.round(stats.poolUsd).toLocaleString('en-US')}
+                <span className="lb-pool-sep">/</span>
+                <span className="lb-cur">¥</span>
+                {Math.round(stats.poolCny).toLocaleString('zh-CN')}
+              </>
+            ) : (
+              '—'
+            )}
           </div>
-          <div className="stat-sub">{stats.marketCount} 市场 × {stats.agentCount} 模型 · 第 1 赛季回放</div>
+          <div className="lb-pool-s">
+            {stats.marketCount} 市场 × {stats.agentCount} 模型 · 双币种分列，不做汇率相加
+          </div>
         </div>
-        <div className="stat-item">
-          <div className="stat-label">最佳模型</div>
-          <div className="stat-value" style={{ fontSize: 15 }}>
+        <div className="lb-tile">
+          <div className="lb-tile-k">最佳模型</div>
+          <div className="lb-tile-v">
             {stats.best ? (
               <>
-                {logoOf(stats.best.agent)}{' '}
-                {/* 显示模型全称（deepseek-v4-flash），缩写 FLASH 看不出是谁 */}
-                <span style={{ fontSize: 13 }}>{stats.best.agent}</span>
+                <span className="lb-tile-logo">{logoOf(stats.best.agent)}</span>
+                {stats.best.agent}
               </>
-            ) : '—'}
+            ) : (
+              '—'
+            )}
           </div>
-          <div className="stat-sub">
-            {stats.best ? (
-              <span className={pnlClass(stats.best.summary.total_return)}>
-                {fmtPct(stats.best.summary.total_return)}
-              </span>
-            ) : ''}
+          <div className={`lb-tile-s ${stats.best ? pnlClass(stats.best.summary.total_return) : ''}`}>
+            {stats.best ? fmtPct(stats.best.summary.total_return) : ''}
           </div>
         </div>
-        <div className="stat-item">
-          <div className="stat-label">总成交</div>
-          <div className="stat-value">{stats.trades}</div>
-          <div className="stat-sub">已平仓笔数</div>
-        </div>
-        <div className="stat-item">
-          <div className="stat-label">平均收益</div>
-          <div className={`stat-value ${pnlClass(stats.avgRet)}`}>{fmtPct(stats.avgRet)}</div>
-          <div className="stat-sub">全部 Agent 均值</div>
-        </div>
-        <div className="stat-item">
-          <div className="stat-label">最高夏普</div>
-          <div className="stat-value" style={{ fontSize: 16 }}>
+        <div className="lb-tile">
+          <div className="lb-tile-k">最高夏普</div>
+          <div className="lb-tile-v">
             {stats.bestSharpe?.summary.sharpe != null ? fmtNum(stats.bestSharpe.summary.sharpe) : '—'}
           </div>
-          <div className="stat-sub">
-            {stats.bestSharpe?.summary.sharpe != null ? stats.bestSharpe.agent.replace('deepseek-v4-', '') : ''}
-          </div>
+          <div className="lb-tile-s">{stats.bestSharpe?.agent ?? ''}</div>
         </div>
-        <div className="stat-item">
-          <div className="stat-label">最高胜率</div>
-          <div className="stat-value" style={{ fontSize: 16 }}>
-            {stats.bestWin?.summary.win_rate != null ? fmtPct(stats.bestWin.summary.win_rate, 1, false) : '—'}
+        <div className="lb-tile">
+          <div className="lb-tile-k">最高胜率</div>
+          <div className="lb-tile-v">
+            {stats.bestWin?.summary.win_rate != null
+              ? fmtPct(stats.bestWin.summary.win_rate, 1, false)
+              : '—'}
           </div>
-          <div className="stat-sub">
-            {stats.bestWin?.summary.win_rate != null ? stats.bestWin.agent.replace('deepseek-v4-', '') : ''}
-          </div>
+          <div className="lb-tile-s">{stats.bestWin?.agent ?? ''}</div>
         </div>
-        <div className="stat-item">
-          <div className="stat-label">累计费用</div>
-          <div className="stat-value" style={{ fontSize: 15 }}>
-            {stats.poolUsd != null ? `$${Math.round(stats.feeUsd).toLocaleString('en-US')} / ¥${Math.round(stats.feeCny).toLocaleString('zh-CN')}` : '—'}
-          </div>
-          <div className="stat-sub">双边 0.03% + 滑点 · 分币种</div>
-        </div>
+      </div>
+
+      {/* 次级指标：细条带，不抢主视觉 */}
+      <div className="lb-ticker">
+        <span className="lb-ticker-item">
+          <b>{stats.trades}</b> 笔平仓
+        </span>
+        <span className="lb-ticker-item">
+          平均收益 <b className={pnlClass(stats.avgRet)}>{fmtPct(stats.avgRet)}</b>
+        </span>
+        <span className="lb-ticker-item">
+          累计费用{' '}
+          <b>
+            {stats.poolUsd != null
+              ? `$${Math.round(stats.feeUsd).toLocaleString('en-US')} / ¥${Math.round(stats.feeCny).toLocaleString('zh-CN')}`
+              : '—'}
+          </b>
+        </span>
+        <span className="lb-ticker-note">双边 0.03% + 滑点 · 分币种</span>
       </div>
 
       {overview.loading && !rows.length ? (
@@ -192,6 +211,13 @@ export default function Leaderboard() {
         <div className="leaderboard-table-wrap">
           <table className="leaderboard-table">
             <thead>
+              {/* 双层层头：核心绩效 / 交易明细分开，15 列不再平铺一锅 */}
+              <tr className="lb-group-row">
+                <th colSpan={3} className="lb-group-spacer" />
+                <th colSpan={5} className="lb-group">核心绩效</th>
+                <th colSpan={6} className="lb-group lb-group-dim">交易明细</th>
+                <th className="lb-group-spacer" />
+              </tr>
               <tr>
                 <th>#</th>
                 <th>模型</th>
@@ -202,11 +228,11 @@ export default function Leaderboard() {
                 <th onClick={() => handleSort('sharpe')}>夏普{sortArrow('sharpe')}</th>
                 <th onClick={() => handleSort('win_rate')}>胜率{sortArrow('win_rate')}</th>
                 <th onClick={() => handleSort('closed_trades')}>成交{sortArrow('closed_trades')}</th>
-                <th>费用</th>
-                <th>平均持仓</th>
-                <th>最大盈</th>
-                <th>最大亏</th>
-                <th>平均盈亏</th>
+                <th className="lb-dim-col">费用</th>
+                <th className="lb-dim-col">平均持仓</th>
+                <th className="lb-dim-col">最大盈</th>
+                <th className="lb-dim-col">最大亏</th>
+                <th className="lb-dim-col">平均盈亏</th>
                 <th>状态</th>
               </tr>
             </thead>
@@ -216,14 +242,17 @@ export default function Leaderboard() {
                 const meta = marketMeta(r.market);
                 const pnl = (s.end_equity ?? 0) - (s.start_equity ?? 0);
                 const rank = i + 1;
+                const ret = s.total_return ?? 0;
                 return (
                   <tr
                     key={`${r.market}:${r.agent}`}
-                    className={`clickable ${rank === 1 ? 'top-performer' : ''}`}
+                    className={`clickable lb-row ${rank === 1 ? 'lb-row-first' : ''} ${rank <= 3 ? 'top-performer' : ''}`}
                     onClick={() => nav(`/model/${r.market}/${encodeURIComponent(r.agent)}`)}
                   >
                     <td>
-                      <span className={`rank-badge ${rank <= 3 ? 'top3' : ''}`}>{rank}</span>
+                      <span className={`rank-badge lb-rank ${rank <= 3 ? 'top3' : ''} ${rank === 1 ? 'lb-rank-1' : ''}`}>
+                        {rank}
+                      </span>
                     </td>
                     <td>
                       <div className="model-cell">
@@ -234,15 +263,26 @@ export default function Leaderboard() {
                     <td><span className="market-cell">{meta.label}</span></td>
                     <td>{fmtMoney(s.end_equity, meta.currency)}</td>
                     <td className={pnlClass(pnl)}>{pnl >= 0 ? '+' : ''}{fmtMoney(pnl, meta.currency)}</td>
-                    <td className={pnlClass(s.total_return)}>{fmtPct(s.total_return)}</td>
+                    <td className={pnlClass(ret)}>
+                      {/* 数值 + 量级条：领先幅度一眼可见（满格 = 本筛选内最大 |收益率|） */}
+                      <div className="lb-ret">
+                        <span className="lb-ret-v">{fmtPct(ret)}</span>
+                        <span className="lb-ret-bar">
+                          <i
+                            className={ret >= 0 ? 'up-bar' : 'down-bar'}
+                            style={{ width: `${Math.min(100, (Math.abs(ret) / maxAbsRet) * 100)}%` }}
+                          />
+                        </span>
+                      </div>
+                    </td>
                     <td className="dim">{fmtNum(s.sharpe)}</td>
                     <td className="dim">{s.win_rate != null ? fmtPct(s.win_rate, 1, false) : '—'}</td>
                     <td className="dim">{s.closed_trades ?? 0}</td>
-                    <td className="dim">{s.total_fee != null ? fmtMoney(s.total_fee, meta.currency, 1) : '—'}</td>
-                    <td className="dim">{s.avg_hold_days != null ? `${fmtNum(s.avg_hold_days, 1)}d` : '—'}</td>
-                    <td className="up">{s.biggest_win != null ? fmtMoney(s.biggest_win, meta.currency, 1) : '—'}</td>
-                    <td className="down">{s.biggest_loss != null ? fmtMoney(s.biggest_loss, meta.currency, 1) : '—'}</td>
-                    <td className={pnlClass(s.avg_trade_pnl)}>{s.avg_trade_pnl != null ? fmtMoney(s.avg_trade_pnl, meta.currency, 1) : '—'}</td>
+                    <td className="dim lb-dim-col">{s.total_fee != null ? fmtMoney(s.total_fee, meta.currency, 1) : '—'}</td>
+                    <td className="dim lb-dim-col">{s.avg_hold_days != null ? `${fmtNum(s.avg_hold_days, 1)}d` : '—'}</td>
+                    <td className="up lb-dim-col">{s.biggest_win != null ? fmtMoney(s.biggest_win, meta.currency, 1) : '—'}</td>
+                    <td className="down lb-dim-col">{s.biggest_loss != null ? fmtMoney(s.biggest_loss, meta.currency, 1) : '—'}</td>
+                    <td className={`${pnlClass(s.avg_trade_pnl)} lb-dim-col`}>{s.avg_trade_pnl != null ? fmtMoney(s.avg_trade_pnl, meta.currency, 1) : '—'}</td>
                     <td>
                       {/* 状态用行级 records(有交易记录=跑过); summary 里没有 records 键,
                           之前误用 s.records 恒为 undefined → 全部显示"待启动" */}
@@ -261,9 +301,9 @@ export default function Leaderboard() {
         </div>
       )}
 
-      <div className="leaderboard-footer">
-        每 30 秒刷新 · 第 1 赛季(08-24~08-28 回放) ·{' '}
-        {[...new Set(rows.map((r) => r.agent.replace('deepseek-v4-', 'V4 ')))].sort().join(' · ')}
+      <div className="lb-footer">
+        <span className="lb-footer-k">参赛模型</span>
+        {[...new Set(rows.map((r) => r.agent))].sort().join(' · ')}
       </div>
 
       <div className="leaderboard-cards-head">

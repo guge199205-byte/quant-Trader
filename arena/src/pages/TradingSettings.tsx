@@ -85,6 +85,20 @@ const BROKER_META: Record<
   string,
   { name: string; markets: string; desc: string; fields: Record<string, { label: string; sensitive?: boolean }> }
 > = {
+  qmt: {
+    name: '迅投 QMT',
+    markets: 'A股 · 模拟账户',
+    desc: '经 Windows 大 QMT + Redis 桥只读接入（与 quantmind 共用本机 Redis 6379/db5）；'
+      + '当前阶段一：可查账户/持仓/委托/成交，下单未接线。',
+    fields: {
+      account_id: { label: '资金账号' },
+      account_type: { label: '账号类型 STOCK / CREDIT' },
+      redis_host: { label: '桥 Redis 主机' },
+      redis_port: { label: 'Redis 端口' },
+      redis_db: { label: 'Redis DB' },
+      redis_password: { label: 'Redis 密码', sensitive: true },
+    },
+  },
   futu: {
     name: '富途证券',
     markets: '港股 · 美股',
@@ -212,7 +226,7 @@ export default function TradingSettings({ embedded = false }: { embedded?: boole
       .then(setStatus)
       .catch(() => {});
 
-    for (const broker of ['tiger', 'futu', 'ib']) {
+    for (const broker of ['qmt', 'tiger', 'futu', 'ib']) {
       void getJson<BrokerConfig>(`/broker-config/${broker}`)
         .then((b) => setBrokerCfgs((prev) => ({ ...prev, [broker]: b })))
         .catch(() => {});
@@ -343,13 +357,17 @@ export default function TradingSettings({ embedded = false }: { embedded?: boole
     return r.ok ? null : (r.error ?? '保存失败');
   }, []);
 
-  // ---- 动作：测试券商连接 ----
-  const testBroker = useCallback(async (broker: string) => {
+  // ---- 动作：测试券商连接（成功返回账户摘要文本，失败返回原因） ----
+  const testBroker = useCallback(async (broker: string): Promise<{ ok: boolean; text: string }> => {
     const r = await postJson(`/broker-config/${broker}/test`, {});
-    if (!r.ok || !r.data || typeof r.data !== 'object') return `测试失败: ${r.error ?? ''}`;
+    if (!r.ok || !r.data || typeof r.data !== 'object') {
+      return { ok: false, text: `测试失败: ${r.error ?? ''}` };
+    }
     const d = r.data as { success?: boolean; ok?: boolean; error?: string; message?: string; detail?: string };
-    if (d.success === false || d.ok === false) return d.error ?? d.detail ?? '连接失败';
-    return null; // 成功
+    if (d.success === false || d.ok === false) {
+      return { ok: false, text: d.error ?? d.detail ?? d.message ?? '连接失败' };
+    }
+    return { ok: true, text: d.message ?? '连接正常' };
   }, []);
 
   const cfg = tdx.data;
@@ -648,7 +666,7 @@ export default function TradingSettings({ embedded = false }: { embedded?: boole
           <div>
             <div className="ts-card-title">券商实盘接入</div>
             <div className="ts-card-desc">
-              港股: 富途/老虎/IB · 美股: 老虎/IB/富途 · 期货: IB · A股走通达信桥
+              港股: 富途/老虎/IB · 美股: 老虎/IB/富途 · 期货: IB · A股: 通达信桥 / 迅投 QMT（只读）
             </div>
           </div>
         </div>
@@ -728,7 +746,7 @@ function BrokerCard({
   meta: { name: string; markets: string; desc: string; fields: Record<string, { label: string; sensitive?: boolean }> };
   initial?: Record<string, string | boolean> | null;
   onSave: (broker: string, values: Record<string, string>) => Promise<string | null>;
-  onTest: (broker: string) => Promise<string | null>;
+  onTest: (broker: string) => Promise<{ ok: boolean; text: string }>;
 }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -739,10 +757,11 @@ function BrokerCard({
     if (!initial) return;
     const next: Record<string, string> = {};
     for (const f of Object.keys(meta.fields)) {
-      const v = initial[`${f}_configured`];
-      if (v === true) next[f] = '••••••••••••（已配置，只写不回显）';
-      else if (v === false) next[f] = '';
-      else if (typeof v === 'string') next[f] = v;
+      const sensitive = initial[`${f}_configured`];
+      const plain = initial[f];
+      if (sensitive === true) next[f] = '••••••••••••（已配置，只写不回显）';
+      else if (sensitive === false) next[f] = '';
+      else if (typeof plain === 'string') next[f] = plain;
     }
     setValues((prev) => ({ ...prev, ...next }));
   }, [initial, meta.fields]);
@@ -763,9 +782,9 @@ function BrokerCard({
   const test = async () => {
     setMsg(null);
     setBusy(true);
-    const err = await onTest(broker);
+    const r = await onTest(broker);
     setBusy(false);
-    setMsg(err ? { ok: false, text: `❌ ${err}` } : { ok: true, text: '✅ 连接正常' });
+    setMsg({ ok: r.ok, text: `${r.ok ? '✅' : '❌'} ${r.text}` });
   };
 
   return (
@@ -780,7 +799,7 @@ function BrokerCard({
           <label key={f} className="ts-field">
             <span className="ts-field-label">{fm.label}{fm.sensitive ? '（敏感字段只写不回显）' : ''}</span>
             <input className="ts-input" style={{ width: '100%', minWidth: 0 }}
-              type={f.includes('pwd') || f.includes('key') ? 'password' : 'text'}
+              type={/pwd|key|password|secret/i.test(f) ? 'password' : 'text'}
               value={values[f] ?? ''}
               onChange={(e) => setValues((prev) => ({ ...prev, [f]: e.target.value }))} />
           </label>

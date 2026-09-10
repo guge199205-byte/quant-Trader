@@ -124,3 +124,5 @@ xxhash==4.0.1
 zstandard==0.25.0
 psycopg2-binary==2.9.11
 pynesys-pynecore==6.9.2
+redis==8.1.0
+xtquant-big-convert==0.3.31

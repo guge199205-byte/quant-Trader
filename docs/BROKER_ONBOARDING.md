@@ -8,6 +8,7 @@
 | 券商 | 市场 | 客户端 | 难度 | 模拟盘 |
 |---|---|---|---|---|
 | 通达信桥 | A股实盘 | Windows 通达信 + 桥服务 | 🔴 最难（需 Windows 机） | ❌ 无（用模拟资金分账） |
+| 迅投 QMT | A股 | 大 QMT 内置策略 + Redis 桥 | 🟡 中（需 Windows 机 + QMT） | ✅ QMT 模拟账户 |
 | 富途 OpenD | 港股/美股 | FutuOpenD 网关 | 🟡 中 | ✅ SIM 模拟 |
 | 老虎证券 | 港股/美股 | 免网关（API 直连） | 🟡 中 | ✅ 模拟账户（推荐先开） |
 | 盈透 IBKR | 全球 | IB Gateway | 🔴 难（2FA 每日） | ✅ Paper 模拟 |
@@ -111,6 +112,28 @@
 
 **坑（实测）**：桥对不同方法返回形状不一致（exday 包 Value，快照平铺）；
 L2 逐笔（tick）桥没有（要 TdxAiData 云端）；1m 分钟K桥返回空（客户端无缓存）
+
+---
+
+## ⑤ 迅投 QMT（A股，大 QMT 内置策略 + Redis RPC；当前**只读**）
+
+> 2026-09-10 接入，阶段一：只读（查账户/持仓/委托/成交，不下单）。
+> 完整手册（拓扑 / 容器运维 / 排错表）见 [QMT_BRIDGE.md](QMT_BRIDGE.md)。
+
+1. **Windows 机**装大 QMT（先在 QMT 界面下载「Python 组件」）→ 登录交易端
+2. **zbox 侧**：桥复用本机 quantmind Redis（`192.168.31.68:6379`，**db 5**，无密码）与
+   `config/qmt_bridge.json` 已就绪；客户端库 `xtquant-big-convert[redis]==0.3.31` 已装
+3. **Windows 侧**：开箱包（共享 `\\192.168.31.13\PYPlugins\qmt-bridge-kit\`，zbox 已预填 Redis 地址）
+   拷到 QMT python 目录 → 填 `BIGQMT_ACCOUNT_ID` → **策略编辑器**加载运行 `BIGQMT_REDIS_DRYRUN.py`
+4. **验证**：总控 → 交易所设置 → 「迅投 QMT」卡片「测试连接」（应显示总资产/可用/持仓数）；
+   总控首页「⚡ 迅投 QMT（只读）」面板应显示账户汇总 + 持仓明细（桥断时为降级提示）；
+   或命令行 `/home/zbox/baymax/.venv/bin/python scripts/qmt_probe.py`（只读五连查）
+5. 能力：账户/持仓/委托/成交查询（形状对齐 TDX 桥）。下单属阶段二，
+   届时需两侧同时开闸（Windows `rpc_allow_order_methods=True` + zbox broker 接线）
+
+**坑（实测）**：QMT 重启后策略要重跑（输出面板须见 `[bigqmt_rpc] started ...`）；
+必须走策略编辑器，`python.exe` 直接跑不会注入交易接口；信用账户 `account_type` 填错
+的症状是「资产全 0」而非报错；老路 miniQMT/xtquant 外挂已按 2025-07 程序化交易细则退役，不要复活。
 
 ---
 

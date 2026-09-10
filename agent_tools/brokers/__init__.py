@@ -8,7 +8,7 @@
 
 from typing import Any, Dict, Optional
 
-from agent_tools.brokers import base, sandbox, tdx_bridge, futu_bridge, tiger_bridge, ibkr_bridge  # noqa: F401  (注册副作用)
+from agent_tools.brokers import base, sandbox, tdx_bridge, futu_bridge, tiger_bridge, ibkr_bridge, qmt_bridge  # noqa: F401  (注册副作用)
 
 
 def get_broker(name: str, config: Optional[Dict[str, Any]] = None) -> base.Broker:

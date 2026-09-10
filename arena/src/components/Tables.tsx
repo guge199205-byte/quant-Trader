@@ -1,9 +1,14 @@
 import { ClosedTradeDetail, Holdings, PositionRecord, TradeRecord } from '../api/client';
-import { fmtDate, fmtNum } from '../utils/format';
+import { fmtDate, fmtMoneySigned, fmtNum } from '../utils/format';
+import { fmtDateTime, fmtSpan } from '../utils/datetime';
+import { stockName } from '../utils/symbols';
+import { CHANGE_LABEL, diffSnapshots } from '../utils/positions';
+import type { LiveFill } from '../utils/liveFills';
 
-/** 证券单元格：有中文名 → 名称 + 小字灰代码；无 → 代码加粗（风格对齐 Live 实盘 pos-name/code） */
+/** 证券单元格：有中文名 → 名称 + 小字灰代码；无 → 代码加粗（风格对齐 Live 实盘 pos-name/code）。
+ *  代码写法跨源不一（SH600519 / 600519.SH），统一走 stockName 多格式匹配。 */
 const SymCell = ({ sym, names }: { sym: string; names?: Record<string, string> }) => {
-  const n = names?.[sym];
+  const n = stockName(names, sym);
   if (!n) return <b>{sym}</b>;
   return (
     <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap' }}>
@@ -13,20 +18,15 @@ const SymCell = ({ sym, names }: { sym: string; names?: Record<string, string> }
   );
 };
 
-/** LAST 25 TRADES 平仓明细表（中文列结构：日期/方向/证券/买入价/卖出价/数量/持仓时长/买入金额/卖出金额/总费用/净盈亏）。 */
+/** LAST N TRADES 平仓明细表（日期/方向/证券/买入价/卖出价/数量/持仓时长/买入金额/卖出金额/总费用/净盈亏/收益率）。 */
 export function LastTradesTable({ trades, currency = '$', names }: { trades: ClosedTradeDetail[]; currency?: string; names?: Record<string, string> }) {
-  const holdText = (days: number | null): string => {
-    if (days == null) return '—';
-    if (days < 1) return `${Math.round(days * 24)}H 0M`;
-    return `${days}D 0H`;
-  };
   return (
     <div className="table-wrap">
       <table className="data">
         <thead>
           <tr>
-            <th>日期</th>
-            <th>方向</th>
+            <th>平仓日期</th>
+            <th>平仓方向</th>
             <th>证券</th>
             <th>买入价</th>
             <th>卖出价</th>
@@ -36,34 +36,45 @@ export function LastTradesTable({ trades, currency = '$', names }: { trades: Clo
             <th>卖出金额</th>
             <th>总费用</th>
             <th>净盈亏</th>
+            <th>收益率</th>
           </tr>
         </thead>
         <tbody>
           {trades.length === 0 && (
-            <tr><td colSpan={11} className="faint">暂无已平仓记录</td></tr>
+            <tr><td colSpan={12} className="faint">暂无已平仓记录</td></tr>
           )}
           {trades.map((t, i) => {
-            const entryNotional = t.qty * t.entry_price;
+            const hasEntry = t.entry_price > 0;
+            const entryNotional = hasEntry ? t.qty * t.entry_price : null;
+            const grossRet = hasEntry && t.exit_price > 0 ? t.exit_price / t.entry_price - 1 : null;
             return (
               <tr key={`${t.exit_date}-${t.symbol}-${i}`}>
                 <td className="faint">{fmtDate(t.exit_date)}</td>
-                <td className="up">买入</td>
+                <td className="down">▼ 卖出{t.live && <span className="tag-live">实盘</span>}</td>
                 <td><SymCell sym={t.symbol} names={names} /></td>
-                <td>{fmtNum(t.entry_price)}</td>
+                <td>{hasEntry ? fmtNum(t.entry_price) : '—'}</td>
                 <td>{fmtNum(t.exit_price)}</td>
                 <td>{t.qty.toLocaleString('en-US')}</td>
-                <td className="faint">{holdText(t.hold_days)}</td>
-                <td>{fmtNum(entryNotional, 0)}</td>
+                <td className="faint">{fmtSpan(t.hold_days)}</td>
+                <td>{entryNotional != null ? fmtNum(entryNotional, 0) : '—'}</td>
                 <td>{fmtNum(t.notional, 0)}</td>
-                <td className="faint">{fmtNum(t.fee, 2)}</td>
-                <td className={t.pnl >= 0 ? 'up' : 'down'}>
-                  {t.pnl >= 0 ? '+' : ''}{currency}{Math.abs(t.pnl).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                <td className="faint">{t.fee ? fmtNum(t.fee, 2) : '—'}</td>
+                <td className={t.pnl == null ? 'dim' : t.pnl >= 0 ? 'up' : 'down'}>
+                  {fmtMoneySigned(t.pnl, currency, 2)}
+                </td>
+                <td className={grossRet == null ? 'dim' : grossRet >= 0 ? 'up' : 'down'}>
+                  {grossRet != null ? `${grossRet >= 0 ? '+' : ''}${(grossRet * 100).toFixed(2)}%` : '—'}
                 </td>
               </tr>
             );
           })}
         </tbody>
       </table>
+      {trades.some((t) => t.live) && (
+        <div className="faint" style={{ marginTop: 6, fontSize: 11 }}>
+          含 {trades.filter((t) => t.live).length} 笔通达信桥实盘成交；桥未回传成本价的笔次，买入价 / 收益率 / 盈亏显示 —（不可计算）
+        </div>
+      )}
     </div>
   );
 }
@@ -104,7 +115,7 @@ export function HoldingsTable({ data, currency = '$', names }: { data: Holdings 
               <td>{fmtNum(h.price)}</td>
               <td className="faint">{fmtNum(h.entry_price)}</td>
               <td>{fmtNum(h.market_value, 0)}</td>
-              <td className={h.pnl >= 0 ? 'up' : 'down'}>{h.pnl >= 0 ? '+' : ''}{currency}{Math.abs(h.pnl).toLocaleString('en-US', { maximumFractionDigits: 0 })}</td>
+              <td className={h.pnl >= 0 ? 'up' : 'down'}>{fmtMoneySigned(h.pnl, currency, 0)}</td>
               <td className={h.pnl >= 0 ? 'up' : 'down'}>{h.pnl_pct != null ? (h.pnl_pct >= 0 ? '+' : '') + fmtNum(h.pnl_pct * 100, 2) + '%' : '—'}</td>
               <td className="dim">{h.weight_pct != null ? fmtNum(h.weight_pct * 100, 1) + '%' : '—'}</td>
             </tr>
@@ -152,8 +163,9 @@ export function PositionsTable({ records, currency = '$', names }: { records: Po
   );
 }
 
-/** 交易明细表：/trades 顶层字段 {date, action, symbol, amount, cash_after} */
+/** 交易明细表：/trades 顶层字段 {date, action, symbol, amount, cash_after, price, notional} */
 export function TradesTable({ records, currency = '$', names }: { records: TradeRecord[]; currency?: string; names?: Record<string, string> }) {
+  const fills = records.filter((t) => t.action === 'buy' || t.action === 'sell');
   return (
     <div className="table-wrap">
       <table className="data">
@@ -163,27 +175,149 @@ export function TradesTable({ records, currency = '$', names }: { records: Trade
             <th>方向</th>
             <th>证券</th>
             <th>数量</th>
-            <th>现金</th>
+            <th>成交价</th>
+            <th>成交金额</th>
+            <th>成交后现金</th>
           </tr>
         </thead>
         <tbody>
-          {records.length === 0 && (
-            <tr><td colSpan={5} className="faint">暂无成交记录</td></tr>
+          {fills.length === 0 && (
+            <tr><td colSpan={7} className="faint">暂无成交记录</td></tr>
           )}
-          {records.map((t, i) => {
+          {fills.map((t, i) => {
             const buy = t.action === 'buy';
             return (
-              <tr key={`${t.date}-${i}`}>
+              <tr key={`${t.date}-${t.symbol}-${i}`}>
                 <td>{fmtDate(t.date)}</td>
                 <td className={buy ? 'up' : 'down'}>{buy ? '▲ BUY' : '▼ SELL'}</td>
                 <td><SymCell sym={t.symbol} names={names} /></td>
                 <td>{t.amount}</td>
+                <td>{fmtNum(t.price)}</td>
+                <td>{t.notional != null ? `${currency}${Math.abs(t.notional).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}</td>
                 <td className="faint">{currency}{Number(t.cash_after ?? 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</td>
               </tr>
             );
           })}
         </tbody>
       </table>
+      {records.length > fills.length && (
+        <div className="faint" style={{ marginTop: 6, fontSize: 11 }}>
+          另有 {records.length - fills.length} 条 no_trade（当日未成交）记录未列出
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 持仓变动时间线：逐日快照差分（新开/加仓/减仓/清仓）+ 当日落库动作。
+ *  复盘看「哪天动了什么」，比重复展示每日全量持仓有用。 */
+export function PositionHistory({ records, names }: { records: PositionRecord[]; names?: Record<string, string> }) {
+  const diffs = diffSnapshots(records ?? []);
+  if (!diffs.length) return <div className="empty-state">暂无持仓快照</div>;
+  return (
+    <div className="table-wrap">
+      <table className="data">
+        <thead>
+          <tr>
+            <th>日期</th>
+            <th>当日动作</th>
+            <th>持仓变动</th>
+            <th>收盘持仓</th>
+            <th>收盘现金</th>
+          </tr>
+        </thead>
+        <tbody>
+          {diffs.map((d) => (
+            <tr key={d.date}>
+              <td className="faint" style={{ whiteSpace: 'nowrap' }}>{fmtDate(d.date)}</td>
+              <td>
+                {d.action ? (
+                  <span className={`pos-act ${d.action.action === 'buy' ? 'up' : d.action.action === 'sell' ? 'down' : 'dim'}`}>
+                    {d.action.action === 'buy' ? '▲ 买入' : d.action.action === 'sell' ? '▼ 卖出' : '— 未交易'}
+                  </span>
+                ) : (
+                  <span className="dim">—</span>
+                )}
+              </td>
+              <td>
+                {d.changes.length === 0 ? (
+                  <span className="dim">无变动</span>
+                ) : (
+                  <span className="pos-changes">
+                    {d.changes.map((c) => (
+                      <span key={c.symbol} className={`pos-change ${c.kind}`}>
+                        <b>{stockName(names, c.symbol) ?? c.symbol}</b>
+                        <span className="pos-change-code">{c.symbol}</span>
+                        <em>{CHANGE_LABEL[c.kind]} {c.delta > 0 ? '+' : ''}{c.delta.toLocaleString('en-US')}</em>
+                        <span className="pos-change-qty">{c.from.toLocaleString('en-US')} → {c.to.toLocaleString('en-US')}</span>
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </td>
+              <td>{d.holdings} 只</td>
+              <td className="faint">{d.cash != null ? d.cash.toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** 实盘成交回报表（通达信桥）：秒级时间 / 方向 / 证券 / 数量 / 成交价 / 成交金额 / 成本价 / 订单号。
+ *  模拟盘成交只到日，桥的回报精确到秒——复盘对时以这张表为准。 */
+export function LiveFillsTable({
+  fills,
+  currency = '¥',
+  names,
+}: {
+  fills: LiveFill[];
+  currency?: string;
+  names?: Record<string, string>;
+}) {
+  const buy = fills.filter((f) => f.side === 'buy');
+  const sell = fills.filter((f) => f.side === 'sell');
+  const turnover = fills.reduce((sum, f) => sum + f.volume * (f.price ?? 0), 0);
+  return (
+    <div className="table-wrap">
+      <table className="data">
+        <thead>
+          <tr>
+            <th>成交时间</th>
+            <th>方向</th>
+            <th>证券</th>
+            <th>数量</th>
+            <th>成交价</th>
+            <th>成交金额</th>
+            <th>成本价</th>
+            <th>订单号</th>
+          </tr>
+        </thead>
+        <tbody>
+          {fills.length === 0 && (
+            <tr><td colSpan={8} className="faint">暂无实盘成交回报</td></tr>
+          )}
+          {fills.map((f, i) => (
+            <tr key={`${f.ts}-${f.code}-${i}`}>
+              <td style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(f.ts)}</td>
+              <td className={f.side === 'buy' ? 'up' : 'down'}>
+                {f.side === 'buy' ? '▲ 买入' : '▼ 卖出'}
+              </td>
+              <td><SymCell sym={f.code} names={names} /></td>
+              <td>{f.volume.toLocaleString('en-US')}</td>
+              <td>{f.price != null ? fmtNum(f.price) : '—'}</td>
+              <td>{f.price != null ? `${currency}${(f.volume * f.price).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}</td>
+              <td className="faint">{f.costPrice != null ? fmtNum(f.costPrice) : '—'}</td>
+              <td className="faint">{f.orderId ?? '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="faint" style={{ marginTop: 6, fontSize: 11 }}>
+        合计 {fills.length} 笔（买 {buy.length} / 卖 {sell.length}）· 成交额 {currency}
+        {turnover.toLocaleString('en-US', { maximumFractionDigits: 0 })} · 时间取自通达信桥回报（秒级）
+      </div>
     </div>
   );
 }

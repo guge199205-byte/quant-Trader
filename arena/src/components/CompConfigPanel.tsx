@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CompMode, CompSelection, MarketId, fetchCompConfig, saveCompConfig } from '../api/client';
-import { logoOf, modelColor } from './ModelCard';
+import { logoOf, modelColor, shortName } from './ModelCard';
 
 const MARKET_LABEL: Record<MarketId, string> = {
   cn: 'A 股（T+1 · 涨跌停）',
@@ -18,6 +18,8 @@ export default function CompConfigPanel({ models, market }: { models: string[]; 
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** 展开查看完整提示词的配置 id（默认只显示 2 行预览） */
+  const [openPrompt, setOpenPrompt] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -66,52 +68,70 @@ export default function CompConfigPanel({ models, market }: { models: string[]; 
       <div className="comp-market-badge">{MARKET_LABEL[market]}</div>
       {catalog.length === 0 && !error && <div className="empty-state">加载配置中…</div>}
       {error && <div className="comp-error">{error}</div>}
-      {models.map((model) => (
-        <div className="comp-model" key={model}>
-          <div className="comp-model-head">
-            <span className="comp-model-logo">{logoOf(model)}</span>
-            <span className="comp-model-name" style={{ color: modelColor(model) }}>
-              {model.replace('deepseek-v4-', '').toUpperCase()}
-            </span>
-            <span className="comp-model-count">{draft[model]?.size ?? 0} 个配置</span>
-          </div>
-          <div className="comp-model-switches">
-            {catalog.map((c) => {
-              const on = draft[model]?.has(c.id) ?? false;
-              return (
-                <button
-                  key={c.id}
-                  type="button"
-                  className={`comp-switch ${on ? 'on' : ''}`}
-                  onClick={() => toggle(model, c.id)}
-                  title={c.prompt}
-                  aria-pressed={on}
-                >
-                  <span className="comp-switch-box">{on ? '✓' : ''}</span>
-                  {c.name}
-                </button>
-              );
-            })}
-          </div>
-          {(draft[model]?.size ?? 0) > 0 && (
-            <div className="comp-model-desc">
-              {catalog
-                .filter((c) => draft[model]?.has(c.id))
-                .map((c) => c.prompt.replace(/\s+/g, ' ').slice(0, 46))
-                .join(' ｜ ')}
+      {models.map((model) => {
+        const picked = catalog.filter((c) => draft[model]?.has(c.id));
+        return (
+          <div className="comp-model" key={model}>
+            <div className="comp-model-head">
+              <span className="comp-model-logo">{logoOf(model)}</span>
+              <span className="comp-model-name" style={{ color: modelColor(model) }}>
+                {shortName(model)}
+              </span>
+              <span className="comp-model-count">{draft[model]?.size ?? 0} 个配置</span>
             </div>
-          )}
-        </div>
-      ))}
+            <div className="comp-model-switches">
+              {catalog.map((c) => {
+                const on = draft[model]?.has(c.id) ?? false;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className={`comp-switch ${on ? 'on' : ''}`}
+                    onClick={() => toggle(model, c.id)}
+                    aria-pressed={on}
+                  >
+                    <span className="comp-switch-box">{on ? '✓' : ''}</span>
+                    {c.name}
+                  </button>
+                );
+              })}
+            </div>
+            {picked.length > 0 && (
+              <div className="comp-model-desc">
+                <div className="comp-desc-head">
+                  选中配置的提示词（每轮按下列顺序各跑一次，互不合并）
+                </div>
+                {picked.map((c) => {
+                  const open = openPrompt === `${model}:${c.id}`;
+                  const text = c.prompt.replace(/\s+/g, ' ').trim();
+                  return (
+                    <div className="comp-desc-item" key={c.id}>
+                      <span className="comp-desc-name">{c.name}</span>
+                      <span className={`comp-desc-text ${open ? '' : 'clamp'}`}>{text}</span>
+                      <button
+                        type="button"
+                        className="comp-desc-more"
+                        onClick={() => setOpenPrompt(open ? null : `${model}:${c.id}`)}
+                      >
+                        {open ? '收起' : '展开全文'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
       <div className="comp-save-row">
         <button type="button" className="comp-save" onClick={save} disabled={saving}>
           {saving ? '保存中…' : '保存配置'}
         </button>
         {savedAt != null && !error && (
-          <span className="comp-saved-at">✅ 已保存 {new Date(savedAt).toLocaleTimeString('zh-CN', { hour12: false })}，下一轮分析生效</span>
-        )}
-        {savedAt && Date.now() - savedAt < 3000 && (
-          <span className="comp-saved">✓ 已保存（{MARKET_LABEL[market]}）</span>
+          <span className="comp-saved-at">
+            ✅ 已保存{' '}
+            {new Date(savedAt).toLocaleTimeString('zh-CN', { hour12: false })}，下一轮分析生效
+          </span>
         )}
       </div>
       <div className="comp-note">

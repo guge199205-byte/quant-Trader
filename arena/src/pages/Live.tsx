@@ -6,6 +6,7 @@ import {
   MarketId,
   OverviewRow,
   PositionRecord,
+  RealAccountChannel,
   TradeRecord,
   fetchBenchmark,
   fetchFutuAccountBoth,
@@ -21,6 +22,7 @@ import {
   fetchPerformance,
   fetchPositions,
   fetchPrices,
+  fetchRealAccount,
   fetchStockNames,
   fetchTrades,
   marketMeta,
@@ -35,8 +37,10 @@ import NewsStream from '../components/NewsStream';
 import NewsAgentChat, { NEWS_AGENTS } from '../components/NewsAgentChat';
 import CompletedFeed from '../components/CompletedFeed';
 import CompConfigPanel from '../components/CompConfigPanel';
+import LiveDetails from '../components/LiveDetails';
 import { MarketSwitcher } from '../components/Navbar';
-import { fmtMoney, fmtPct, pnlClass } from '../utils/format';
+import { fmtMoney, fmtPct, fmtPrice, pnlClass } from '../utils/format';
+import { stockLabel, stockName } from '../utils/symbols';
 import './Live.css';
 
 const BENCH_COLOR = '#10a37f';
@@ -186,16 +190,21 @@ function LiveClock() {
 type Tab = 'completed' | 'trades' | 'chat' | 'news' | 'positions' | 'comp' | 'real' | 'details';
 type TimeRange = 'all' | '5d';
 
-/** 右侧 tab：已完成交易 / 成交 / 模型对话 / 新闻 / 持仓 / 比赛配置 / 详情 */
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'completed', label: '已完成' },
-  { id: 'trades', label: '成交' },
-  { id: 'chat', label: '模型对话' },
-  { id: 'news', label: '新闻' },
-  { id: 'positions', label: '持仓' },
-  { id: 'comp', label: '比赛配置' },
-  { id: 'real', label: '实盘' },
-  { id: 'details', label: '详情' },
+/** 右侧 tab：按语义分 4 组（决策流 / 交易事实 / 情报 / 系统），组间加分隔线。
+ *  默认停在「模型对话」，故排第一；组内顺序=常用度。 */
+const TAB_GROUPS: { id: Tab; label: string }[][] = [
+  [{ id: 'chat', label: '模型对话' }],
+  [
+    { id: 'completed', label: '已完成' },
+    { id: 'trades', label: '成交' },
+    { id: 'positions', label: '持仓' },
+    { id: 'real', label: '实盘' },
+  ],
+  [{ id: 'news', label: '新闻' }],
+  [
+    { id: 'comp', label: '比赛配置' },
+    { id: 'details', label: '详情' },
+  ],
 ];
 
 interface TradeEvt {
@@ -283,6 +292,8 @@ export default function Live() {
   const meta = marketMeta(market);
 
   const [tab, setTab] = useState<Tab>('chat'); // 默认=模型对话（用户口径）
+  // A 股实盘通道（通达信桥 / 迅投 QMT）：父层持有，切 tab 回来不丢选择
+  const [realChannel, setRealChannel] = useState<RealAccountChannel>('tdx');
   const [chartRange, setChartRange] = useState<TimeRange>('all');
   const [chartMode, setChartMode] = useState<'pct' | 'dollar'>('pct');
   const [selectedModel, setSelectedModel] = useState<string>('all');
@@ -524,6 +535,22 @@ export default function Live() {
   const livePositions = (liveAcct.data?.positions ?? []).filter(
     (p) => Number(p.total_volume) > 0,
   );
+  // 通达信账户的 quantmind 落库快照：桥实时通道读不通时的兜底持仓来源（带快照时刻）
+  const realTdxAcct = usePolling(
+    () => (market === 'cn' ? fetchRealAccount().catch(() => null) : Promise.resolve(null)),
+    [market],
+    30000,
+  );
+  const tdxPos = useMemo(
+    () =>
+      market === 'cn'
+        ? (realTdxAcct.data?.positions ?? [])
+            .filter((p) => Number(p.volume) > 0)
+            .slice()
+            .sort((a, b) => Number(b.market_value) - Number(a.market_value))
+        : [],
+    [market, realTdxAcct.data],
+  );
   // 港股实盘 tab 双卡（富途 REAL+SIMULATE，一次握手游走）后台 15s 轮询 → 点击 tab 即见，
   // 不在 RealAccountPanel 内单独起子进程（省一次 ~4s RSA 握手）
   const futuBoth = usePolling(
@@ -531,11 +558,16 @@ export default function Live() {
     [market],
     15000,
   );
-  // 实盘总浮盈（桥实时价驱动，随 liveAcct 每 15s 刷新）
-  const totalPnl = useMemo(
-    () => livePositions.reduce((s, p) => s + Number(p.pnl ?? 0), 0),
-    [livePositions],
+  // 模拟盘最新快照（去零持仓：SSE50 成分快照里 0 股是噪声，不占列表）
+  const lastSimSnapshot = positions.data?.[positions.data.length - 1];
+  const simEntries = useMemo(
+    () =>
+      Object.entries(lastSimSnapshot?.positions ?? {}).filter(
+        ([sym, qty]) => sym !== 'CASH' && Number(qty) > 0,
+      ),
+    [lastSimSnapshot],
   );
+  const simCash = Number(lastSimSnapshot?.positions?.CASH ?? 0);
   // 实盘分账账本（每 agent ¥10 万虚拟子账户，按模型显示各自持仓）
   // （hook 上移：空仓虚线判定在 lines memo 里要用）
 
@@ -576,7 +608,7 @@ export default function Live() {
       side: t.side,
       volume: t.volume,
       price: t.price ?? null,
-      name: (t.name || stockNames.data?.[t.code]) ?? t.code,
+      name: t.name || stockLabel(stockNames.data, t.code),
       // 记录自带的 agent 优先（卖出后该股已不在任何账本，当前账本反查会丢归属）
       agent: (t as { agent?: string | null }).agent ?? ledgerHolderOf[t.code] ?? null,
     }))
@@ -644,7 +676,7 @@ export default function Live() {
         }));
     }
     return heldSymbols
-      .map((sym) => ({ sym, quote: prices.data?.[sym] ?? null, name: stockNames.data?.[sym] }))
+      .map((sym) => ({ sym, quote: prices.data?.[sym] ?? null, name: stockName(stockNames.data, sym) }))
       .filter((t) => t.quote != null);
   }, [market, livePositions, heldSymbols, prices.data, stockNames.data]);
 
@@ -656,7 +688,7 @@ export default function Live() {
           date: r.date,
           side: (r.action ?? '').toLowerCase() === 'buy' ? 'buy' as const : 'sell' as const,
           symbol: r.symbol,
-          name: stockNames.data?.[r.symbol] ?? r.symbol,
+          name: stockLabel(stockNames.data, r.symbol),
           amount: r.amount,
           cash: r.cash_after ?? 0,
           price: r.price ?? null,
@@ -695,63 +727,32 @@ export default function Live() {
     }
 
     if (tab === 'real') {
-      return <RealAccountPanel market={market} currency={meta.currency} futuBoth={futuBoth.data} />;
+      return (
+        <RealAccountPanel
+          market={market}
+          currency={meta.currency}
+          futuBoth={futuBoth.data}
+          futuError={futuBoth.error}
+          futuLoading={futuBoth.loading}
+          channel={realChannel}
+          onChannel={setRealChannel}
+        />
+      );
     }
 
     if (tab === 'details') {
       return (
-        <div className="readme-body">
-          <h4>① 系统流水线（数据 → 决策 → 执行）</h4>
-          <p>
-            <b>行情层</b>：通达信桥实时快照（现价/五档/盘口失衡/隔夜跳空/5 分钟涨速/量比）
-            + QuantDB 全市场日线/财报/板块/因子库（每晚收盘入库）+ L2 逐笔微观因子（盘中采集）。
-          </p>
-          <p>
-            <b>分析层</b>：每 agent 按所选模式（基线/苦行/情境感知/极限杠杆）逐只简评——
-            输入=持仓表+盘面状态+情绪温度+近期成交回顾+新闻情绪，输出=四段式
-            （总体总结/分析链路/推理论证/JSON 决策）。
-          </p>
-          <p>
-            <b>执行层</b>：决策 JSON → 系统闸门校验 → 通达信桥下单（限价）→ 成交回报确认 →
-            分账账本记账。watch 决策挂分钟级价格哨兵条件位。
-          </p>
-          <h4>② 智能体阵容（A股实盘分账，每模型 ¥10 万虚拟额度）</h4>
-          <p>
-            <b>v4-flash</b>：dsh 工具型 agent（行情/quantdb/搜索/记忆/数学 MCP 工具+可写代码），
-            带 1-2 分钟时间盒工作法、时段作战手册与大盘剧本。
-          </p>
-          <p>
-            <b>v4-pro / glm</b>：直连 LLM 分析（同数据注入、同决策 schema、同风控闸门）。
-          </p>
-          <h4>③ 风控闸门（系统侧强制，模型不可绕过）</h4>
-          <p>
-            T+1 可卖量复核 · 单票 ≤ 剩余额度 20% · 持仓市值 ≤ 权益 ×1.5（超线分钟级守护自动减仓）·
-            涨停不追/跌停不接 · 分账额度不透支 · 拒单自动登记延期单并在行情恢复后重放 ·
-            行情停更硬闸（停更期间禁止基于价格的交易决策）。
-          </p>
-          <h4>④ 决策与记账口径</h4>
-          <p>
-            决策必带：理由 + 止损 + 止盈 + 移动止损 + 失效条件 + 置信度 + 风险额；
-            缺退出框架的买卖决策作废。成交按桥回报确认后入账，「已完成」为真实清仓流。
-          </p>
-          <h4>⑤ 技能与工具（16 个）</h4>
-          <p>
-            个股全维体检 / 实时行情直读 / 新闻情绪 / 市场情绪报告 / 大盘研报 / 复盘选股 /
-            深度研究 / 富途 / IBKR / 老虎 / quantdb 字段手册…… 详见 docs/SKILLPACK.md。
-          </p>
-          <h4>⑥ 数据口径与刷新</h4>
-          <p>
-            页面 15-30 秒自动刷新；行情/持仓/成交/清仓实时重建；净值分钟级采样
-            （数据更新至 {rows[0]?.latest_date ?? '—'}）；情绪温度为昨日收盘全景（盘前/盘后参考）。
-          </p>
-        </div>
+        <LiveDetails
+          market={market}
+          rows={rows}
+          currency={meta.currency}
+          futuBoth={futuBoth.data}
+          ibkr={market === 'us' && liveAcct.data ? { total_asset: liveAcct.data.asset } : null}
+        />
       );
     }
 
     if (tab === 'positions') {
-      const last = positions.data?.[positions.data.length - 1];
-      const entries = Object.entries(last?.positions ?? {}).filter(([sym]) => sym !== 'CASH');
-      const cash = Number(last?.positions?.CASH ?? 0);
       // 实盘持仓置顶展示（A股通达信桥 / 港股富途，同 shape）；按选中模型筛选（'all' = 全部）
       // 港股富途是单一共享账户，无 A 股分账（每模型 ¥10 万子账户）体系 → 不按模型筛
       if ((market === 'cn' || market === 'hk') && livePositions.length > 0) {
@@ -760,17 +761,21 @@ export default function Live() {
             ? (liveLedger.data?.agents?.[selectedModel] ?? null)
             : null;
         const mineCodes = ag ? new Set(ag.positions.map((lp) => lp.code)) : null;
-        const shownPositions = mineCodes
+        // 大仓位在前：复盘先看占用最大的票（与总控 QMT 表同序）
+        const shownPositions = (mineCodes
           ? livePositions.filter((p) => mineCodes.has(p.stock_code))
-          : livePositions;
+          : livePositions
+        ).slice().sort((a, b) => Number(b.position_value) - Number(a.position_value));
+        const shownValue = shownPositions.reduce((s, p) => s + Number(p.position_value ?? 0), 0);
+        const shownPnl = shownPositions.reduce((s, p) => s + Number(p.pnl ?? 0), 0);
         return (
           <div style={{ padding: '8px 12px' }}>
             <div className="pos-section-title">
-              {ag ? `模型 ${selectedModel} 名下持仓` : market === 'hk' ? '实盘持仓（富途模拟）' : '实盘持仓（通达信桥）'}
+              {ag ? `模型 ${selectedModel} 名下持仓` : market === 'hk' ? '实盘持仓（富途）' : '实盘持仓（通达信桥）'}
               <span className="pos-section-sub">
                 {ag
                   ? `${shownPositions.length} 只 · 额度已用 ¥${ag.used.toLocaleString('en-US')} / ¥${ag.quota.toLocaleString('en-US')}`
-                  : `总浮盈 ${totalPnl >= 0 ? '+' : ''}${fmtMoney(totalPnl, meta.currency)} · 总资产 ${fmtMoney(liveAcct.data?.asset ?? 0, meta.currency)}`}
+                  : `${shownPositions.length} 只 · 市值 ${fmtMoney(shownValue, meta.currency)} · 浮盈 ${shownPnl >= 0 ? '+' : ''}${fmtMoney(shownPnl, meta.currency)} · 总资产 ${fmtMoney(liveAcct.data?.asset ?? 0, meta.currency)}`}
               </span>
               <LiveClock />
             </div>
@@ -791,27 +796,31 @@ export default function Live() {
                 </div>
                 <div className="live-pos-sub">
                   <span>买入 {p.buy_time.slice(5)}</span>
-                  <span>{Number(p.total_volume).toLocaleString('en-US')} 股</span>
-                  <span>成本 {fmtMoney(Number(p.cost_price), meta.currency)}</span>
-                  <span>现价 {fmtMoney(Number(p.last_price), meta.currency)}</span>
+                  <span>{Number(p.total_volume).toLocaleString('en-US')} 股{Number(p.available_volume) < Number(p.total_volume) ? `（可卖 ${Number(p.available_volume).toLocaleString('en-US')}）` : ''}</span>
+                  <span>成本 {fmtPrice(Number(p.cost_price), meta.currency)}</span>
+                  <span>现价 {fmtPrice(Number(p.last_price), meta.currency)}</span>
                   <span>持仓 {fmtMoney(Number(p.position_value), meta.currency)}</span>
+                  <span>占比 {shownValue > 0 ? `${((Number(p.position_value) / shownValue) * 100).toFixed(1)}%` : '—'}</span>
                 </div>
               </div>
             ))}
             {market !== 'hk' && (
               <>
-                <div className="pos-section-title" style={{ marginTop: 14 }}>模拟盘持仓</div>
+                <div className="pos-section-title" style={{ marginTop: 14 }}>
+                  模拟盘持仓
+                  <span className="pos-section-sub">{simEntries.length} 只（仅非零）</span>
+                </div>
                 <div className="pos-row">
                   <span className="pos-sym">现金 CASH</span>
-                  <span className="pos-cash">{fmtMoney(cash, meta.currency)}</span>
+                  <span className="pos-cash">{fmtMoney(simCash, meta.currency)}</span>
                 </div>
-                {entries.length === 0 && (
+                {simEntries.length === 0 && (
                   <div className="empty-state" style={{ padding: '24px 0' }}>空仓 — 无持仓</div>
                 )}
-                {entries.map(([sym, qty]) => (
+                {simEntries.map(([sym, qty]) => (
                   <div className="pos-row" key={sym}>
                     <span className="pos-sym">
-                      <span className="pos-name">{stockNames.data?.[sym] ?? sym}</span>
+                      <span className="pos-name">{stockLabel(stockNames.data, sym)}</span>
                       <span className="pos-code">{sym}</span>
                     </span>
                     <span className="pos-qty">{Number(qty).toLocaleString('en-US')}</span>
@@ -822,20 +831,74 @@ export default function Live() {
           </div>
         );
       }
-      if (!last) return <div className="empty-state">暂无持仓数据</div>;
+      // 桥实时通道读不到持仓时的 A 股兜底：用 quantmind 侧落库的账户快照
+      // （含快照时刻），比直接掉到模拟盘回放有信息量——那是别的账户。
+      if (market === 'cn' && tdxPos.length > 0) {
+        const snapTs = realTdxAcct.data?.ts ? realTdxAcct.data.ts.slice(0, 16).replace('T', ' ') : '—';
+        const snapValue = tdxPos.reduce((s, p) => s + Number(p.market_value ?? 0), 0);
+        return (
+          <div style={{ padding: '8px 12px' }}>
+            <div className="pos-section-title">
+              实盘持仓（通达信桥 · 最近快照）
+              <span className="pos-section-sub">
+                {tdxPos.length} 只 · 市值 {fmtMoney(snapValue, meta.currency)} · 总资产{' '}
+                {fmtMoney(realTdxAcct.data?.total_asset ?? 0, meta.currency)}
+              </span>
+              <LiveClock />
+            </div>
+            <div className="mdp-note" style={{ marginBottom: 10 }}>
+              桥实时账户通道未返回持仓，以下为 quantmind 落库的最近一帧账户快照（{snapTs}），
+              明细字段比桥少（无买入时刻/浮盈，成本价来自快照）。
+            </div>
+            {tdxPos.map((p) => {
+              const qty = Number(p.volume);
+              const pnl = p.price > 0 && p.cost_price > 0 ? (p.price - p.cost_price) * qty : null;
+              const pnlPct = p.cost_price > 0 && p.price > 0 ? (p.price / p.cost_price - 1) * 100 : null;
+              return (
+                <div className="live-pos-card" key={p.symbol}>
+                  <div className="live-pos-main">
+                    <span className="live-pos-name">{p.name || stockLabel(stockNames.data, p.symbol)}</span>
+                    <span className="live-pos-code">{p.symbol}</span>
+                    <span className={`live-pos-pnl ${pnl == null ? 'dim' : pnl >= 0 ? 'up' : 'down'}`}>
+                      {pnl == null ? '—' : `${pnl >= 0 ? '+' : ''}${fmtMoney(pnl, meta.currency)}`}
+                      {pnlPct != null && ` (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`}
+                    </span>
+                  </div>
+                  <div className="live-pos-sub">
+                    <span>{qty.toLocaleString('en-US')} 股</span>
+                    <span>可卖 {Number(p.available_volume).toLocaleString('en-US')}</span>
+                    <span>成本 {fmtPrice(Number(p.cost_price), meta.currency)}</span>
+                    <span>现价 {fmtPrice(Number(p.price), meta.currency)}</span>
+                    <span>持仓 {fmtMoney(Number(p.market_value), meta.currency)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      }
+      if (!lastSimSnapshot) return <div className="empty-state">暂无持仓数据</div>;
       return (
         <div style={{ padding: '8px 12px' }}>
+          {market === 'cn' && (
+            /* 桥账户与最近快照都读不到持仓时别默默退化：说清是通道问题，下面只是模拟盘回放 */
+            <div className="mdp-note" style={{ marginBottom: 10 }}>
+              实盘账户无持仓可展示（通达信桥实时通道未返回，最近快照也为空），
+              以下为模拟盘回放快照
+              {lastSimSnapshot.date ? ` · ${String(lastSimSnapshot.date).slice(0, 10)}` : ''}。
+            </div>
+          )}
           <div className="pos-row">
             <span className="pos-sym">现金 CASH</span>
-            <span className="pos-cash">{fmtMoney(cash, meta.currency)}</span>
+            <span className="pos-cash">{fmtMoney(simCash, meta.currency)}</span>
           </div>
-          {entries.length === 0 && (
+          {simEntries.length === 0 && (
             <div className="empty-state" style={{ padding: '24px 0' }}>空仓 — 无持仓</div>
           )}
-          {entries.map(([sym, qty]) => (
+          {simEntries.map(([sym, qty]) => (
             <div className="pos-row" key={sym}>
               <span className="pos-sym">
-                <span className="pos-name">{stockNames.data?.[sym] ?? sym}</span>
+                <span className="pos-name">{stockLabel(stockNames.data, sym)}</span>
                 <span className="pos-code">{sym}</span>
               </span>
               <span className="pos-qty">{Number(qty).toLocaleString('en-US')}</span>
@@ -930,8 +993,8 @@ export default function Live() {
                           </b>
                         </span>
                         <span>数量 <b>{e.volume.toLocaleString('en-US')}</b></span>
-                        <span>成交价 <b>{e.price != null ? fmtMoney(e.price, meta.currency) : '—'}</b></span>
-                        <span>成交金额 <b>{fmtMoney((e.price ?? 0) * e.volume, meta.currency)}</b></span>
+                        <span>成交价 <b>{e.price != null ? fmtPrice(e.price, meta.currency) : '—'}</b></span>
+                        <span>成交金额 <b>{e.price != null ? fmtMoney(e.price * e.volume, meta.currency) : '—'}</b></span>
                       </div>
                     </div>
                   );
@@ -955,7 +1018,7 @@ export default function Live() {
               <span className="trade-card-date">{e.date.slice(5)}</span>
             </div>
             <div className="trade-card-grid">
-              <span>价格 <b>{e.price != null ? fmtMoney(e.price, meta.currency) : '—'}</b></span>
+              <span>价格 <b>{e.price != null ? fmtPrice(e.price, meta.currency) : '—'}</b></span>
               <span>数量 <b>{e.amount.toLocaleString('en-US')}</b></span>
               <span>成交金额 <b>{e.notional != null ? fmtMoney(e.notional, meta.currency) : '—'}</b></span>
               <span>现金 <b>{fmtMoney(e.cash, meta.currency)}</b></span>
@@ -979,6 +1042,17 @@ export default function Live() {
   // cn 首帧实盘净值未到前不画图：perfs 是模拟盘回放，先画出来再换源就是用户看到的
   // 「刷新后图表先是乱的」（X 轴 08-03…08-27 那串）。phase 已归零，等待只剩一次请求。
   const chartPending = market === 'cn' && liveEquity.loading && !liveEqRef.current;
+
+  // tab 角标：一眼看出哪块有内容（0 也显示，省得点进去才发现是空的）
+  const tabBadges: Partial<Record<Tab, number>> = {
+    completed: completedCount,
+    trades: tradeEventsFiltered.length + liveTradesFiltered.length,
+    chat:
+      selectedModel === 'all'
+        ? (chatAll.data ?? []).reduce((n, a) => n + a.lines.length, 0)
+        : (logs.data ?? []).length,
+    positions: livePositions.length || tdxPos.length || simEntries.length,
+  };
 
   return (
     <>
@@ -1151,14 +1225,23 @@ export default function Live() {
         {/* 右：540px 面板 */}
         <div className="right-section">
           <div className="trade-tabs">
-            {TABS.map((t) => (
-              <button
-                key={t.id}
-                className={`trade-tab ${tab === t.id ? 'active' : ''}`}
-                onClick={() => setTab(t.id)}
-              >
-                {t.label}
-              </button>
+            {TAB_GROUPS.map((group, gi) => (
+              <div className="trade-tab-group" key={gi} style={{ flex: group.length }}>
+                {group.map((t) => (
+                  <button
+                    key={t.id}
+                    className={`trade-tab ${tab === t.id ? 'active' : ''}`}
+                    onClick={() => setTab(t.id)}
+                  >
+                    {t.label}
+                    {tabBadges[t.id] != null && (
+                      <span className={`trade-tab-badge ${tabBadges[t.id] ? '' : 'zero'}`}>
+                        {tabBadges[t.id]}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
           <div className="filter-bar">
@@ -1239,7 +1322,7 @@ export default function Live() {
                       ? (chatAll.data ?? []).reduce((n, a) => n + a.lines.length, 0)
                       : (logs.data ?? []).length
                     : tab === 'positions'
-                      ? Object.keys(positions.data?.[positions.data.length - 1]?.positions ?? {}).length
+                      ? livePositions.length || tdxPos.length || simEntries.length
                       : ''}
             </span>
           </div>

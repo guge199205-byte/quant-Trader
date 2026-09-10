@@ -1,0 +1,163 @@
+/* 新闻 agent 行式协议渲染（前缀 npx-：全站 CSS 全局打包，必须唯一前缀）
+   视觉沿用站点语言：白底 + 2px 黑描边 + Courier 数字，标签左侧色条区分段落。 */
+
+.npx-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0 2px;
+}
+
+/* ---------- 单行 ---------- */
+.npx-row {
+  border-left: 3px solid #d0d0d0;
+  background: #fcfcfc;
+  padding: 5px 8px 5px 7px;
+}
+.npx-row-topic { border-left-color: #e0483e; }
+.npx-row-view { border-left-color: #10a37f; }
+.npx-row-driver { border-left-color: #10a37f; }
+.npx-row-risk { border-left-color: #faad14; }
+.npx-row-hold { border-left-color: #e0483e; }
+.npx-row-watch { border-left-color: #2b6cb0; }
+.npx-row-event { border-left-color: #2b6cb0; }
+.npx-row-cross { border-left-color: #b7791f; }
+.npx-row-action { border-left-color: #7c3aed; }
+.npx-row-observe { border-left-color: #2b6cb0; }
+.npx-row-note { border-left-color: #666; }
+.npx-row-editor { border-left-color: #666; }
+.npx-row-conf { border-left-color: #10a37f; background: #f5fbf9; }
+
+.npx-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.npx-tag {
+  flex: none;
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1px 5px;
+  background: #111;
+  color: #fff;
+}
+.npx-tag-view, .npx-tag-driver, .npx-tag-conf { background: #0d8a6b; }
+.npx-tag-risk { background: #b7791f; }
+.npx-tag-hold { background: #e0483e; }
+.npx-tag-topic { background: #e0483e; }
+.npx-tag-watch, .npx-tag-event, .npx-tag-observe { background: #2b6cb0; }
+.npx-tag-cross { background: #b7791f; }
+.npx-tag-action { background: #7c3aed; }
+.npx-tag-note, .npx-tag-editor { background: #555; }
+
+.npx-cell { display: inline-flex; align-items: baseline; gap: 4px; }
+
+.npx-k {
+  font-size: 10px;
+  color: #999;
+  margin-right: 3px;
+}
+
+.npx-code {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: #111;
+  background: #f0f0f0;
+  padding: 0 4px;
+}
+
+.npx-name {
+  font-size: 12px;
+  color: #111;
+}
+
+.npx-sent {
+  font-weight: 700;
+  font-size: 11px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+}
+.npx-sent.up { color: var(--up-color); }
+.npx-sent.down { color: var(--down-color); }
+.npx-sent.dim { color: #888; }
+
+.npx-num {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+.npx-num.up { color: var(--up-color); }
+.npx-num.down { color: var(--down-color); }
+.npx-num.dim { color: #888; }
+
+.npx-text { font-size: 11px; color: #333; }
+
+.npx-block {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.65;
+  color: #333;
+  word-break: break-word;
+}
+.npx-block .npx-k { float: none; }
+
+/* ---------- 门卫（黑名单统计） ---------- */
+.npx-gate {
+  border: 2px solid #111;
+  background: #fff;
+  padding: 8px;
+}
+.npx-gate-head {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.npx-gate-stats { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.npx-gate-stat {
+  font-size: 11px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  padding: 2px 7px;
+  border: 1px solid #111;
+}
+.npx-chip-skip { background: #f0f0f0; color: #555; }
+.npx-chip-macro { background: #0d8a6b; color: #fff; }
+.npx-chip-hold { background: #e0483e; color: #fff; }
+
+.npx-gate-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 4px;
+}
+.npx-gate-k { flex: none; width: 56px; font-size: 10px; color: #666; }
+.npx-gate-nos { display: flex; flex-wrap: wrap; gap: 3px; }
+.npx-no {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid #ccc;
+  color: #666;
+}
+.npx-no-macro { border-color: #0d8a6b; color: #0d8a6b; }
+.npx-no-hold { border-color: #e0483e; color: #e0483e; }
+
+/* ---------- 兜底 ---------- */
+.npx-plain {
+  margin-top: 6px;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #555;
+  background: #f7f7f7;
+  padding: 6px 8px;
+  border-left: 3px solid #ccc;
+}
+.npx-empty { font-size: 11px; color: #999; }

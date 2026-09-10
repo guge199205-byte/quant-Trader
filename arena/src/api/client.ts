@@ -72,10 +72,21 @@ export interface PositionRecord {
   positions: Record<string, number>;
 }
 
+/** 单轮 token 用量（usage_est=true 表示按字符估算，非供应商真实计量） */
+export interface LogUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  usage_est?: boolean;
+}
+
 export interface LogLine {
   signature?: string;
   /** 日志写入时间 ISO（后端返回，如 2026-08-31T14:00:28） */
   timestamp?: string;
+  /** 'review' = 盘后复盘轮（只读沉淀，不下单） */
+  kind?: string;
+  usage?: LogUsage | null;
   new_messages?: { role?: string; content?: string }[];
 }
 
@@ -190,7 +201,11 @@ export interface LiveAccount {
 export interface LiveTradeLog {
   ts: string;
   mode: string; // "execute" | "execute_intraday" | ...
+  /** 下单模型（早于归属改造的记录为 null） */
+  agent?: string | null;
   code: string;
+  /** 通达信桥回传的成本价（部分记录缺失 → 0） */
+  cost_price?: number | null;
   name?: string; // 富途订单自带 stock_name；cn 由前端 stockNames 解析
   side?: string; // BUY/SELL（富途）；cn 由桥当日委托回报补全
   volume: number;
@@ -296,6 +311,105 @@ export const fetchFutuAccountBoth = async (): Promise<{
   return {
     real: reshape(raw?.real, 'real'),
     simulate: reshape(raw?.simulate, 'simulate'),
+  };
+};
+
+// ---------- 迅投 QMT（A股，只读；BayMax backend /api/qmt/account 直连 Redis 桥） ----------
+// 桥返回 asset{asset,cash,market_value,frozen_cash} + positions[]，reshape 成 cn LiveAccount
+// 同形状（与富途同套路），总控面板直接复用 LivePosition 渲染。
+export interface QmtAccount extends LiveAccount {
+  cash: number;
+  market_value: number;
+  frozen_cash: number;
+  account_id: string;
+}
+
+interface QmtPositionRaw {
+  stock_code: string;
+  stock_name?: string;
+  cost_price: number;
+  total_volume: number;
+  available_volume: number;
+  market_value: number;
+  last_price: number;
+}
+
+interface QmtAccountRaw {
+  account_id?: string;
+  asset: { asset: number; cash: number; market_value: number; frozen_cash: number } | null;
+  positions: QmtPositionRaw[] | null;
+}
+
+/** 纯函数：桥原始返回 → 面板数据（export 供 vitest）。
+ *  两处桥侧约定，不能想当然：
+ *  - last_price=0 是「拿不到价」的约定（见 qmt_bridge._account_query）→ 盈亏留 0；
+ *  - cost_price<0 是真实存在的（摊薄成本法，分红累计超过原成本）→ 绝对盈亏仍有效，
+ *    百分比无意义（(P-C)/C 在 C<0 时符号颠倒）→ pnl_pct 留 0；cost_price=0 则是
+ *    字段缺失，两个都不算——0 值盈利会伪造「平盘」。 */
+export const reshapeQmtAccount = (raw: QmtAccountRaw): QmtAccount => {
+  const a = raw.asset ?? { asset: 0, cash: 0, market_value: 0, frozen_cash: 0 };
+  const positions: LivePosition[] = (raw.positions ?? [])
+    .filter((p) => Number(p.total_volume) > 0)
+    .map((p) => {
+      const cost = Number(p.cost_price) || 0;
+      const vol = Number(p.total_volume) || 0;
+      const last = Number(p.last_price) || 0;
+      const hasPrice = last > 0;
+      const hasPnl = hasPrice && cost !== 0;
+      const hasPct = hasPnl && cost > 0;
+      return {
+        stock_code: p.stock_code,
+        name: p.stock_name || p.stock_code,
+        cost_price: cost,
+        total_volume: vol,
+        available_volume: Number(p.available_volume) || 0,
+        last_price: last,
+        position_value: Number(p.market_value) || (hasPrice ? last * vol : cost * vol),
+        pnl_pct: hasPct ? +(((last - cost) / cost) * 100).toFixed(2) : 0,
+        pnl: hasPnl ? +((last - cost) * vol).toFixed(2) : 0,
+        buy_time: '',
+      };
+    });
+  return {
+    asset: Number(a.asset) || 0,
+    cash: Number(a.cash) || 0,
+    market_value: Number(a.market_value) || 0,
+    frozen_cash: Number(a.frozen_cash) || 0,
+    account_id: raw.account_id ?? '',
+    positions,
+    channel_used: 'qmt',
+  };
+};
+
+/** QMT 未配置 / Windows 侧策略没跑时后端返回 success:false → 返回 null（面板降级为提示）。 */
+export const fetchQmtAccount = async (): Promise<QmtAccount | null> => {
+  const res = await api.get('/qmt/account');
+  const body = res.data as { success?: boolean; data?: QmtAccountRaw };
+  if (!body?.success || !body.data) return null;
+  return reshapeQmtAccount(body.data);
+};
+
+/** QMT 桥自述（Redis RPC ping，纯只读）：下单总闸在不在、RPC 版本、账号类型。
+ *  界面上「通道不支持下单」与「本系统没接线」是两回事，靠这里的 allow_order_methods 区分。 */
+export interface QmtStatus {
+  allow_order_methods: boolean;
+  version: string;
+  account_type: string;
+  server_time: string;
+  account_id: string;
+}
+
+/** 桥不通 / 未配置时返回 null（面板退回「未知」，不猜）。 */
+export const fetchQmtStatus = async (): Promise<QmtStatus | null> => {
+  const res = await api.get('/qmt/status');
+  const body = res.data as { success?: boolean; data?: Partial<QmtStatus> };
+  if (!body?.success || !body.data) return null;
+  return {
+    allow_order_methods: body.data.allow_order_methods === true,
+    version: body.data.version ?? '',
+    account_type: body.data.account_type ?? '',
+    server_time: body.data.server_time ?? '',
+    account_id: body.data.account_id ?? '',
   };
 };
 
@@ -472,12 +586,16 @@ export interface ClosedTradeDetail {
   symbol: string;
   exit_date: string; // YYYY-MM-DD
   qty: number;
+  /** 实盘（通达信桥）行可能缺成本价 → 0 */
   entry_price: number;
   exit_price: number;
   notional: number;
   fee: number;
-  pnl: number;
+  /** 缺成本价时为 null（不可计算盈亏） */
+  pnl: number | null;
   hold_days: number | null;
+  /** true = 通达信桥实盘成交（非模拟盘） */
+  live?: boolean;
 }
 
 /** FIFO 重建已平仓逐笔，最新在前（最多 limit 笔） */
@@ -605,6 +723,28 @@ export interface RealAccount {
   today_pnl: number;
   total_pnl: number;
   positions: RealAccountPosition[];
+  /** 通道 key（tdx|qmt）与展示名；老响应可能没有 */
+  account?: RealAccountChannel;
+  account_id?: string;
+  account_label?: string;
+}
+
+/** A 股实盘通道：通达信桥（系统实盘执行）/ 迅投 QMT（账户只读观测）。 */
+export type RealAccountChannel = 'tdx' | 'qmt';
+
+/** 两通道最新快照摘要（/live/real-accounts），供通道选择器与在线状态块。 */
+export interface RealAccountSummary {
+  account: RealAccountChannel;
+  account_id: string;
+  label: string;
+  channel: string;
+  ts: string | null;
+  age_sec: number | null;
+  total_asset: number | null;
+  cash: number | null;
+  market_value: number | null;
+  source: string | null;
+  position_count: number;
 }
 
 export interface RealLedgerRow {
@@ -627,8 +767,12 @@ export interface L2FactorRow {
   factors: Record<string, number | null>;
 }
 
-export const fetchRealAccount = () => unwrap<RealAccount>(api.get('/live/real-account'));
-export const fetchRealLedger = () => unwrap<RealLedgerRow[]>(api.get('/live/real-ledger'));
+export const fetchRealAccount = (account: RealAccountChannel = 'tdx') =>
+  unwrap<RealAccount>(api.get('/live/real-account', { params: { account } }));
+export const fetchRealLedger = (account: RealAccountChannel = 'tdx') =>
+  unwrap<RealLedgerRow[]>(api.get('/live/real-ledger', { params: { account } }));
+export const fetchRealAccounts = () =>
+  unwrap<RealAccountSummary[]>(api.get('/live/real-accounts'));
 
 // ---------- 美股实盘（IBKR Gateway，ib_insync；凭据 config/brokers.json ib） ----------
 

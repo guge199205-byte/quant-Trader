@@ -12,6 +12,8 @@ import {
 } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
 import { logoOf, shortName } from './ModelCard';
+import { stockLabel } from '../utils/symbols';
+import { fmtMoneySigned, fmtPrice } from '../utils/format';
 import './CompletedFeed.css';
 
 interface Props {
@@ -183,9 +185,9 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
                 <span className="feed-date">{t.exit_date ? t.exit_date.slice(5, 16) : '—'}</span>
               </div>
               <div className="feed-price">
-                成本: {currency}{t.entry_price.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                成本: {fmtPrice(t.entry_price, currency)}
                 <span className="feed-arrow"> → </span>
-                平仓: {currency}{t.exit_price.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                平仓: {fmtPrice(t.exit_price, currency)}
               </div>
               <div className="feed-grid">
                 <div className="feed-cell">
@@ -195,7 +197,9 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
                 <div className="feed-cell">
                   <span className="feed-k">成交金额</span>
                   <span className="feed-v">
-                    {t.qty > 0 ? `${currency}${(t.qty * t.exit_price).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}
+                    {t.qty > 0 && t.exit_price > 0
+                      ? `${currency}${(t.qty * t.exit_price).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+                      : '—'}
                   </span>
                 </div>
                 <div className="feed-cell">
@@ -204,7 +208,7 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
                 </div>
               </div>
               <div className={`feed-pnl ${pnl >= 0 ? 'up' : 'down'}`}>
-                实现盈亏: {pnl >= 0 ? '+' : '-'}{currency}{Math.abs(pnl).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                实现盈亏: {fmtMoneySigned(pnl, currency, 2)}
               </div>
             </div>
           );
@@ -238,7 +242,7 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
               <span className="feed-msg">
                 <b className="feed-agent">{shortName(t.agent)}</b> 在{' '}
                 <b className="feed-symbol">
-                  {stockNames[t.symbol] ?? t.symbol}
+                  {stockLabel(stockNames, t.symbol)}
                   <span className="feed-code">{t.symbol}</span>
                 </b>{' '}
                 完成了一笔交易！
@@ -246,9 +250,9 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
               <span className="feed-date">{t.exit_date.slice(5)}</span>
             </div>
             <div className="feed-price">
-              价格: {currency}{t.entry_price.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+              成本: {fmtPrice(t.entry_price, currency)}
               <span className="feed-arrow"> → </span>
-              {currency}{t.exit_price.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+              平仓: {fmtPrice(t.exit_price, currency)}
             </div>
             <div className="feed-grid">
               <div className="feed-cell">
@@ -258,8 +262,8 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
               <div className="feed-cell">
                 <span className="feed-k">名义金额</span>
                 <span className="feed-v">
-                  {currency}{entryNotional.toLocaleString('en-US', { maximumFractionDigits: 0 })} →{' '}
-                  {currency}{t.notional.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                  {t.entry_price > 0 ? `${currency}${entryNotional.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'} →{' '}
+                  {t.notional > 0 ? `${currency}${t.notional.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}
                 </span>
               </div>
               <div className="feed-cell">
@@ -267,8 +271,10 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
                 <span className="feed-v">{holdText(t.hold_days)}</span>
               </div>
             </div>
-            <div className={`feed-pnl ${pnl >= 0 ? 'up' : 'down'}`}>
-              净盈亏: {pnl >= 0 ? '+' : '-'}{currency}{Math.abs(pnl).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+            {/* 成本价缺失（桥回报未带成本）时盈亏算不出来，不能显示成 +¥0 */}
+            <div className={`feed-pnl ${t.entry_price > 0 ? (pnl >= 0 ? 'up' : 'down') : 'dim'}`}>
+              净盈亏:{' '}
+              {t.entry_price > 0 ? fmtMoneySigned(pnl, currency, 2) : '—（成本价缺失）'}
             </div>
           </div>
         );

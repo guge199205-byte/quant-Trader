@@ -74,6 +74,11 @@
 .mc-mode-chip.action.sell { background: #fdecea; color: #c62828; border-color: #f3b9b4; }
 .mc-mode-chip.action.buy  { background: #e8f5e9; color: #2e7d32; border-color: #b7dfba; }
 .mc-mode-chip.action.hold { background: #f4f4f4; color: #555; border-color: #ddd; }
+/* 新闻 agent 段（不参与交易动作判定，单独特色以示区分） */
+.mc-mode-chip.news { background: #fff5e6; color: #a35c00; border-color: #f0d3a8; }
+/* 小节头不可折叠（结构化输出直接铺开） */
+.mc-section-head.static { cursor: default; }
+.mc-section-head.static:hover { background: transparent; }
 .mc-mode-chip.action.empty{ background: #fff; color: #999; border-style: dashed; }
 .mc-mode-chip.action.tp   { background: #fff8e1; color: #b26a00; border-color: #f2d98c; }
 .mc-mode-chip.action.tune { background: #fff3e0; color: #e65100; border-color: #f4c89b; }
@@ -240,17 +245,206 @@
 }
 .mc-md-warn strong { color: #8a6d00; }
 
-/* 决策卡（ModelDetail 旧卡）保留字段样式 */
-.mc-decision { border: 2px solid #000; background: #fff; display: grid; grid-template-columns: 1fr 1fr; }
-.mc-field { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-bottom: 1px solid #ddd; border-right: 1px solid #ddd; min-width: 0; }
-.mc-field:nth-child(2n), .mc-field-wide { border-right: none; }
-.mc-field:nth-last-child(-n + 1) { border-bottom: none; }
-.mc-key { font-family: 'Courier New', monospace; font-size: 9px; letter-spacing: 0.1em; color: #888; text-transform: uppercase; }
-.mc-val { font-family: 'Courier New', monospace; font-size: 11px; font-weight: 700; word-break: break-word; }
-.mc-val.na { color: #bbb; font-weight: 400; }
-.mc-sym-name { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; }
-.mc-sym-code { font-size: 9px; color: #999; font-variant-numeric: tabular-nums; }
+/* ---------- 实盘成交回报（桥 · 秒级） ---------- */
+.mc-live-list { padding: 8px 14px 10px; display: flex; flex-direction: column; gap: 6px; background: #fafafa; border-top: 1px dashed #ddd; }
+.mc-live-fill {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  flex-wrap: wrap;
+  padding: 5px 9px;
+  border: 1px solid #ddd;
+  border-left: 4px solid #999;
+  background: #fff;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.mc-live-fill.buy { border-left-color: #e0483e; }
+.mc-live-fill.sell { border-left-color: #12b886; }
+.mc-live-ts { font-weight: 700; }
+.mc-live-sym { font-size: 11.5px; }
+.mc-live-code { font-size: 9.5px; color: #999; }
+.mc-live-qty { color: #333; }
+.mc-live-price { color: #333; }
+.mc-live-amt { font-weight: 700; }
+.mc-live-oid { margin-left: auto; font-size: 9.5px; color: #999; }
+.mc-toolbar-note { color: #999; font-size: 9.5px; }
+
+/* ---------- 复盘工具条（筛选 / 批量展开 / 数据范围） ---------- */
+.mc-wrap { display: flex; flex-direction: column; gap: 10px; }
+.mc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 2px solid #000;
+  background: #fff;
+  font-family: 'Courier New', monospace;
+  font-size: 10.5px;
+}
+.mc-toolbar-stat b { font-variant-numeric: tabular-nums; }
+.mc-toolbar-range { color: #777; font-variant-numeric: tabular-nums; }
+.mc-toolbar-btns { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mc-filters { display: flex; gap: 0; }
+.mc-filter {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 4px 9px;
+  border: 1.5px solid #000;
+  border-right-width: 0;
+  background: #fff;
+  color: #000;
+  cursor: pointer;
+}
+.mc-filter:last-child { border-right-width: 1.5px; }
+.mc-filter:hover { background: #f0f0f0; }
+.mc-filter.active { background: #000; color: #fff; }
+
+/* ---------- 回合头补充：轮次号 / 类型 / 秒级时间 ---------- */
+.mc-seq {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  color: #666;
+  font-variant-numeric: tabular-nums;
+  border-right: 1px solid #ddd;
+  padding-right: 8px;
+}
+.mc-kind {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border: 1px solid #0d8a6b;
+  color: #0d8a6b;
+  background: #eefaf6;
+  white-space: nowrap;
+}
+.mc-status.idle { background: #8a8a8a; }
+.mc-status.review { background: #0d8a6b; }
+.mc-date { display: inline-flex; align-items: baseline; gap: 6px; }
+.mc-date-wd { font-style: normal; font-size: 9.5px; color: #777; }
+.mc-date-ago { font-style: normal; font-size: 9.5px; color: #999; font-weight: 400; }
+
+/* 轮次副行：交易日 / 记录时刻 / tokens / 工具调用 */
+.mc-subline {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding: 5px 14px;
+  border-bottom: 1px dashed #ddd;
+  background: #fbfbfb;
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  color: #333;
+}
+.mc-subline-k {
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #999;
+}
+.mc-subline b { font-variant-numeric: tabular-nums; }
+.mc-subline-note { color: #999; font-weight: 400; }
+.mc-subline-tool { font-weight: 400; color: #444; }
+
+/* ---------- 轮次元数据（展开后第一块） ---------- */
+.mc-meta {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  border-bottom: 2px solid #000;
+  background: #fff;
+}
+.mc-meta-cell {
+  padding: 7px 10px;
+  border-right: 1px solid #eee;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mc-meta-cell:last-child { border-right: none; }
+.mc-meta-cell.wide { grid-column: span 6; border-right: none; border-bottom: 1px solid #eee; }
+.mc-meta-k {
+  font-family: 'Courier New', monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #999;
+}
+.mc-meta-v {
+  font-family: 'Courier New', monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.mc-section-hint { margin-left: auto; font-size: 9.5px; font-weight: 400; color: #888; }
+
+/* ---------- 结构化决策（模型 JSON：说的） ---------- */
+.mc-dec-list { padding: 8px 14px 10px; display: flex; flex-direction: column; gap: 8px; background: #fafafa; border-top: 1px dashed #ddd; }
+.mc-dec {
+  border: 1px solid #ddd;
+  border-left: 4px solid #999;
+  background: #fff;
+  padding: 7px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+}
+.mc-dec.buy { border-left-color: #e0483e; }
+.mc-dec.sell { border-left-color: #12b886; }
+.mc-dec-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.mc-dec-side { font-weight: 700; padding: 1px 7px; }
+.mc-dec-side.buy { color: #e0483e; background: #fdecea; }
+.mc-dec-side.sell { color: #12b886; background: #e6f7f0; }
+.mc-dec-side.hold { color: #555; background: #f0f0f0; }
+.mc-dec-code { font-weight: 700; }
+.mc-dec-sym { font-size: 9.5px; color: #999; font-variant-numeric: tabular-nums; }
+.mc-dec-pct { color: #666; font-size: 10px; }
+.mc-dec-exec { margin-left: auto; font-size: 9.5px; font-weight: 700; padding: 1px 6px; border: 1px solid #ccc; }
+.mc-dec-exec.done { color: #0d7a4f; border-color: #b6e0cd; background: #f0fbf6; }
+.mc-dec-exec.none { color: #8a6d00; border-color: #f2e2ac; background: #fffbe6; }
+.mc-dec-reason { color: #333; line-height: 1.6; overflow-wrap: anywhere; }
+.mc-dec-exit { display: flex; gap: 10px; flex-wrap: wrap; font-size: 10px; color: #8a6d00; background: #fffbe6; border: 1px solid #f2e2ac; padding: 3px 7px; }
+
+/* ---------- 成交决策卡（真实回报：做的） ---------- */
+.mc-decision { border: 2px solid #000; background: #fff; }
+.mc-decision.buy { border-left: 8px solid #e0483e; }
+.mc-decision.sell { border-left: 8px solid #12b886; }
+.mc-decision-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  border-bottom: 1px solid #ddd;
+  background: #fafafa;
+}
+.mc-decision-sym { font-family: 'Courier New', monospace; font-size: 12.5px; }
+.mc-decision-code { font-family: 'Courier New', monospace; font-size: 9.5px; color: #999; font-variant-numeric: tabular-nums; }
+.mc-decision-date { margin-left: auto; font-family: 'Courier New', monospace; font-size: 10px; color: #777; font-variant-numeric: tabular-nums; }
+.mc-decision-body { display: grid; grid-template-columns: repeat(5, 1fr); }
+.mc-decision-body .mc-meta-cell { border-right: 1px solid #eee; }
 .mc-side.buy { color: #e0483e; }
 .mc-side.sell { color: #12b886; }
-.mc-field-wide { grid-column: 1 / -1; }
-.mc-reason { font-weight: 400; line-height: 1.6; }
+.mc-side { font-family: 'Courier New', monospace; font-size: 11px; font-weight: 700; }
+
+@media (max-width: 900px) {
+  .mc-meta { grid-template-columns: repeat(2, 1fr); }
+  .mc-meta-cell.wide { grid-column: span 2; }
+  .mc-decision-body { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 560px) {
+  .mc-toolbar-btns { margin-left: 0; }
+  .mc-meta { grid-template-columns: 1fr; }
+  .mc-meta-cell { border-right: none; }
+  .mc-decision-body { grid-template-columns: 1fr; }
+}

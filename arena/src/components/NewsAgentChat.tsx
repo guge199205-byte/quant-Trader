@@ -36,6 +36,7 @@ export default function NewsAgentChat({ agent = 'all' }: { agent?: string }) {
     return NEWS_AGENTS.filter((a) => sel === 'all' || a.id === sel)
       .map((a, i) => ({
         name: a.cn,
+        id: a.id,
         // 存储层 signature 是英文 id，展示层统一中文化（用户口径：界面上不出现英文 agent 名）
         lines: (data[i] ?? []).map((ln) => ({ ...ln, signature: a.cn })),
       }))

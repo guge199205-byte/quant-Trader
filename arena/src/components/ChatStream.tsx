@@ -6,11 +6,15 @@ import './ModelChat.css';
 import { modeOf } from '../utils/modeTag';
 import { FillLike, renderActionTags } from '../utils/actionTags';
 import { parseAnalysis } from '../utils/parseAnalysis';
+import { ProtoSpec, isGateAgent, protoSpecOf, protoSummary } from '../utils/newsProtocol';
+import NewsProtocolView from './NewsProtocolView';
 
 /** 一个分析回合：单条日志（一次 LLM 分析 = user prompt + assistant 总结） */
 interface MixedRound {
   kind?: 'review';
   model: string;
+  /** 存储层 agent id（新闻段落判定用；展示名会被中文化） */
+  modelId?: string;
   /** 日志写入时间（实盘分析时间），用于全局倒序 */
   ts: string | null;
   user: string;
@@ -25,7 +29,7 @@ export default function ChatStream({
   fills,
   heldCodes,
 }: {
-  agents: { name: string; lines: LogLine[] }[];
+  agents: { name: string; id?: string; lines: LogLine[] }[];
   /** 实盘成交事实（时间窗匹配 → 动作标签以成交为准，不靠文字猜） */
   fills?: FillLike[];
   /** 当前仍持有的代码集合（卖后仍持=减仓，卖光=清仓；买后已持=加仓） */
@@ -58,7 +62,7 @@ export default function ChatStream({
           const text = (line.new_messages ?? [])
             .filter((m) => String(m.role) === 'assistant' || String(m.role) === 'ai')
             .map((m) => String(m.content ?? '')).join('\n\n');
-          if (text.trim()) out.push({ kind: 'review', model: ag.name, ts: lineTs, user: '', thought: text });
+          if (text.trim()) out.push({ kind: 'review', model: ag.name, modelId: ag.id, ts: lineTs, user: '', thought: text });
           continue;
         }
         for (const msg of line.new_messages ?? []) {
@@ -67,9 +71,9 @@ export default function ChatStream({
           const role = msg.role ?? 'system';
           if (role === 'user' || role === 'human') {
             flush();
-            cur = { model: ag.name, ts: lineTs ?? extractDate(content), user: content, thought: '' };
+            cur = { model: ag.name, modelId: ag.id, ts: lineTs ?? extractDate(content), user: content, thought: '' };
           } else if (role === 'assistant' || role === 'ai') {
-            if (!cur) cur = { model: ag.name, ts: lineTs, user: '', thought: '' };
+            if (!cur) cur = { model: ag.name, modelId: ag.id, ts: lineTs, user: '', thought: '' };
             cur.thought += (cur.thought ? '\n\n' : '') + content;
             if (!cur.ts) cur.ts = lineTs;
           }
@@ -125,6 +129,11 @@ export default function ChatStream({
         const isOpen = isReview ? !open.has(i) : open.has(i);
         const sec = sections[i] ?? new Set<string>();
         const pa = parsed[i];
+        // 新闻 agent：输出是行式填表协议，走结构化渲染（不做交易动作标签 —— 新闻不下单，
+        // 「维持买入评级」这类正文会被关键词兜底误判成「买入」）
+        const proto: ProtoSpec | null = protoSpecOf(r.modelId);
+        const isNews = !!proto || isGateAgent(r.modelId);
+        const newsSum = isNews ? protoSummary(r.thought, r.modelId) : '';
         return (
           <div
             className={`mc-card ${isOpen ? 'open' : ''}`} data-card={i}
@@ -147,13 +156,14 @@ export default function ChatStream({
               <span className="mc-model" style={{ color: modelColor(r.model) }}>
                 {shortName(r.model)}
               </span>
-              {modeOf(r.user)}
-              {renderActionTags(r.thought, {
-                fills,
-                model: r.model,
-                tsMs: r.ts ? new Date(r.ts).getTime() : null,
-                heldCodes,
-              })}
+              {isNews ? <span className="mc-mode-chip news">新闻</span> : modeOf(r.user)}
+              {!isNews &&
+                renderActionTags(r.thought, {
+                  fills,
+                  model: r.model,
+                  tsMs: r.ts ? new Date(r.ts).getTime() : null,
+                  heldCodes,
+                })}
               <span className="mc-status" style={isReview ? { background: '#0d8a6b' } : undefined}>
                   {isReview ? '📋 复盘' : r.thought ? '已分析' : '仅提示'}
                 </span>
@@ -163,7 +173,9 @@ export default function ChatStream({
             <div className="mc-summary"><span className="mc-sum-label">总结</span><span className="mc-sum-text">
                   {isReview
                     ? '盘后复盘：展开查看逐笔归因 / 行为审计 / 明日预案'
-                    : renderInline(pa.summary || (r.thought || r.user).replace(/\s+/g, ' ').trim())}
+                    : isNews
+                      ? newsSum || renderInline((r.thought || r.user).replace(/\s+/g, ' ').trim())
+                      : renderInline(pa.summary || (r.thought || r.user).replace(/\s+/g, ' ').trim())}
                 </span></div>
             {isOpen && (
               <div className="mc-body">
@@ -191,7 +203,20 @@ export default function ChatStream({
       })()}
                   </div>
                 )}
-                {pa.chain && (
+                {isNews && (
+                  <div className="mc-section" data-sec="proto">
+                    <div className="mc-section-head static">
+                      <span className="mc-caret">▼</span>
+                      结构化输出（{r.modelId === 'news-gate' ? '剔除清单' : '按段字段表渲染'}）
+                    </div>
+                    <NewsProtocolView
+                      text={r.thought}
+                      agentId={r.modelId ?? ''}
+                      spec={proto ?? { agent: '', rows: [] }}
+                    />
+                  </div>
+                )}
+                {!isNews && pa.chain && (
                   <div className={`mc-section ${sec.has('chain') ? 'folded' : ''}`} data-sec="chain">
                     <div className="mc-section-head" onClick={() => toggleSection(i, 'chain')}>
                       <span className="mc-caret">{sec.has('chain') ? '▶' : '▼'}</span>
@@ -215,7 +240,7 @@ export default function ChatStream({
       })()}
                   </div>
                 )}
-                {pa.decisions.length > 0 && (
+                {!isNews && pa.decisions.length > 0 && (
                   <div className={`mc-section ${sec.has('decisions') ? 'folded' : ''}`} data-sec="decisions">
                     <div className="mc-section-head" onClick={() => toggleSection(i, 'decisions')}>
                       <span className="mc-caret">{sec.has('decisions') ? '▶' : '▼'}</span>
@@ -258,7 +283,7 @@ export default function ChatStream({
                     )}
                   </div>
                 )}
-                {pa.reasoning && (
+                {!isNews && pa.reasoning && (
                   <div className={`mc-section ${sec.has('reason') ? 'folded' : ''}`} data-sec="reason">
                     <div className="mc-section-head" onClick={() => toggleSection(i, 'reason')}>
                       <span className="mc-caret">{sec.has('reason') ? '▶' : '▼'}</span>

@@ -31,6 +31,10 @@ zbox 192.168.31.68                              Windows 192.168.31.13
   1. zbox 侧 `qmt_bridge.py` 的 `allow_trading`（`config/qmt_bridge.json`，**默认 false**）；
   2. Windows 侧 `rpc_allow_order_methods`（2026-09-11 实录为 **true**，即那边已放开）。
   本侧 `_order_gate()` 会先查自己再 ping 对端，任一关闭都在发单前抛错，不把注定被拒的单子发出去。
+- **★ 对端开关只信 ping，别信共享目录里的文件**：`/mnt/tdx-shared/qmt-bridge-kit/`
+  是**脱敏模板/分发副本**，2026-09-11 实录它的 `bigqmt_signal_trader_local_config.py:26`
+  仍写 `False`，而运行中的桥自述是 `True`——真正生效的是 QMT python 目录下那份（包要拷过去才跑）。
+  改开关要改**运行的那份**并重载策略；查状态一律用 `GET /api/qmt/status` 或 `qmt_probe.py`。
 
 ## 共用 Redis 的两点注意（开真钱前要处理）
 
@@ -114,10 +118,18 @@ QMT 侧日志：`<QMT python 目录>\logs\bigqmt_*.log`（保留 7 天）。
   一死一活时立刻能分辨是桥的问题还是券商侧的问题）；`GET /api/qmt/status` 实时回报两处总闸，
   详情卡分两行显示（「Windows 侧下单闸」/「本系统接线」）。
 - **开真钱前的清单**（未做，按序）：
+  0. **先人工定性账户 40327478 是模拟还是真实**：本手册开头写「QMT 模拟交易」，
+     工具包 README 写「大 QMT 真实下单」，两处口径不一致——若是真实账户，第 3 步
+     的小额验证就是真钱成交，性质完全不同。
   1. 处理上面「共用 Redis 注意」两条——**无密码这件已从「只读风险」升级为「可下真单风险」**；
-  2. 小额验证：本侧临时开 `allow_trading`，用最小手数（100 股）跑一笔买入→查询委托→撤单/卖出，
+  2. **补上 TDX 那条链有、QMT 这条链没有的三件防护**（2026-09-11 核对）：
+     TDX 走 `plan_id`（本机生成）+ 桥侧幂等（当日同代码同方向已成交则跳过）
+     + 卖前可用持仓校验（`bridge-windows/src/executor/plan_executor.py`）；
+     QMT 这条目前只有「双闸 + 入参校验」，经 `risk.py` 时再加 RiskGateway 的仓位/预算检查。
+     走真钱前要想清楚：重复提交谁拦、超卖谁兜（对端会拒超卖，但不保证不重复成交）。
+  3. 小额验证：本侧临时开 `allow_trading`，用最小手数（100 股）跑一笔买入→查询委托→撤单/卖出，
      确认 `order_sys_id` 回填与 `get_orders()` 终态（53/54/56）都对得上；
-  3. 验收通过、人工确认后，才把 `config/qmt_bridge.json` 的 `allow_trading` 置 true。
+  4. 验收通过、人工确认后，才把 `config/qmt_bridge.json` 的 `allow_trading` 置 true。
 - 下单链路已过与 TDX 桥同款的闸门（预算→熔断→风控→标的边界，见 `agent_tools/risk.py`）。
   但**现有实盘脚本仍写死 `TdxBridgeBroker`**（如 `scripts/live_llm_trade.py`），且 QMT 通道
   不供行情（`get_quote`/`get_klines` 抛错）——真要切 QMT 执行，得做成「账户/执行走 QMT、

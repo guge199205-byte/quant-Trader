@@ -1279,5 +1279,23 @@
   "updated": "2026-09-08",
   "status": "proposed",
   "source": "review"
+ },
+ "H_2026-09-09_deepseek-v4-flash_0": {
+  "name": "池内max(fusion)<0.02连续≥3日且大盘平量高位的状态下，次日指数走向统计",
+  "direction": "次日延续区间震荡、方向性突破概率低 → 空仓等待为正期望",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-09",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-09_glm-5.3-flash_0": {
+  "name": "浮盈票缩量横盘+双条件位箱体（万华77-80区间）：触及上沿减半/下沿减半的箱体纪律，期望优于持有不动或频繁主观干预",
+  "direction": "上沿兑现、下沿防守",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-09",
+  "status": "proposed",
+  "source": "review"
  }
 }

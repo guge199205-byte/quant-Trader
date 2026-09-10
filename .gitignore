@@ -124,6 +124,8 @@ data/hk_picks.json
 # 桥/券商连接配置（含内网地址与敏感字段，运行时生成不入库）
 config/tdx_bridge.json
 config/brokers.json
+# QMT 桥（Redis 密码在里面，绝不入库）
+config/qmt_bridge.json
 
 # 盘中 watch 条件位（live_hourly_analysis 写入，哨兵消费）
 data/live_watch.json
@@ -164,3 +166,21 @@ data/pine_transpile/
 
 # 转写链路抽样审计（样本清单 + 汇总报告，运行时产物不入库）
 data/pine_audit/
+
+# 事件流（买回/解禁等，每日生成 parquet，体量大且可重生成）
+data/events/
+
+# 新闻管线运行时产物（六段 agent 每轮刷新：latest/history/lessons/reviews）
+data/news_brief/
+
+# IB Gateway 运行时状态（jts.ini / 启动日志，含会话痕迹不入库）
+data/ibgateway-jts/
+
+# 盘中风险封锁清单（每日生成，带 generated_at）
+data/risk_block.json
+
+# 一次性手工备份（*.bak-YYYYMMDD）
+scripts/*.bak-*
+
+# arena 本地 dev 配置（非仓库正式配置，用完即删）
+arena/vite.config.local.ts

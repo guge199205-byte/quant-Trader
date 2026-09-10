@@ -38,8 +38,14 @@ fi
 # ---------- 后端 ----------
 if [ "$API" = 1 ]; then
   echo "==> 部署后端…"
-  python3 -m py_compile backend/api_server.py backend/services/market_lab.py backend/services/lab_indicators.py backend/services/lab_batch.py backend/services/pine_library.py backend/services/quantmind_proxy.py
+  python3 -m py_compile backend/api_server.py backend/services/tdx_live.py backend/services/market_lab.py backend/services/lab_indicators.py backend/services/lab_batch.py backend/services/pine_library.py backend/services/quantmind_proxy.py
   docker exec -i baymax-api sh -c 'cat > /app/backend/api_server.py' < backend/api_server.py
+  # 券商配置服务（tdx_live）：api_server 直接 import（券商卡片/测试连接/桥配置），
+  # 之前漏列——QMT 卡片 2026-09-10 加进来时一并补上
+  docker exec -i baymax-api sh -c 'cat > /app/backend/services/tdx_live.py' < backend/services/tdx_live.py
+  # QMT 桥适配器（只读）：agent_tools 其余实现在镜像里，这个文件是新的，需随版本拷
+  docker exec baymax-api sh -c 'mkdir -p /app/agent_tools/brokers'
+  docker exec -i baymax-api sh -c 'cat > /app/agent_tools/brokers/qmt_bridge.py' < agent_tools/brokers/qmt_bridge.py
   # quantmind 代理（token 缓存 + 转发）：2026-09-09 死锁修复前漏在镜像里（Aug 30 构建），
   # 只改宿主不拷容器 = 白改。凡是 backend/services/ 下被 api_server 直接 import 的模块都要列在这
   docker exec -i baymax-api sh -c 'cat > /app/backend/services/quantmind_proxy.py' < backend/services/quantmind_proxy.py

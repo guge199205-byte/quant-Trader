@@ -115,10 +115,10 @@ L2 逐笔（tick）桥没有（要 TdxAiData 云端）；1m 分钟K桥返回空�
 
 ---
 
-## ⑤ 迅投 QMT（A股，大 QMT 内置策略 + Redis RPC；当前**只读**）
+## ⑤ 迅投 QMT（A股，大 QMT 内置策略 + Redis RPC；下单已接线，**本侧默认关闭**）
 
-> 2026-09-10 接入，阶段一：只读（查账户/持仓/委托/成交，不下单）。
-> 完整手册（拓扑 / 容器运维 / 排错表）见 [QMT_BRIDGE.md](QMT_BRIDGE.md)。
+> 2026-09-10 接入；2026-09-11 接线下单（`allow_trading` 默认 false，即只读）。
+> 完整手册（拓扑 / 容器运维 / 排错表 / 开真钱前清单）见 [QMT_BRIDGE.md](QMT_BRIDGE.md)。
 
 1. **Windows 机**装大 QMT（先在 QMT 界面下载「Python 组件」）→ 登录交易端
 2. **zbox 侧**：桥复用本机 quantmind Redis（`192.168.31.68:6379`，**db 5**，无密码）与
@@ -127,9 +127,10 @@ L2 逐笔（tick）桥没有（要 TdxAiData 云端）；1m 分钟K桥返回空�
    拷到 QMT python 目录 → 填 `BIGQMT_ACCOUNT_ID` → **策略编辑器**加载运行 `BIGQMT_REDIS_DRYRUN.py`
 4. **验证**：总控 → 交易所设置 → 「迅投 QMT」卡片「测试连接」（应显示总资产/可用/持仓数）；
    总控首页「⚡ 迅投 QMT（只读）」面板应显示账户汇总 + 持仓明细（桥断时为降级提示）；
-   或命令行 `/home/zbox/baymax/.venv/bin/python scripts/qmt_probe.py`（只读五连查）
-5. 能力：账户/持仓/委托/成交查询（形状对齐 TDX 桥）。下单属阶段二，
-   届时需两侧同时开闸（Windows `rpc_allow_order_methods=True` + zbox broker 接线）
+   或命令行 `/home/zbox/baymax/.venv/bin/python scripts/qmt_probe.py`（只读五连查，首屏回报两处下单闸）
+5. 能力：账户/持仓/委托/成交查询（形状对齐 TDX 桥）；buy/sell/cancel_order 已接线，
+   受两处独立总闸约束——zbox 侧 `config/qmt_bridge.json` 的 `allow_trading`（默认关）
+   + Windows 侧 `rpc_allow_order_methods`，两者都开才能成交。
 
 **坑（实测）**：QMT 重启后策略要重跑（输出面板须见 `[bigqmt_rpc] started ...`）；
 必须走策略编辑器，`python.exe` 直接跑不会注入交易接口；信用账户 `account_type` 填错

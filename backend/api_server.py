@@ -321,6 +321,10 @@ def _merge_live_fills(agent: str, closed: list) -> list:
             fill = rec.get("fill")
             if rec.get("agent") != agent or not fill:
                 continue
+            # 只并入卖出：本表是「已平仓明细」，买单是开仓，混进来会冒充成一笔平仓
+            # （2026-09-11 修：deepseek-v4-pro 09-08 的买入回报曾被当成平仓行）
+            if rec.get("side") != "sell":
+                continue
             fv = int(fill.get("filled_volume") or 0)
             if fv <= 0:
                 continue
@@ -709,6 +713,71 @@ async def ibkr_orders(limit: int = Query(50, ge=1, le=500)):
         return {"success": False, "error": f"IBKR 委托查询失败: {e}"}
 
 
+# ---------- 迅投 QMT（A股；大 QMT 内置策略 + Redis 桥，当前只读） ----------
+# 配置读 config/qmt_bridge.json（与设置页卡片、scripts/qmt_probe.py 同源）。
+# 下单未接线（broker.buy/sell 抛错）——阶段一验收通过前不接执行。
+# ★ 注意：本侧没接线 ≠ 那边不能下单。Windows 侧 rpc_allow_order_methods 是独立总闸，
+#   实际状态由 /api/qmt/status 实时读回（2026-09-11 实录为 true）。
+
+def _qmt_broker():
+    from agent_tools.brokers.qmt_bridge import QmtBridgeBroker
+
+    return QmtBridgeBroker()
+
+
+@app.get("/api/qmt/account")
+def qmt_account():
+    """QMT 账户资产+持仓（只读）。账户通道第二观测点：与通达信桥互为独立佐证。
+
+    刻意用同步 def（对齐 /api/live/account）：桥查询是阻塞 Redis RPC（超时 10s），
+    在 async def 里直调会在 QMT 侧假活时冻结整个事件循环、全站轮询一起卡。
+    """
+    try:
+        data = _qmt_broker()._account_query()
+        positions = data.get("positions") or []
+        return {"success": True, "data": {
+            "asset": data.get("asset"),
+            "positions": positions,
+            "position_count": len(positions),
+            "broker": "qmt",
+            "account_id": data.get("account_id"),
+        }}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"QMT 查询失败: {e}"}
+
+
+@app.get("/api/qmt/status")
+def qmt_status():
+    """QMT 桥自述（只读 RPC ping）：Windows 侧下单总闸在不在、RPC 版本、账号类型。
+
+    与 /api/qmt/account 分开：账户读得通不代表那边没放开真实下单——
+    Windows 侧 rpc_allow_order_methods 是独立总闸，界面上必须把
+    「通道不支持下单」和「本系统还没接线」分开显示。同步 def 理由同 /api/qmt/account。
+    """
+    try:
+        r = _qmt_broker().ping()
+        result = (r or {}).get("result") or {}
+        return {"success": True, "data": {
+            "account_id": r.get("account_id") or result.get("account_id"),
+            "allow_order_methods": bool(result.get("allow_order_methods")),
+            "version": result.get("version"),
+            "account_type": result.get("account_type"),
+            "server_time": result.get("server_time"),
+            "rpc_revision": result.get("rpc_revision"),
+        }}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"QMT 状态查询失败: {e}"}
+
+
+@app.get("/api/qmt/orders")
+def qmt_orders(limit: int = Query(50, ge=1, le=500)):
+    """QMT 当日委托（只读；状态已映射为 TDX 口径，见 qmt_bridge.STATUS_MAP）。同步 def 理由同上。"""
+    try:
+        return {"success": True, "data": _qmt_broker().get_orders()[:limit]}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"QMT 委托查询失败: {e}"}
+
+
 # ---------- 通达信桥执行服务（BayMax 自有，复刻 quantmind 桥服务层） ----------
 # 响应为裸 JSON（不经 {success,data} 信封）——前端 TradingSettings getJson 直接取
 # res.data，形状与 quantmind 原版对齐。滚动买卖/止损止盈/推送选股仍走 /api/quantmind
@@ -854,11 +923,43 @@ def _qm_pg_conn():
     return psycopg2.connect(**_QM_PG)
 
 
+# A 股实盘两个账户通道（account_id 是唯一可靠判据；source 名会漂，见 real-account 注释）
+REAL_ACCOUNTS = {
+    "tdx": {
+        "account_id": "tdx-default-00000001",
+        "label": "通达信桥",
+        "channel": "通达信（BayMax 实盘执行通道）",
+    },
+    "qmt": {
+        "account_id": "qmt-default-00000001",
+        "label": "迅投 QMT",
+        "channel": "迅投 QMT（账户只读观测）",
+    },
+}
+
+
+def _real_account_id(account: str) -> str:
+    """通道 key → account_id；未知 key 直接 422，别静默退回默认账户。"""
+    meta = REAL_ACCOUNTS.get(account)
+    if meta is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"未知实盘账户通道 {account!r}，可选：{', '.join(REAL_ACCOUNTS)}",
+        )
+    return meta["account_id"]
+
+
 @app.get("/api/live/real-account")
-def live_real_account():
-    """quantmind 实盘账户最新快照（总资产/现金/持仓），每 30s 由 TDX 桥同步。"""
+def live_real_account(account: str = Query("tdx")):
+    """quantmind 实盘账户最新快照（总资产/现金/持仓），每 30s 由桥同步。
+
+    account=tdx|qmt 分账（按 account_id，不是 source——source 名会漂：
+    08-13~08-27 行 source='qmt_bridge_backfill' 但 account_id 是 tdx 账户）。
+    默认 tdx：BayMax 全部实盘决策成交流水都在通达信账户上。
+    """
     import psycopg2.extras
 
+    account_id = _real_account_id(account)
     try:
         conn = _qm_pg_conn()
         try:
@@ -868,8 +969,10 @@ def live_real_account():
                     SELECT snapshot_at, total_asset, cash, market_value,
                            today_pnl_raw, total_pnl_raw, payload_json
                     FROM real_account_snapshots
+                    WHERE account_id = %s
                     ORDER BY snapshot_at DESC LIMIT 1
-                    """
+                    """,
+                    (account_id,),
                 )
                 row = cur.fetchone()
         finally:
@@ -900,13 +1003,20 @@ def live_real_account():
         "market_value": row["market_value"],
         "today_pnl": row["today_pnl_raw"],
         "total_pnl": row["total_pnl_raw"],
+        "account": account,
+        "account_id": account_id,
+        "account_label": REAL_ACCOUNTS[account]["label"],
         "positions": positions,
     }}
 
 
-@app.get("/api/live/real-ledger")
-def live_real_ledger():
-    """quantmind 日终账本（每日总资产/日收益），供净值曲线与日收益展示。"""
+@app.get("/api/live/real-accounts")
+def live_real_accounts():
+    """两个 A 股实盘账户通道的最新快照摘要（通达信 / 迅投 QMT）。
+
+    前端通道选择器与「交易所在线」区块的数据源：一次调用拿到两条通道的
+    资产/持仓数/快照时刻（fresh 秒数），免去各自轮询两个重查询。
+    """
     import psycopg2.extras
 
     try:
@@ -915,11 +1025,67 @@ def live_real_ledger():
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
                     """
-                    SELECT snapshot_date, total_asset, cash, market_value,
+                    SELECT DISTINCT ON (account_id)
+                           account_id, snapshot_at, total_asset, cash,
+                           market_value, source, payload_json
+                    FROM real_account_snapshots
+                    ORDER BY account_id, snapshot_at DESC
+                    """
+                )
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("real-accounts 读取失败: %s", e)
+        return {"success": False, "error": f"quantmind PG 读取失败: {e}"}
+
+    by_id = {r["account_id"]: r for r in rows}
+    now = datetime.now()
+    out = []
+    for key, meta in REAL_ACCOUNTS.items():
+        r = by_id.get(meta["account_id"])
+        ts = r["snapshot_at"] if r else None
+        out.append({
+            "account": key,
+            "account_id": meta["account_id"],
+            "label": meta["label"],
+            "channel": meta["channel"],
+            "ts": ts.isoformat() if ts else None,
+            "age_sec": int((now - ts).total_seconds()) if ts else None,
+            "total_asset": r["total_asset"] if r else None,
+            "cash": r["cash"] if r else None,
+            "market_value": r["market_value"] if r else None,
+            "source": r["source"] if r else None,
+            "position_count": len((r["payload_json"] or {}).get("positions") or []) if r else 0,
+        })
+    return {"success": True, "data": out}
+
+
+@app.get("/api/live/real-ledger")
+def live_real_ledger(account: str = Query("tdx")):
+    """quantmind 日终账本（每日总资产/日收益），供净值曲线与日收益展示。
+
+    account=tdx|qmt 分账：不分区会把 QMT 账户（¥2385 万）的点混进通达信账户
+    （¥92 万）曲线，2026-09-10 那条 2385 万让曲线单日跳 +2437.9%。
+    """
+    import psycopg2.extras
+
+    account_id = _real_account_id(account)
+    try:
+        conn = _qm_pg_conn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # 同日多行（daily_settlement 与桥回填并存）取后写的那条：曲线一天只能一个点
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (snapshot_date)
+                           snapshot_date, total_asset, cash, market_value,
                            daily_return_pct, total_return_pct, position_count, source
                     FROM real_account_ledger_daily_snapshots
-                    ORDER BY snapshot_date
-                    """
+                    WHERE account_id = %s
+                    ORDER BY snapshot_date, id DESC
+                    """,
+                    (account_id,),
                 )
                 rows = cur.fetchall()
         finally:
@@ -939,7 +1105,7 @@ def live_real_ledger():
             "source": r["source"],
         }
         for r in rows
-    ]}
+    ], "account": account, "account_id": account_id}
 
 
 @app.get("/api/live/l2-factors")

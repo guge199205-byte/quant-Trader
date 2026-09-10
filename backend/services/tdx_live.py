@@ -3,7 +3,8 @@
 桥连接配置 / 总览聚合（stats+account+orders）/ 实盘执行状态 / 券商接入配置。
 - 桥连接: config/tdx_bridge.json 运行时覆盖（设置页保存即生效；config/ 目录容器
   与宿主机共用挂载，cron 侧 TdxBridgeBroker 同源解析）→ .env 兜底
-- 券商配置: config/brokers.json，敏感字段只写不回显（读取脱敏为 *_configured 布尔）
+- 券商配置: config/brokers.json（例外：qmt 直接用自有 config/qmt_bridge.json，与
+  QmtBridgeBroker / 体检脚本同源，避免两份真相源漂移），敏感字段只写不回显
 - 桥本体（Windows 通达信客户端侧 8550 HTTP 服务）只作外部执行器调用
 
 响应形状与前端 TradingSettings.tsx 的类型定义及 quantmind 原版对齐（裸 JSON，
@@ -18,6 +19,9 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[2]
 BROKERS_FILE = ROOT / "config" / "brokers.json"
+# QMT 桥自有配置文件（QmtBridgeBroker / scripts/qmt_probe.py 同源读取）：设置页直接
+# 编辑它，而不是在 brokers.json 再存一份——两份配置必然漂移
+QMT_FILE = ROOT / "config" / "qmt_bridge.json"
 LIVE_TRADE_GLOB = "live_trade_*.jsonl"
 CN_TZ = ZoneInfo("Asia/Shanghai")
 BRIDGE_TIMEOUT = 3.0
@@ -29,8 +33,14 @@ BROKER_FIELDS = {
     "futu": {"opend_host": False, "opend_port": False,
              "trade_pwd_md5": True, "trade_env": False},
     "ib": {"gateway_host": False, "gateway_port": False, "client_id": False},
+    # qmt 落 config/qmt_bridge.json（见 _broker_store），字段名与 QmtBridgeBroker 一致
+    "qmt": {"account_id": False, "account_type": False, "redis_host": False,
+            "redis_port": False, "redis_db": False, "redis_password": True},
 }
-BROKER_LABELS = {"tiger": "老虎证券", "futu": "富途证券", "ib": "盈透证券(IB)"}
+BROKER_LABELS = {"tiger": "老虎证券", "futu": "富途证券", "ib": "盈透证券(IB)",
+                 "qmt": "迅投 QMT"}
+# QMT 配置里的数值字段：按整数写回，别在 json 里存成 "6379" 字符串
+_QMT_INT_FIELDS = frozenset({"redis_port", "redis_db"})
 
 
 def effective_bridge() -> tuple:
@@ -212,18 +222,38 @@ def real_trading_status() -> dict:
 
 # ---------- 券商接入配置（config/brokers.json，敏感只写不回显） ----------
 
-def _read_brokers() -> dict:
+def _read_json(path: Path) -> dict:
     try:
-        data = json.loads(BROKERS_FILE.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
 
 
-def _write_brokers(data: dict) -> None:
-    BROKERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    BROKERS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1),
-                            encoding="utf-8")
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def _read_brokers() -> dict:
+    return _read_json(BROKERS_FILE)
+
+
+def _broker_store(broker: str) -> dict:
+    """券商配置段：qmt 是自有文件（整文件即一段），其余在 brokers.json 的 <broker> 段。"""
+    if broker == "qmt":
+        return _read_json(QMT_FILE)
+    return dict(_read_brokers().get(broker) or {})
+
+
+def _save_broker_store(broker: str, stored: dict) -> None:
+    """写回配置段。qmt 整文件覆盖（stored 由 _broker_store 读来，其它键不丢）。"""
+    if broker == "qmt":
+        _write_json(QMT_FILE, stored)
+        return
+    data = _read_brokers()
+    data[broker] = stored
+    _write_json(BROKERS_FILE, data)
 
 
 def get_broker_config(broker: str) -> dict:
@@ -231,7 +261,7 @@ def get_broker_config(broker: str) -> dict:
     broker = (broker or "").lower().strip()
     if broker not in BROKER_FIELDS:
         raise ValueError(f"未知券商: {broker}")
-    stored = _read_brokers().get(broker) or {}
+    stored = _broker_store(broker)
     fields: dict = {}
     for name, sensitive in BROKER_FIELDS[broker].items():
         value = str(stored.get(name, "") or "")
@@ -251,21 +281,24 @@ def update_broker_config(broker: str, values: dict) -> dict:
     unknown = set(values or {}) - set(BROKER_FIELDS[broker])
     if unknown:
         raise ValueError(f"无效字段: {', '.join(sorted(unknown))}")
-    data = _read_brokers()
-    stored = dict(data.get(broker) or {})
+    stored = _broker_store(broker)
     for name, value in (values or {}).items():
         text = str(value or "").strip()
-        if text:
-            stored[name] = text
-        else:
+        if not text:
             stored.pop(name, None)
-    data[broker] = stored
-    _write_brokers(data)
+        elif broker == "qmt" and name in _QMT_INT_FIELDS:
+            try:
+                stored[name] = int(text)
+            except ValueError:
+                raise ValueError(f"无效字段: {name} 需为整数") from None
+        else:
+            stored[name] = text
+    _save_broker_store(broker, stored)
     return get_broker_config(broker)
 
 
 async def test_broker_connection(broker: str) -> dict:
-    """测试券商连通性（futu 走 BayMax 自有 OpenD 直连；tiger/ib 尚未实现）。"""
+    """测试券商连通性（futu 走 BayMax 自有 OpenD 直连；qmt 走 Windows 大 QMT 桥）。"""
     broker = (broker or "").lower().strip()
     if broker not in BROKER_FIELDS:
         raise ValueError(f"未知券商: {broker}")
@@ -317,5 +350,21 @@ async def test_broker_connection(broker: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             return {"success": False,
                     "message": f"IBKR 连接失败：{exc}；请确认 IB Gateway 已启动并开放 API（端口 7497/7496）"}
+    if broker == "qmt":
+        # 迅投 QMT：Windows 大 QMT 内置策略 + Redis 桥（阶段一只读，查询即连通性）
+        from agent_tools.brokers.qmt_bridge import QmtBridgeBroker
+
+        try:
+            data = QmtBridgeBroker()._account_query()
+            asset = data.get("asset") or {}
+            count = len(data.get("positions") or [])
+            return {"success": True,
+                    "message": (f"QMT 桥已连接（总资产 ¥{float(asset.get('asset') or 0):,.0f}，"
+                                f"可用 ¥{float(asset.get('cash') or 0):,.0f}，"
+                                f"持仓 {count} 只；阶段一只读）")}
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False,
+                    "message": f"QMT 连接失败：{exc}；请确认 Windows 大 QMT 的策略在运行、"
+                               "桥 Redis 可达（见 docs/QMT_BRIDGE.md）"}
     return {"success": False,
             "message": f"{BROKER_LABELS[broker]} 接入尚未在 BayMax 实现（当前仅保存配置）"}

@@ -1,4 +1,4 @@
-"""QMT（迅投大 QMT）桥 Broker —— 阶段一：只读。
+"""QMT（迅投大 QMT）桥 Broker —— 阶段二：查询 + 下单（下单默认关闭）。
 
 通道拓扑（与 8550 通达信桥**完全独立**，互不拖累）：
     BayMax(Linux) ──Redis RPC──> Windows 192.168.31.13 · 大 QMT 内置策略
@@ -10,13 +10,13 @@ Windows 侧 = quantmind 的 qmt-bridge-kit（QMT 策略编辑器里加载 BIGQMT
 quantdb）。2026-09-10 实录：行情通道全通而账户通道整日掉线，两条链路必须可分——
 把行情也搬过来等于自毁冗余。
 
-阶段一（当前）：查询可用；buy/sell/cancel_order 一律抛 BrokerError，等只读链路
-验收（对账、观察若干交易日）通过后再接。Windows 侧另有 rpc_allow_order_methods
-总闸，即使这边接线了，那边不开也下不出去。
+阶段二（当前）：buy/sell/cancel_order 已接线下单，但受**两处独立总闸**约束——
+本侧 allow_trading（默认 false，见下）+ Windows 侧 rpc_allow_order_methods。
+接线到位 ≠ 能下单：上线顺序是「小额验证 → 人工确认 → 才开本侧开关」。
 
 配置（按优先级：构造参数 → config/qmt_bridge.json → 环境变量）：
   account_id / redis_host / redis_port(6380) / redis_db(0) / redis_password
-  account_type(STOCK) / timeout(10) / strategy_name(baymax)
+  account_type(STOCK) / timeout(10) / strategy_name(baymax) / allow_trading(false)
   环境变量 QMT_EXEC_* 优先，兼容 big-convert 原生 BIGQMT_*。
   ★ config/qmt_bridge.json 含密码，不入库（.gitignore）。
 """
@@ -55,8 +55,13 @@ STATUS_MAP: Dict[int, str] = {
     255: "submitted",  # 未知（不误判为终态）
 }
 
-READONLY_MSG = ("QMT 通道处于只读阶段（阶段一）：下单/撤单未接线——"
-                "先跑 scripts/qmt_probe.py 验收只读链路，再接执行")
+# 本侧下单总闸：默认关闭。接线到位 ≠ 能下单——上线要走「小额验证 → 人工确认」，
+# 所以默认值必须是关，靠 config/qmt_bridge.json 的 allow_trading（或
+# QMT_EXEC_ALLOW_TRADING=1）显式打开。
+DEFAULT_ALLOW_TRADING = False
+TRADING_OFF_MSG = ("QMT 下单未开启（本侧总闸关闭）：要下单请把 config/qmt_bridge.json 的 "
+                   "allow_trading 设为 true（或 QMT_EXEC_ALLOW_TRADING=1）——"
+                   "开启前请确认小额验证已完成")
 
 
 def qmt_overrides() -> Dict[str, Any]:
@@ -91,8 +96,19 @@ def _to_int(v: Any, default: int = -1) -> int:
         return default
 
 
+_TRUE = {"1", "true", "yes", "on", "y"}
+
+
+def _to_bool(v: Any, default: bool = False) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None or v == "":
+        return default
+    return str(v).strip().lower() in _TRUE
+
+
 class QmtBridgeBroker(Broker):
-    """大 QMT 桥。阶段一只读；接口形状对齐 TdxBridgeBroker（上层脚本无感）。"""
+    """大 QMT 桥。下单已接线但默认关闭（allow_trading）；接口形状对齐 TdxBridgeBroker。"""
 
     name = "qmt"
     markets = "cn"
@@ -118,6 +134,9 @@ class QmtBridgeBroker(Broker):
         self.strategy_name = str(pick("strategy_name",
                                       ("QMT_EXEC_STRATEGY_NAME",), DEFAULT_STRATEGY_NAME))
         self.timeout = float(pick("timeout", ("QMT_EXEC_TIMEOUT",), DEFAULT_TIMEOUT))
+        self.allow_trading = _to_bool(
+            pick("allow_trading", ("QMT_EXEC_ALLOW_TRADING",), DEFAULT_ALLOW_TRADING),
+            DEFAULT_ALLOW_TRADING)
         self.redis: Dict[str, Any] = {
             "host": str(pick("redis_host", ("QMT_EXEC_REDIS_HOST", "BIGQMT_REDIS_HOST"), "")),
             "port": int(pick("redis_port", ("QMT_EXEC_REDIS_PORT",), DEFAULT_PORT)),
@@ -291,18 +310,132 @@ class QmtBridgeBroker(Broker):
             "time": str(_attr(t, "traded_time", "time", default="") or ""),
         } for t in trades]
 
-    # ---------- 交易（阶段一：未接线） ----------
+    # ---------- 交易（阶段二：已接线，默认关闭） ----------
+
+    def bridge_status(self) -> Dict[str, Any]:
+        """桥自述（只读 ping）：rpc_allow_order_methods / 版本 / 账号类型。
+
+        与账户查询分开是必要的：账户读得通 ≠ 那边放开了下单。两处独立总闸
+        （本侧 allow_trading + Windows 侧 rpc_allow_order_methods），任一处没开
+        都不该发单——发出去只会换回一个 PermissionError。
+        """
+        trader, _ = self._ensure()
+        try:
+            result = trader.client.call("ping", {})
+        except Exception as exc:  # noqa: BLE001 底层库异常类型不稳定
+            raise BrokerError(f"QMT 桥状态查询失败：{self._redact(exc)}") from exc
+        return dict(result or {})
+
+    def _order_gate(self) -> Dict[str, Any]:
+        """下单前两道闸都过一遍，并把桥自述回给调用方（便于记进日志）。"""
+        if not self.allow_trading:
+            raise BrokerError(TRADING_OFF_MSG)
+        status = self.bridge_status()
+        if not status.get("allow_order_methods"):
+            raise BrokerError(
+                "QMT 桥拒绝下单：Windows 侧 rpc_allow_order_methods 未开——"
+                "改 bigqmt_signal_trader_local_config.py 后重载策略")
+        return status
+
+    def _next_remark(self, signature: str) -> str:
+        """委托备注 → QMT 的 user_order_id。
+
+        桥的委托号由 passorder 异步分配（不返回值），回填是靠 remark 精确匹配的；
+        备注不唯一就认不回自己的单，只能把「已提交但暂无委托号」误判成下单失败。
+        """
+        import time as _time  # noqa: PLC0415 只在真正下单时才需要
+
+        return f"baymax-{str(signature or 'x')[:16]}-{int(_time.time() * 1000)}"
+
+    def _place_order(self, signature: str, symbol: str, side: str, amount: int,
+                     price: Optional[float] = None) -> Dict[str, Any]:
+        """A 股下单（限价 price 有值 / 市价-LATEST_PRICE 无值），形状对齐 TdxBridgeBroker。
+
+        校验先于 RPC：入参不合法就地报错，不把注定被拒的单子发到桥上。
+        """
+        code = str(symbol or "").strip().upper()
+        if not code:
+            raise BrokerError("QMT 下单缺少股票代码")
+        volume = _to_int(amount, 0)
+        if volume <= 0:
+            raise BrokerError(f"QMT 下单数量必须为正整数：{amount!r}")
+        if price is not None and _to_float(price, 0.0) <= 0:
+            raise BrokerError(f"QMT 下单价格必须为正：{price!r}")
+
+        self._order_gate()
+        trader, _ = self._ensure()
+        remark = self._next_remark(signature)
+        params: Dict[str, Any] = {
+            "account_id": self.account_id,
+            "action": "BUY" if side == "buy" else "SELL",
+            "stock_code": code,
+            "volume": volume,
+            "price": _to_float(price, 0.0) if price is not None else 0.0,
+            # 限价 11 / 最新价 5（见对端 PRICE_TYPE_ALIASES）；市价单在 A 股
+            # 不是所有券商都支持，无价时走「最新价」而不是「市价」更稳妥
+            "price_type": "LIMIT" if price is not None else "LATEST_PRICE",
+            "strategy_name": self.strategy_name,
+            "signal_id": remark,
+            "remark": remark,
+        }
+        try:
+            raw = trader.client.call("submit_order", params)
+        except Exception as exc:  # noqa: BLE001
+            raise BrokerError(f"QMT 下单失败（{side} {code} {volume}）："
+                              f"{self._redact(exc)}") from exc
+        return self._submit_result(raw, code, side, volume, remark)
+
+    @staticmethod
+    def _submit_result(raw: Any, code: str, side: str, volume: int,
+                       remark: str) -> Dict[str, Any]:
+        """把对端 OrderSubmitResult 归一成稳定形状（status 口径同 STATUS_MAP）。"""
+        info = dict(raw) if isinstance(raw, dict) else {"message": str(raw)}
+        return {
+            "ok": True,
+            "order_id": str(info.get("order_sys_id") or ""),
+            "order_sys_id": str(info.get("order_sys_id") or ""),
+            "user_order_id": str(info.get("user_order_id") or remark),
+            "stock_code": code,
+            "side": side,
+            "volume": volume,
+            "status": str(info.get("status") or "").lower() or "submitted",
+            "message": str(info.get("message") or ""),
+            "raw": info,
+        }
 
     def buy(self, signature: str, today_date: str, symbol: str, amount: int,
             price: Optional[float] = None) -> Dict[str, Any]:
-        raise BrokerError(READONLY_MSG)
+        return self._place_order(signature, symbol, "buy", amount, price)
 
     def sell(self, signature: str, today_date: str, symbol: str, amount: int,
              price: Optional[float] = None) -> Dict[str, Any]:
-        raise BrokerError(READONLY_MSG)
+        return self._place_order(signature, symbol, "sell", amount, price)
 
-    def cancel_order(self, stock_code: str, order_id: str) -> Dict[str, Any]:
-        raise BrokerError(READONLY_MSG)
+    def cancel_order(self, stock_code: str, order_id: str,
+                     user_order_id: str = "") -> Dict[str, Any]:
+        """撤单（非幂等）：返回不描述「已撤」，只描述「撤单请求已受理」——
+        终态以 get_orders() 的状态码为准（53/54 才是撤成）。"""
+        if not str(order_id or "").strip():
+            raise BrokerError("QMT 撤单缺少委托号（order_sys_id）")
+        self._order_gate()
+        trader, _ = self._ensure()
+        try:
+            raw = trader.client.call("cancel_order", {
+                "account_id": self.account_id,
+                "order_sys_id": str(order_id),
+                "user_order_id": str(user_order_id or ""),
+            })
+        except Exception as exc:  # noqa: BLE001
+            raise BrokerError(f"QMT 撤单失败（{stock_code} {order_id}）："
+                              f"{self._redact(exc)}") from exc
+        info = dict(raw) if isinstance(raw, dict) else {"message": str(raw)}
+        return {
+            "ok": bool(info.get("success")),
+            "order_sys_id": str(order_id),
+            "stock_code": str(stock_code or ""),
+            "message": str(info.get("message") or ""),
+            "raw": info,
+        }
 
     # ---------- 行情（不在本通道职责内） ----------
 

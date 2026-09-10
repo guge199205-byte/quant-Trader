@@ -1,14 +1,15 @@
-"""QMT 桥适配器单测（agent_tools/brokers/qmt_bridge.py，阶段一：只读）。
+"""QMT 桥适配器单测（agent_tools/brokers/qmt_bridge.py，阶段二：下单默认关闭）。
 
 不碰真 Redis / 真 QMT：把 `bigqmt_signal_trader.xtquant_compat` 用假模块注入
 sys.modules，走真实的 _ensure() 路径（含 configure 调用与错误脱敏）。
 
-重点钉住三件容易出事的事：
+重点钉住四件容易出事的事：
   1. 返回形状必须与 TdxBridgeBroker._account_query 一致（上层 10+ 脚本按形状读）；
   2. available_volume 如实映射 can_use_volume（T+1 卖出闸门的唯一依据）；
-  3. 状态码映射不得把"报撤中/部成待撤"当成终态（会导致漏记成交/提前清在途单）。
+  3. 状态码映射不得把"报撤中/部成待撤"当成终态（会导致漏记成交/提前清在途单）；
+  4. 下单默认关闭且校验先于 RPC（入参不合法不能把注定被拒的单子发到桥上）。
 
-运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_qmt_bridge.py -q
+运行：/home/zbox/quant-Trader/.venv/bin/python -m pytest tests/test_qmt_bridge.py -q
 """
 import sys
 import types
@@ -44,19 +45,27 @@ class _Order:
 
 class _FakeTrader:
     def __init__(self, asset=None, positions=None, orders=None, trades=None,
-                 ping_error=None):
+                 ping_error=None, rpc=None):
         self._asset = asset if asset is not None else _Asset()
         self._positions = positions or []
         self._orders = orders or []
         self._trades = trades or []
         self._ping_error = ping_error
+        # method -> 该 RPC 的返回体（缺省时 ping 回 pong，其余回 {}）
+        self._rpc = dict(rpc or {})
+        self.calls = []          # [(method, params), ...]
         self.client = types.SimpleNamespace(call=self._call)
         self.configured = []
 
     def _call(self, method, params):
+        self.calls.append((method, params))
         if self._ping_error:
             raise RuntimeError(self._ping_error)
-        return {"pong": True}
+        if method in self._rpc:
+            return self._rpc[method]
+        if method == "ping":
+            return {"pong": True}
+        return {}
 
     def query_stock_asset(self, account):
         return self._asset
@@ -226,16 +235,141 @@ def test_get_trades_shape(fake_qmt):
         "filled_volume": 500.0, "filled_price": 80.0, "time": "093000"}]
 
 
-# ---------- 阶段一：只读闸门 ----------
+# ---------- 阶段二：下单接线（默认关闭） ----------
 
-def test_order_methods_are_readonly_in_phase_one(fake_qmt):
-    broker, _, _ = fake_qmt()
+_OPEN_CFG = {"allow_trading": True}
+_WIN_OPEN = {"ping": {"pong": True, "allow_order_methods": True}}
+_WIN_CLOSED = {"ping": {"pong": True, "allow_order_methods": False}}
 
+
+def test_trading_is_off_unless_explicitly_enabled(fake_qmt):
+    """默认关闭：接线到位 ≠ 能下单。三个写方法一律拒绝，且不碰网络。"""
+    broker, trader, _ = fake_qmt()
+
+    assert broker.allow_trading is False
     for call in (lambda: broker.buy("glm", "2026-09-10", "600309.SH", 100, 80.0),
                  lambda: broker.sell("glm", "2026-09-10", "600309.SH", 100, 80.0),
                  lambda: broker.cancel_order("600309.SH", "1")):
-        with pytest.raises(BrokerError, match="只读阶段"):
+        with pytest.raises(BrokerError, match="下单未开启"):
             call()
+    assert trader.calls == []
+
+
+def test_allow_trading_reads_config_then_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(Q, "_OVERRIDE_FILE", tmp_path / "qmt_bridge.json")
+    monkeypatch.delenv("QMT_EXEC_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("QMT_EXEC_ALLOW_TRADING", raising=False)
+    (tmp_path / "qmt_bridge.json").write_text(
+        '{"account_id": "1", "redis_host": "h", "allow_trading": true}', encoding="utf-8")
+    assert Q.QmtBridgeBroker().allow_trading is True
+
+    # 文件没写就是关；环境变量可开
+    (tmp_path / "qmt_bridge.json").write_text(
+        '{"account_id": "1", "redis_host": "h"}', encoding="utf-8")
+    assert Q.QmtBridgeBroker().allow_trading is False
+    monkeypatch.setenv("QMT_EXEC_ALLOW_TRADING", "1")
+    assert Q.QmtBridgeBroker().allow_trading is True
+
+
+def test_order_refused_when_windows_switch_is_closed(fake_qmt):
+    """本侧开了、Windows 侧没开 → 发单前就拒，不把一个注定被拒的单子发出去。"""
+    broker, trader, _ = fake_qmt(_FakeTrader(rpc=_WIN_CLOSED), **_OPEN_CFG)
+
+    with pytest.raises(BrokerError, match="rpc_allow_order_methods"):
+        broker.buy("glm", "2026-09-10", "600309.SH", 100, 80.0)
+    assert [m for m, _ in trader.calls] == ["ping"]      # 只有探针，没有 submit_order
+
+
+def test_buy_sends_submit_order_with_limit_price(fake_qmt):
+    trader = _FakeTrader(rpc=dict(_WIN_OPEN, submit_order={
+        "status": "SUBMITTED", "user_order_id": "baymax-1", "order_sys_id": "S1",
+        "message": ""}))
+    broker, _, _ = fake_qmt(trader, **_OPEN_CFG)
+
+    out = broker.buy("glm", "2026-09-10", "600309.SH", 100, 80.0)
+
+    method, params = trader.calls[-1]
+    assert method == "submit_order"
+    assert params["action"] == "BUY" and params["stock_code"] == "600309.SH"
+    assert params["volume"] == 100 and params["price"] == 80.0
+    assert params["price_type"] == "LIMIT"
+    assert params["account_id"] == "123456"
+    assert params["strategy_name"] == "baymax"
+    # 回填委托号：桥的委托号是异步分配的，没有 remark 就认不回自己的单
+    assert params["remark"] and params["signal_id"]
+    assert out["order_sys_id"] == "S1" and out["user_order_id"] == "baymax-1"
+    assert out["status"] == "submitted" and out["raw"]["message"] == ""
+
+
+def test_sell_without_price_uses_latest_price(fake_qmt):
+    trader = _FakeTrader(rpc=_WIN_OPEN)
+    broker, _, _ = fake_qmt(trader, **_OPEN_CFG)
+
+    broker.sell("glm", "2026-09-10", "600309.SH", 100)
+
+    params = trader.calls[-1][1]
+    assert params["action"] == "SELL" and params["price"] == 0.0
+    assert params["price_type"] == "LATEST_PRICE"
+
+
+@pytest.mark.parametrize("amount", [0, -100])
+def test_non_positive_volume_rejected_without_touching_the_bridge(fake_qmt, amount):
+    broker, trader, _ = fake_qmt(_FakeTrader(rpc=_WIN_OPEN), **_OPEN_CFG)
+
+    with pytest.raises(BrokerError, match="数量必须为正"):
+        broker.buy("glm", "2026-09-10", "600309.SH", amount, 80.0)
+    assert trader.calls == []
+
+
+def test_negative_price_rejected_without_touching_the_bridge(fake_qmt):
+    broker, trader, _ = fake_qmt(_FakeTrader(rpc=_WIN_OPEN), **_OPEN_CFG)
+
+    with pytest.raises(BrokerError, match="价格必须为正"):
+        broker.buy("glm", "2026-09-10", "600309.SH", 100, -1.0)
+    assert trader.calls == []
+
+
+def test_cancel_order_passes_sysid_and_user_order_id(fake_qmt):
+    trader = _FakeTrader(rpc=dict(_WIN_OPEN, cancel_order={
+        "success": True, "message": ""}))
+    broker, _, _ = fake_qmt(trader, **_OPEN_CFG)
+
+    out = broker.cancel_order("600309.SH", "S1", user_order_id="baymax-1")
+
+    params = trader.calls[-1][1]
+    assert trader.calls[-1][0] == "cancel_order"
+    assert params["order_sys_id"] == "S1" and params["user_order_id"] == "baymax-1"
+    assert params["account_id"] == "123456"
+    assert out["ok"] is True
+
+
+def test_cancel_requires_order_id(fake_qmt):
+    broker, trader, _ = fake_qmt(_FakeTrader(rpc=_WIN_OPEN), **_OPEN_CFG)
+
+    with pytest.raises(BrokerError, match="缺少委托号"):
+        broker.cancel_order("600309.SH", "")
+    assert trader.calls == []
+
+
+def test_order_rpc_failure_is_redacted(fake_qmt):
+    """底层 RPC 报错会把 Redis URL 连密码带出来——不能原样进日志。"""
+    trader = _FakeTrader(rpc=_WIN_OPEN)
+    broker, _, _ = fake_qmt(trader, **_OPEN_CFG)
+
+    def boom(method, params):
+        raise RuntimeError("redis://:pw-secret@10.0.0.1:6380 断开")
+
+    trader.client = types.SimpleNamespace(call=boom)
+    with pytest.raises(BrokerError) as ei:
+        broker.buy("glm", "2026-09-10", "600309.SH", 100, 80.0)
+
+    assert "pw-secret" not in str(ei.value) and "***" in str(ei.value)
+
+
+def test_bridge_status_reports_order_switch(fake_qmt):
+    broker, _, _ = fake_qmt(_FakeTrader(rpc=_WIN_OPEN))
+
+    assert broker.bridge_status()["allow_order_methods"] is True
 
 
 def test_quotes_are_not_served_by_qmt_channel(fake_qmt):

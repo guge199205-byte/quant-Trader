@@ -125,7 +125,44 @@ def probe_quantdb() -> dict:
     return {"ok": False, "error": "quantdb 目录缺失"}
 
 
-SOURCES = ("bridge", "fuyao", "tencent", "aidata", "quantdb")
+def probe_account() -> dict:
+    """账户通道探针（与行情通道分开的一条链路）。
+
+    2026-09-10 实录：桥行情侧全通（快照/K线正常），account/query 却整日返
+    asset=0、positions=[]——交易账号掉线。当日 7 轮盘中分析 + 3 次 09:35 调仓
+    + 全部哨兵条件位静默哑火，而看板只探行情 → 零告警，收盘后复盘才发现。
+    判据与 live_llm_trade._query_account_with_retry 同口径：asset > 0 才算通。
+    """
+    token = _env_kv("TDX_BRIDGE_").get("TDX_BRIDGE_TOKEN", "")
+    env = _env_kv()
+    body = {"account": env.get("TDX_ACCOUNT", ""),
+            "account_type": env.get("TDX_ACCOUNT_TYPE", "") or "tdx"}
+    import urllib.request
+
+    last_err = "无候选桥地址"
+    for url in _bridge_urls():
+        try:
+            req = urllib.request.Request(
+                url + "/api/v1/account/query",
+                data=json.dumps(body).encode(),
+                headers={"Content-Type": "application/json",
+                         "Authorization": "Bearer " + token},
+                method="POST")
+            with urllib.request.urlopen(req, timeout=8) as r:
+                d = json.loads(r.read().decode())
+            res = d.get("result") if isinstance(d.get("result"), dict) else d
+            asset = float((res.get("asset") or {}).get("asset") or 0)
+            n_pos = len(res.get("positions") or [])
+            if asset > 0:
+                return {"ok": True, "asset": asset, "positions": n_pos, "via": url,
+                        "ts": datetime.now().isoformat(timespec="seconds")}
+            last_err = f"asset={asset:,.0f} positions={n_pos}（行情通/账号掉线＝桥假活）"
+        except Exception as e:  # noqa: BLE001 单地址失败继续探下一候选
+            last_err = str(e)[:120]
+    return {"ok": False, "error": last_err}
+
+
+SOURCES = ("bridge", "fuyao", "tencent", "aidata", "quantdb", "account")
 
 
 def _prev_board() -> dict:
@@ -171,6 +208,7 @@ def main() -> int:
         "ts": ts,
         "bridge": probe_bridge(), "fuyao": probe_fuyao(), "tencent": probe_tencent(),
         "aidata": probe_aidata(), "quantdb": probe_quantdb(),
+        "account": probe_account(),
     }
     apply_streaks(board, _prev_board(), ts)
     tmp = OUT.with_name(OUT.name + ".tmp")   # 原子写：alert.sh 可能正在读
@@ -179,7 +217,7 @@ def main() -> int:
     bad = [k for k in SOURCES if not (board.get(k) or {}).get("ok")]
     cells = " ".join(_cell(board, k, lab) for k, lab in
                      (("bridge", "桥"), ("fuyao", "Fuyao"), ("tencent", "腾讯"),
-                      ("aidata", "AI数据"), ("quantdb", "quantdb")))
+                      ("aidata", "AI数据"), ("quantdb", "quantdb"), ("account", "账户")))
     print(f"✅ 行情源: {cells}" + (f"  ⚠️ 降级: {','.join(bad)}" if bad else ""))
     return 0
 

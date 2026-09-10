@@ -7,6 +7,7 @@
 cron：交易日 北京 17:00。
 """
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,80 @@ def now_cn() -> str:
     return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
 
 
+def _load_json(path: Path) -> dict:
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def _rounds_from_log(text: str) -> tuple[int, int]:
+    """当日 log.jsonl → (分析轮数, 未执行轮数)。
+
+    2026-09-10 实录：7 轮全是「本轮分析未执行」（桥假活），日报却写"8 轮满额运行、
+    流程纪律正常"——只数条数不看内容，等于替哑火的链路盖章。"""
+    rounds = failed = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if str(rec.get("kind") or "") == "review":
+            continue          # 盘后复盘不算盘中轮次
+        rounds += 1
+        body = " ".join(str(m.get("content") or "")
+                        for m in (rec.get("new_messages") or []) if isinstance(m, dict))
+        if "本轮分析未执行" in body:
+            failed += 1
+    return rounds, failed
+
+
+def _err_lines_for_date(text: str, date: str) -> int:
+    """异常行计数，按日期归属：无时间戳的行归到最近一条带 [YYYY-MM-DD …] 前缀的行。
+
+    2026-09-10 实录：旧口径把整份日志的累计值（369 行）当成当日值写进日报，
+    量级对不上（当日实际 5 行）还查不出源头。"""
+    cur = ""
+    n = 0
+    for line in text.splitlines():
+        m = re.match(r"\[(\d{4}-\d{2}-\d{2}) ", line)
+        if m:
+            cur = m.group(1)
+        if cur == date and ("失败:" in line or "❌" in line):
+            n += 1
+    return n
+
+
+def _exec_channel(agents: list) -> dict:
+    """执行通道体检（2026-09-10 实录）。
+
+    当日「桥假活 + 执行开关关闭」双哑火：账户通道整日 asset=0、7 轮分析全失败、
+    3 次调仓一单未动、哨兵条件位全空，日报却写"零成交、观望一致"。链路状态必须
+    有独立字段，日报 LLM 才可能写进去（数据先要有，写不写是提示词的事）。"""
+    ec: dict = {"rounds_failed": sum(int(r.get("rounds_failed") or 0) for r in agents)}
+    st = _load_json(ROOT / "logs" / "live_llm_trade_state.json")
+    ec["trade_state"] = {"day": st.get("day"), "ok": st.get("ok"),
+                         "orders_attempted": st.get("orders_attempted"),
+                         "note": str(st.get("note") or "")[:80]} if st else {}
+    an = _load_json(ROOT / "logs" / "live_analysis_state.json")
+    ec["last_good_account_ts"] = an.get("last_good_sample_ts")
+    ec["last_sample_asset"] = an.get("last_sample_asset")
+    ec["exec_enabled"] = bool(_load_json(ROOT / "configs" / "intraday_exec.json").get("enabled"))
+    ec["watch_rules"] = {a: len(v) for a, v in _load_json(ROOT / "data" / "live_watch.json").items() if v}
+    rt = _load_json(ROOT / "logs" / "rt_status.json")
+    ec["account_probe"] = {"ok": (rt.get("account") or {}).get("ok"),
+                           "error": (rt.get("account") or {}).get("error")}
+    pf = _load_json(ROOT / "logs" / "preflight.json")
+    if pf:
+        ec["preflight_ok"] = pf.get("ok")
+        ec["preflight_problems"] = (pf.get("problems") or [])[:3]
+    return ec
+
+
 def collect(date: str | None = None) -> dict:
     from live_trade_picks import enabled_agents
 
@@ -35,12 +110,13 @@ def collect(date: str | None = None) -> dict:
     for a in agents:
         rec = {"agent": a}
         lf = ROOT / "data" / "agent_data_astock" / a / "log" / today / "log.jsonl"
-        rounds = 0
+        rounds = failed = 0
         try:
-            rounds = sum(1 for l in lf.read_text(encoding="utf-8").splitlines() if l.strip())
+            rounds, failed = _rounds_from_log(lf.read_text(encoding="utf-8"))
         except OSError:
             pass
         rec["rounds"] = rounds
+        rec["rounds_failed"] = failed
         # 成交
         fills = []
         for f in (ROOT / "logs").glob("live_trade_*.jsonl"):
@@ -107,10 +183,11 @@ def collect(date: str | None = None) -> dict:
     err_count = 0
     try:
         text = (ROOT / "logs" / "live_hourly_analysis.log").read_text(encoding="utf-8")
-        err_count = text.count("失败:") + text.count("❌")
+        err_count = _err_lines_for_date(text, today)
     except OSError:
         pass
     out["system"]["err_lines"] = err_count
+    out["system"]["exec_channel"] = _exec_channel(out["agents"])
     return out
 
 
@@ -133,7 +210,12 @@ def main() -> int:
     task = (
         f"[系统运行日报 {today}] 以下是今日自动化事实，请写一页纸中文日报：\n{facts_json}\n"
         "结构：①一句话总评 ②各 agent 表现表（轮次/成交/净值变动/复盘是否完成）"
-        "③系统状态（预算档位/晚间池/仲裁/服务/异常计数）④待办与风险（≤3 条，可执行）"
+        "③系统状态（预算档位/晚间池/仲裁/服务/异常计数/执行通道）④待办与风险（≤3 条，可执行）"
+        "\n硬要求：exec_channel 是执行链路体检——若 account_probe.ok 为假、"
+        "rounds_failed>0、trade_state.ok 为假或 exec_enabled 为假，"
+        "说明链路出故障，必须写进①和④（例：账户通道掉线导致 N 轮分析未执行、一单未动），"
+        "禁止写成\"零成交、观望一致、系统平稳\"这类把故障说成策略选择的措辞；"
+        "err_lines 是当日计数（非累计）。"
         "\n输出 md。")
     try:
         from dsh_agent import run_agent

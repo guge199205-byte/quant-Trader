@@ -42,6 +42,7 @@ from ashare_rules import at_limit_down, after_hours_eligible, board_of, after_ho
 
 WATCH_FILE = ROOT / "data" / "live_watch.json"
 LOG_DIR = ROOT / "logs"
+SKIP_STATE_FILE = LOG_DIR / "live_watch_notify_state.json"  # 账户级提醒的跨进程去重（见 _notify_once）
 SELL_LIMIT_DOWN = -9.9   # 跌停不接（与 live_hourly_analysis 同口径）
 POLL_SLEEP_SEC = 1       # 桥限流：每条规则之间隔 1 秒
 SKIP_NOTIFY_HOUR = True  # 同一规则同一小时的重复跳过只提醒一次（防刷屏）
@@ -150,6 +151,138 @@ def _log_line(rec: dict) -> None:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+def _notify_once(key: str, msg: str) -> None:
+    """账户级提醒的小时级去重。
+
+    哨兵每分钟一个进程，模块内变量留不住；规则级去重（_notify_skip）写在规则对象里，
+    而账户快照退化时整轮不动规则文件 → 需要个跨进程的边车文件。"""
+    tag = f"{now_cn():%Y%m%d%H}"
+    try:
+        state = json.loads(SKIP_STATE_FILE.read_text(encoding="utf-8"))
+        state = state if isinstance(state, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    if state.get(key) == tag:
+        return
+    state[key] = tag
+    try:
+        SKIP_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SKIP_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+    print(f"  {msg}")
+
+
+def _degenerate_reason(acct: dict) -> str:
+    """账户快照是否退化（桥假活：行情通道正常、交易账号掉线）。返回原因，正常为 ""。
+
+    判据与 live_llm_trade._query_account_with_retry 同口径：资产 <= 0 即不可信。
+    2026-09-10 实录：整日 asset=0、positions=[]，哨兵把真实持仓的止损位当"已清仓"
+    销毁（3 条真实条件位就是这样没的），而行情侧一切正常、零告警。"""
+    asset = (acct.get("asset") or {}).get("asset")
+    if asset is None:
+        return ""
+    try:
+        val = float(asset)
+    except (TypeError, ValueError):
+        return f"资产字段异常（{asset!r}）"
+    return f"account/query 返回资产 {val:,.0f}" if val <= 0 else ""
+
+
+def _ledger_holds(agent: str, code: str) -> bool:
+    """分账台账里该 agent 是否仍持有 code。
+
+    读不到台账 / 台账没有该 agent → 保守返回 True：宁可多守一轮条件位，
+    也不能因为台账故障把真实持仓的止损位判成"已清仓"作废。"""
+    try:
+        import live_ledger
+
+        agents = live_ledger.load_ledger().get("agents") or {}
+        if agent not in agents:
+            return True
+        return code in ((agents[agent] or {}).get("positions") or {})
+    except Exception:  # noqa: BLE001
+        return True
+
+
+# 方向线索词：『涨到/站上』类 = 到位止盈，『跌破/失守』类 = 破位止损。
+# 同步侧（post_review.sync_plan_to_watch）与本文件的运行时护栏共用这一份词表（DRY）。
+UP_HINTS = ("涨到", "涨至", "站上", "站稳", "突破", "上破", "冲高", "回升",
+            "上沿", "止盈", "锁利", "兑现")
+DOWN_HINTS = ("跌破", "失守", "破位", "下破", "下探", "回落到", "回落至",
+              "下沿", "止损", "防守", "支撑", "清仓")
+
+
+def classify_watch_direction(txt: str) -> tuple[str | None, str]:
+    """文字里的方向线索 → ("take_profit"|"stop_loss"|None, 命中词)。
+
+    取**最先出现**的方向词：「涨到17.90减50%，避免再次跌破18.10」里先说的算数。"""
+    best: tuple[int, str, str] | None = None
+    for kind, hints in (("take_profit", UP_HINTS), ("stop_loss", DOWN_HINTS)):
+        for kw in hints:
+            i = txt.find(kw)
+            if i >= 0 and (best is None or i < best[0]):
+                best = (i, kind, kw)
+    return (best[1], best[2]) if best else (None, "")
+
+
+def _fix_rule_direction(agent: str, rule: dict, price: float, prev: float) -> None:
+    """方向自洽护栏：止损该在下方等下跌打到、止盈该在上方等上涨打到。
+
+    2026-09-10 实录：复盘同步把『涨到17.90减50%』写成 stop_loss，现价 17.50 在阈值
+    下方 → `price <= stop_loss` 成立，开盘即反向假触发（09-09 的 18.10/80.00 同款；
+    当日三条真实条件位还被空快照销毁，见 run_watch 的桥假活硬闸）。
+
+    标错判定（按优先级）：
+      1) reason 文字线索（『涨到/站上/止盈』vs『跌破/失守/止损』）与存档方向不符；
+      2) 无文字线索时看昨收：止损高于昨收且现价还在昨收上方（涨着却挂了上方止损）
+         = 标错；若现价已跌到昨收下方，则可能是隔夜跳空打穿的真止损 → 不动。
+    翻转按触发语义做（该涨到位卖的改记止盈、该跌到位卖的改记止损），日志留痕；
+    move_stop 上移而来的止损是浮盈锁利（可高于昨收），豁免。"""
+    sl, tp = rule.get("stop_loss"), rule.get("take_profit")
+    try:
+        sl_f = float(sl) if sl is not None else None
+        tp_f = float(tp) if tp is not None else None
+    except (TypeError, ValueError):
+        return
+    hint, kw = classify_watch_direction(str(rule.get("reason") or ""))
+    if sl_f is not None:
+        why = _mislabel_reason("stop_loss", sl_f, price, prev, hint, kw)
+        if why:
+            if tp_f is None:
+                rule["stop_loss"], rule["take_profit"] = None, sl_f
+                why += " → 按止盈执行"
+            else:
+                rule["stop_loss"] = None
+                why += " → 丢弃该侧"
+            _notify_skip(rule, f"🔧 [{agent}] {rule['code']}: {why}")
+    if tp_f is not None:
+        why = _mislabel_reason("take_profit", tp_f, price, prev, hint, kw)
+        if why:
+            if rule.get("stop_loss") is None:
+                rule["stop_loss"], rule["take_profit"] = tp_f, None
+                why += " → 按止损执行"
+            else:
+                rule["take_profit"] = None
+                why += " → 丢弃该侧"
+            _notify_skip(rule, f"🔧 [{agent}] {rule['code']}: {why}")
+
+
+def _mislabel_reason(kind: str, level: float, price: float, prev: float,
+                     hint: str | None, kw: str) -> str:
+    """该条件位是否方向标错 → 原因文案；没问题返回 ""。"""
+    label = "止损" if kind == "stop_loss" else "止盈"
+    if hint and hint != kind:
+        return f"{label} ¥{level:.2f} 与理由文字『{kw}』方向不符（方向标错）"
+    if hint:
+        return ""
+    if kind == "stop_loss" and level > prev and price > prev:
+        return f"止损 ¥{level:.2f} 高于昨收 ¥{prev:.2f} 且现价仍在昨收上方（方向标错）"
+    if kind == "take_profit" and level < prev and price < prev:
+        return f"止盈 ¥{level:.2f} 低于昨收 ¥{prev:.2f} 且现价仍在昨收下方（方向标错）"
+    return ""
+
+
 def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
                   trig: str, avail, dry_run: bool = False,
                   after_hours: bool = False) -> bool:
@@ -157,6 +290,12 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
     返回 True=规则已消费（已执行/作废），False=保留规则下次再守。"""
     code = rule["code"]
     if avail is None:
+        # 2026-09-10 实录：桥假活时 account/query 的 positions 为空，这里会把真实持仓的
+        # 止损位当"已清仓"销毁。先与分账台账交叉核对：台账仍持有 → 保留条件位。
+        if _ledger_holds(agent, code):
+            _notify_skip(rule, f"⏭️ [{agent}] {code}: 账户快照无此持仓但台账仍持有，"
+                               f"疑似账号掉线——条件位保留，勿当已清仓")
+            return False
         print(f"  🗑️ [{agent}] {code}: 已不在持仓中，条件位作废")
         return True
     if avail <= 0:
@@ -242,10 +381,19 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
     if not rules:
         return 0
     try:
-        positions = broker._account_query().get("positions") or []
+        acct = broker._account_query()
     except Exception as exc:  # noqa: BLE001  桥重启窗口/断线：本轮放弃，下分钟再守
         print(f"  ⚠️ 账户查询失败，本轮哨兵跳过（{str(exc)[:80]}）")
         return 0
+    # 桥假活硬闸（2026-09-10）：HTTP 通、行情正常，但账户通道返空（交易账号未登录），
+    # 空快照下每条真实规则都会被 _execute_sell 判成"已不在持仓中"销毁。
+    deg = _degenerate_reason(acct)
+    if deg:
+        _notify_once("account_degenerate",
+                     f"🚫 账户快照不可信（{deg}），本轮哨兵跳过、条件位全部保留——"
+                     f"行情能看但下单/持仓查询哑火，需 RDP 重登 Windows 交易机通达信")
+        return 0
+    positions = acct.get("positions") or []
     avail_map = {p.get("stock_code"): int(p.get("available_volume") or 0)
                  for p in positions}
     fired = 0
@@ -258,6 +406,10 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
                 kept.append(r)
                 time.sleep(POLL_SLEEP_SEC)
                 continue
+            # 方向自洽：先按文字线索/昨收校正标错的止损止盈，再谈触发
+            # （move_stop 上移过的止损可以高于昨收，故豁免）
+            if not r.get("stop_from_move"):
+                _fix_rule_direction(agent, r, price, prev)
             # move_stop：价格触及后止损一次性上移到该价（只上不下，跟踪保护）
             ms = r.get("move_stop")
             if ms:
@@ -269,6 +421,7 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
                 print(f"  🔒 [{agent}] {r['code']} 触及 move_stop ¥{ms:.2f}，"
                       f"止损上移 ¥{r.get('stop_loss') or 0:.2f} → ¥{ms:.2f}")
                 r["stop_loss"] = ms
+                r["stop_from_move"] = True   # 浮盈锁利位，可高于昨收，别再被当方向标错
                 r.pop("move_stop", None)
             if after_hours and not after_hours_eligible(r["code"]):
                 kept.append(r)  # 主板等无盘后定价的标的，条件位保留至次日盘中

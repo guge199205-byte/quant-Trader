@@ -121,6 +121,16 @@ class TestRegisterReviewHypotheses(unittest.TestCase):
             self.assertEqual(entry["direction"], "空仓/不建仓")
             self.assertEqual(entry["status"], "proposed")
 
+    def test_desc_key_accepted(self):
+        """2026-09-10 实录：v4-flash 3 条候选全用 "desc" 键 → 此前按缺描述静默丢弃。"""
+        with tempfile.TemporaryDirectory() as td:
+            n, hyps = self._reg(Path(td), "deepseek-v4-flash", [
+                {"desc": "通道故障日 watch 条件位执行率恒为0", "direction": "执行率=0"}])
+
+            self.assertEqual(n, 1)
+            entry = hyps["H_2026-09-08_deepseek-v4-flash_0"]
+            self.assertEqual(entry["name"], "通道故障日 watch 条件位执行率恒为0")
+
     def test_chinese_keys_accepted(self):
         with tempfile.TemporaryDirectory() as td:
             n, hyps = self._reg(Path(td), "glm-5.3-flash", [

@@ -26,6 +26,8 @@ def _stub(monkeypatch, tmp_path, *, bridge_ok=True, fuyao_ok=True):
     monkeypatch.setattr(R, "probe_tencent", lambda: {"ok": True})
     monkeypatch.setattr(R, "probe_aidata", lambda: {"ok": True})
     monkeypatch.setattr(R, "probe_quantdb", lambda: {"ok": True})
+    monkeypatch.setattr(R, "probe_account", lambda: {"ok": True, "asset": 300000.0,
+                                                     "positions": 2})
 
 
 def _board(tmp_path):
@@ -83,3 +85,59 @@ def test_write_is_atomic_and_survives_corrupt_previous(tmp_path, monkeypatch):
 
     assert _board(tmp_path)["fuyao"]["fail_streak"] == 1     # 旧文件坏 → 从头计
     assert not list(tmp_path.glob("*.tmp"))                  # 临时文件已 replace
+
+
+# ---------- 账户通道探针（2026-09-10 桥假活实录）----------
+
+class _Resp:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _patch_urlopen(monkeypatch, body: dict):
+    import json as _json
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, timeout=0: _Resp(_json.dumps(body).encode()))
+
+
+def test_account_probe_true_when_asset_positive(monkeypatch):
+    _patch_urlopen(monkeypatch, {"account_id": 1, "asset": {"asset": 296732.4},
+                                 "positions": [{"stock_code": "001312.SZ"}]})
+
+    v = R.probe_account()
+
+    assert v["ok"] is True and v["asset"] == 296732.4 and v["positions"] == 1
+
+
+def test_account_probe_flags_fake_alive(monkeypatch):
+    """行情通道正常但账号掉线：asset=0/positions=[] → ok=False（当日整日如此）。"""
+    _patch_urlopen(monkeypatch, {"account_id": 0,
+                                 "asset": {"asset": 0.0, "cash": 0.0}, "positions": []})
+
+    v = R.probe_account()
+
+    assert v["ok"] is False and "asset=0" in v["error"]
+
+
+def test_account_probe_network_error(monkeypatch):
+    import urllib.request
+
+    def _boom(req, timeout=0):
+        raise OSError("Connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+
+    v = R.probe_account()
+
+    assert v["ok"] is False and "Connection refused" in v["error"]

@@ -12,6 +12,7 @@ CLI（alert.sh 调用）：
   /usr/bin/python3 scripts/alert_checks.py news_stale      data/news_brief/latest.json [running]
   /usr/bin/python3 scripts/alert_checks.py folder_failures data/news_brief/state.json
   /usr/bin/python3 scripts/alert_checks.py rt_down        logs/rt_status.json
+  /usr/bin/python3 scripts/alert_checks.py account_down   logs/rt_status.json
   /usr/bin/python3 scripts/alert_checks.py l2_stale        data/l2_factors_live.json
 
 有告警 → stdout 一行文本；无告警 → 不输出，退出码 0（alert.sh 按空串判定）。
@@ -44,6 +45,12 @@ FOLDER_FAIL_MIN = 3                   # 抓取桶失败 ≥3 才值得打扰
 RT_SOURCES = ("bridge", "fuyao", "aidata")
 RT_DEBOUNCE = {"fuyao": 2}            # 抖动源：连续失败 ≥2 次才报（一天十几次单点抖动）
 RT_BYDAY = ("aidata",)                # 静态文件存在性检查：缺失即长期缺失，去抖无效 → 按天
+
+# 账户通道（rt_probe 同文件写 account 段）：掉线不会自愈，需人工重登交易端；
+# 只在可行动的窗口内报（北京 08:45 开盘前 ~ 15:35 收盘后），否则半夜也会刷。
+ACCT_DEBOUNCE = 2
+ACCT_ALERT_START = 8 * 60 + 45
+ACCT_ALERT_END = 15 * 60 + 35
 
 # L2 快照新鲜度（live_l2_capture 交易日每 5 分钟写 data/l2_factors_live.json）。
 # 它是「候选池实时价注入」和「按资金量裁剪候选池」的唯一数据源：停更则两条链路
@@ -114,6 +121,32 @@ def rt_down(doc: dict | None) -> tuple[str, str]:
         label = f"{k}(连续{streak}次{'自' + ts if ts else ''})"
         (byday if k in RT_BYDAY else immediate).append(label)
     return ",".join(immediate), ",".join(byday)
+
+
+def account_down(doc: dict | None, now: datetime,
+                 debounce: int = ACCT_DEBOUNCE) -> str | None:
+    """账户通道（桥 account/query）掉线 → 一行说明，否则 None。
+
+    2026-09-10 实录：行情通道全通（快照/K线正常）而账户通道整日 asset=0、
+    positions=[]——交易账号掉线。当日 7 轮盘中分析 + 3 次 09:35 调仓 + 全部哨兵
+    条件位哑火，看板只探行情 → 零告警。该故障不自愈（要人工重登交易端），
+    故只在可行动的窗口内报（北京 08:45 起、收盘后 15:35 止），并按连续 ≥2 次
+    去抖滤掉桥重启窗口的单点抖动；同一天只在首次出现时报（调用方按天去重）。
+    """
+    v = (doc or {}).get("account")
+    if not isinstance(v, dict) or v.get("ok"):
+        return None
+    streak = int(v.get("fail_streak") or 1)
+    if streak < debounce:
+        return None
+    if not is_trading_day(now):
+        return None
+    m = now.hour * 60 + now.minute
+    if not (ACCT_ALERT_START <= m < ACCT_ALERT_END):
+        return None
+    ts = str(v.get("first_fail_ts") or "")[11:16]
+    err = str(v.get("error") or "").strip()
+    return f"连续{streak}次{'自' + ts if ts else ''}" + (f"：{err[:90]}" if err else "")
 
 
 def news_stale_minutes(now: datetime, mtime: float | None,
@@ -197,7 +230,7 @@ def _load(path: str) -> dict:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
-        print("usage: alert_checks.py <llm_tier|news_stale|folder_failures|rt_down|l2_stale>"
+        print("usage: alert_checks.py <llm_tier|news_stale|folder_failures|rt_down|account_down|l2_stale>"
               " <path> [running]", file=sys.stderr)
         return 2
     check, path = argv[0], argv[1]
@@ -218,6 +251,8 @@ def main(argv: list[str]) -> int:
     elif check == "rt_down":
         immediate, byday = rt_down(_load(path))
         out = f"{immediate}\n{byday}"      # 固定两行：调用方按行取
+    elif check == "account_down":
+        out = account_down(_load(path), now)
     elif check == "l2_stale":
         try:
             mtime = os.path.getmtime(path)

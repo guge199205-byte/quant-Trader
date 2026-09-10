@@ -229,6 +229,21 @@ if [ -n "$RT_BYDAY" ]; then
     fi
 fi
 
+# 2d-2. 账户通道（桥 account/query）掉线：行情能看 ≠ 能下单/能查持仓。
+#      2026-09-10 实录：行情全通、账户整日 asset=0，7 轮分析 + 3 次调仓 + 全部哨兵
+#      条件位静默哑火，看板只探行情 → 全天零告警。该故障不自愈（要重登交易端），
+#      故只在 08:45-15:35 的可行动窗口内报（判定在 alert_checks.account_down），
+#      且同一天同一段故障只报一次（按 first_fail_ts 去重，次日仍坏会再提醒一次）。
+ACCT_DOWN=$(/usr/bin/python3 scripts/alert_checks.py account_down logs/rt_status.json 2>/dev/null)
+if [ -n "$ACCT_DOWN" ]; then
+    ACCT_SEEN="/tmp/.baymax_acct_alerted_$(date +%F)"
+    if [ ! -f "$ACCT_SEEN" ]; then
+        touch "$ACCT_SEEN"
+        ALERTS="$ALERTS
+🔴 桥账户通道掉线（${ACCT_DOWN}）——行情能看但下单/持仓查询全哑火：盘中分析、09:35 调仓、哨兵条件位都会静默停摆。RDP 登录 Windows 交易机 192.168.31.13，在通达信里重新登录交易账号（行情不用动）"
+    fi
+fi
+
 # 2e. 新闻分子新鲜度（盘中每小时一期，>75 分钟无新刊 = 门卫/主编批量截断的
 #      静默故障；2026-09-08 实录：latest.json 停在 10:55，交易 agent 吃 230 分钟
 #      旧新闻，兜底轮把 state last_ok 照常刷新导致零告警）

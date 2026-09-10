@@ -278,3 +278,51 @@ def test_cli_shim_l2_stale_missing_file(tmp_path, capsys, monkeypatch):
 
     assert A.main(["l2_stale", str(tmp_path / "nope.json")]) == 0
     assert capsys.readouterr().out.strip() == "文件缺失"
+
+
+# ---------- 账户通道（桥假活：行情通、账号掉线）----------
+
+def _acct_board(ok, streak=1, err="asset=0 positions=0（桥假活）", ts="2026-09-10T09:30:00"):
+    return {"account": {"ok": ok, "error": None if ok else err,
+                        "fail_streak": streak, "first_fail_ts": ts}}
+
+
+def test_account_down_debounced_on_first_failure():
+    """单次失败（桥重启窗口）不报——行情侧的抖动同理，连续 2 次才算掉线。"""
+    assert A.account_down(_acct_board(False, streak=1), _bj(2026, 9, 10, 9, 20)) is None
+
+
+def test_account_down_reports_after_two_failures():
+    """2026-09-10 实录：账户通道整日 asset=0，7 轮分析+3 次调仓零告警 → 必须报。"""
+    line = A.account_down(_acct_board(False, streak=3), _bj(2026, 9, 10, 9, 20))
+
+    assert line is not None
+    assert "3" in line and "09:30" in line and "桥假活" in line
+
+
+def test_account_down_silent_outside_actionable_window():
+    """半夜/盘后不报（故障不自愈，报了也无人处理，只会刷屏）。"""
+    assert A.account_down(_acct_board(False, streak=9), _bj(2026, 9, 10, 3, 0)) is None
+    assert A.account_down(_acct_board(False, streak=9), _bj(2026, 9, 10, 16, 0)) is None
+    assert A.account_down(_acct_board(False, streak=9), _bj(2026, 9, 12, 9, 20)) is None  # 周六
+
+
+def test_account_down_silent_when_healthy_or_block_missing():
+    assert A.account_down(_acct_board(True), _bj(2026, 9, 10, 9, 20)) is None
+    assert A.account_down({}, _bj(2026, 9, 10, 9, 20)) is None      # 老看板无该路：不误报
+    assert A.account_down(None, _bj(2026, 9, 10, 9, 20)) is None
+
+
+def test_account_down_cli(tmp_path, capsys, monkeypatch):
+    p = tmp_path / "rt_status.json"
+    p.write_text(json.dumps(_acct_board(False, streak=2)), encoding="utf-8")
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _bj(2026, 9, 10, 9, 20)
+
+    monkeypatch.setattr(A, "datetime", _FrozenDatetime)
+
+    assert A.main(["account_down", str(p)]) == 0
+    assert "连续2次" in capsys.readouterr().out

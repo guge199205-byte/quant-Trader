@@ -179,14 +179,119 @@ def _extract_price(text: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
-def sync_plan_to_watch(agent: str, payload: dict) -> int:
+def _pct_from_text(txt: str) -> float:
+    """文字里的减仓比例：『减50%』>『半』> 其他（默认全减）。
+
+    2026-09-10 实录：『今日区间…距该位仅0.8%缓冲』被旧正则取到 "8" → pct 8%——
+    缓冲比例不是减仓比例，小数里的整数位也不能当比例。故裸百分号前不允许再出现
+    数字/小数点/正负号，并兼容全角 ％。"""
+    m_cut = _re.search(r"减\s*(\d{1,3})\s*[%％]", txt)
+    if m_cut:
+        return min(max(int(m_cut.group(1)) / 100, 0.0), 1.0)
+    if "半" in txt:
+        return 0.5
+    m_bare = _re.search(r"(?<![\d.+\-])(\d{1,3})\s*[%％]", txt)
+    return min(max(int(m_bare.group(1)) / 100, 0.0), 1.0) if m_bare else 1.0
+
+
+_PREV_CLOSE_CACHE: dict = {}
+
+
+def _bridge_prev_close(code: str) -> float | None:
+    """桥日K倒数第二根收盘价（=次日的"昨收"），判方向用；拿不到返回 None。
+
+    进程内缓存：post_review 是一次性进程，日K收盘价当次运行内不变。"""
+    if code in _PREV_CLOSE_CACHE:
+        return _PREV_CLOSE_CACHE[code]
+    val = None
+    try:
+        from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
+
+        bars = TdxBridgeBroker().get_klines(code, interval="daily")
+        if len(bars) >= 2:
+            v = float(bars[-2].get("close") or 0)
+            val = v if v > 0 else None
+    except Exception:  # noqa: BLE001 桥不可用不阻塞复盘：方向退回文字线索
+        val = None
+    _PREV_CLOSE_CACHE[code] = val
+    return val
+
+
+def _held_codes(agent: str):
+    """该 agent 台账持仓代码集合；账本缺失/没有该 agent → None（调用方不裁剪）。"""
+    try:
+        from live_ledger import load_ledger
+
+        agents = load_ledger().get("agents") or {}
+        if agent not in agents:
+            return None
+        return set(((agents[agent] or {}).get("positions") or {}).keys())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _watch_direction(txt: str, price: float, prev: float | None) -> tuple[str, str]:
+    """观察位方向 → ("stop_loss"|"take_profit", 依据)。
+
+    1) 文字线索（『涨到/站上/止盈』vs『跌破/失守/止损』）——agent 明说的意图；
+       与昨收冲突时（价位挂在收盘价另一侧，一挂就会反向触发）以昨收为准；
+    2) 无文字线索 → 按昨收：价位在上方=止盈、下方=止损；
+    3) 兜底 stop_loss（与历史行为一致，运行时还有方向自洽护栏兜底）。"""
+    from live_price_watch import classify_watch_direction
+
+    kind, kw = classify_watch_direction(txt)
+    if prev and prev > 0:
+        if kind == "take_profit" and price < prev:
+            return "stop_loss", f"文字『{kw}』与昨收 ¥{prev:.2f} 冲突（价位在收盘价下方）→ 改按跌破"
+        if kind == "stop_loss" and price > prev:
+            return "take_profit", f"文字『{kw}』与昨收 ¥{prev:.2f} 冲突（价位在收盘价上方）→ 改按涨到"
+    if kind:
+        return kind, f"文字『{kw}』"
+    if prev and prev > 0:
+        return ("take_profit" if price > prev else "stop_loss"), f"按昨收 ¥{prev:.2f} 判方向"
+    return "stop_loss", "无方向线索（默认按跌破）"
+
+
+def sync_plan_to_watch(agent: str, payload: dict, prev_close=None) -> int:
     """P0：复盘预案/观察 → 分钟哨兵条件位（live_watch.json），agent 整组替换。
-    plan: action sell+stop_loss/take_profit 或 trigger 含价 → watch 规则；
-    watch: {code, price, action} → 按 action 映射。文本含'半' → pct 0.5。
+
+    方向（2026-09-10 实录，此前一律写 stop_loss）：
+      - plan 显式给了 stop_loss/take_profit 键 → 尊重原键；
+      - 否则按 trigger/reason 文字线索 + 昨收判方向（'涨到17.90减50%' → take_profit，
+        此前写 stop_loss，现价 17.50 在阈值下方 → 开盘反向假触发）；
+      - plan 的 buy 项不进哨兵（哨兵只会卖，挂成 take_profit 会在目标买价卖掉持仓）。
+    标的：只给该 agent 台账里的持仓挂卖出条件位——指数/买点闸门挂上也卖不出，
+    还白烧触发日志（当日 000001.SH×3、低吸观察价 49.50 都是这么烧的）。
+    文本比例：'减50%'→0.5、'半'→0.5，其余默认全减（见 _pct_from_text）。
     返回落盘规则数（0 = 该 agent 条件位被清空）。"""
     from live_price_watch import save_watch_rules
 
-    rules = []
+    prev_close = prev_close or _bridge_prev_close
+    held = _held_codes(agent)
+    dropped: list[str] = []
+    rules: list[dict] = []
+
+    def _prev(code: str):
+        try:
+            return prev_close(code)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _arm(code: str, price, txt: str, reason: str, explicit: str | None = None) -> None:
+        """挂一条卖出条件位；explicit 为显式键（stop_loss/take_profit）时不再推断。"""
+        if not price:
+            return
+        if held is not None and code not in held:
+            dropped.append(code)
+            print(f"  ⏭️ 非持仓代码 {code}（{agent}）不挂卖出哨兵：{reason[:40]}")
+            return
+        if explicit:
+            kind, why = explicit, "预案显式键"
+        else:
+            kind, why = _watch_direction(txt, float(price), _prev(code))
+        rules.append({"code": code, kind: float(price), "pct": _pct_from_text(txt),
+                      "reason": reason[:80], "_dir": why})
+
     for it in (payload.get("plan") or []):
         if not isinstance(it, dict) or not it.get("code"):
             continue
@@ -194,57 +299,45 @@ def sync_plan_to_watch(agent: str, payload: dict) -> int:
         if act not in ("sell", "buy", "watch"):
             continue
         code = str(it["code"])
-        sl = it.get("stop_loss")
-        tp = it.get("take_profit")
-        if sl is None:
-            sl = _extract_price(str(it.get("trigger") or "") +
-                                (f" 跌破 {it.get('stop_loss')}" if it.get("stop_loss") else ""))
-        if sl is None and tp is None:
-            sl = _extract_price(str(it.get("trigger") or ""))
-        txt = str(it.get("reason") or "") + str(it.get("trigger") or "")
-        m_cut = _re.search(r"减\s*(\d{1,3})\s*%", txt)
-        if m_cut:
-            pct = min(max(int(m_cut.group(1)) / 100, 0.0), 1.0)
-        elif "半" in txt:
-            pct = 0.5
-        else:
-            m_bare = _re.search(r"(?<![+\-])(\d{1,3})\s*%", txt)
-            pct = min(max(int(m_bare.group(1)) / 100, 0.0), 1.0) if m_bare else 1.0
+        reason = str(it.get("reason") or "")
+        txt = reason + str(it.get("trigger") or "")
         if act == "buy":
-            rules.append({"code": code, "take_profit": tp or sl, "pct": pct,
-                          "reason": str(it.get("reason") or "")[:80]})
+            print(f"  ⏭️ 买入预案 {code} 不进卖出哨兵（哨兵只卖不买）：{reason[:40]}")
+            continue
+        sl, tp = it.get("stop_loss"), it.get("take_profit")
+        if sl is None and tp is None:
+            price = _extract_price(txt)
+            _arm(code, price, txt, reason)
+        elif sl is not None:
+            _arm(code, sl, txt, reason, explicit="stop_loss")
         else:
-            rules.append({"code": code, "stop_loss": sl or tp, "pct": pct,
-                          "reason": str(it.get("reason") or "")[:80]})
+            _arm(code, tp, txt, reason, explicit="take_profit")
     for it in (payload.get("watch") or []):
         if not isinstance(it, dict) or not it.get("code"):
             continue
-        price = it.get("price") or _extract_price(str(it.get("trigger") or ""))
-        act = str(it.get("action") or "sell").lower()
-        if not price:
+        code = str(it["code"])
+        reason = str(it.get("reason") or "")
+        txt = reason + str(it.get("trigger") or "")
+        if str(it.get("action") or "sell").lower() == "buy":
+            print(f"  ⏭️ 买入观察 {code} 不进卖出哨兵（哨兵只卖不买）：{reason[:40]}")
             continue
-        txt = str(it.get("reason") or "") + str(it.get("trigger") or "")
-        m_cut = _re.search(r"减\s*(\d{1,3})\s*%", txt)
-        if m_cut:
-            pct = min(max(int(m_cut.group(1)) / 100, 0.0), 1.0)
-        elif "半" in txt:
-            pct = 0.5
-        else:
-            m_bare = _re.search(r"(?<![+\-])(\d{1,3})\s*%", txt)
-            pct = min(max(int(m_bare.group(1)) / 100, 0.0), 1.0) if m_bare else 1.0
-        if act == "buy":
-            rules.append({"code": str(it["code"]), "take_profit": price, "pct": pct,
-                          "reason": str(it.get("reason") or "")[:80]})
-        else:
-            rules.append({"code": str(it["code"]), "stop_loss": price, "pct": pct,
-                          "reason": str(it.get("reason") or "")[:80]})
+        sl, tp = it.get("stop_loss"), it.get("take_profit")
+        price = it.get("price") or sl or tp or _extract_price(str(it.get("trigger") or ""))
+        explicit = "stop_loss" if sl is not None else ("take_profit" if tp is not None else None)
+        _arm(code, price, txt, reason, explicit=explicit)
     decisions = []
     for r in rules:
+        why = r.pop("_dir", "")
         decisions.append({"action": "watch", "code": r["code"],
                           "stop_loss": r.get("stop_loss"), "take_profit": r.get("take_profit"),
                           "pct": r["pct"], "reason": r["reason"]})
+        if why:
+            print(f"  🧭 {r['code']} → "
+                  f"{'止盈' if r.get('take_profit') else '止损'}"
+                  f" ¥{r.get('take_profit') or r.get('stop_loss')}：{why}")
     n = save_watch_rules(agent, decisions)
-    print(f"  🔔 预案→哨兵同步 {agent}: {n} 条条件位")
+    extra = f"（剔除非持仓 {len(dropped)} 条：{','.join(sorted(set(dropped)))}）" if dropped else ""
+    print(f"  🔔 预案→哨兵同步 {agent}: {n} 条条件位{extra}")
     return n
 
 
@@ -304,14 +397,15 @@ def load_yesterday_outcome(agent: str, date: str) -> str:
         return ""
 
 
-_DESC_KEYS = ("description", "描述")
+_DESC_KEYS = ("description", "desc", "描述")
 _DIR_KEYS = ("direction", "方向")
 
 
 def register_review_hypotheses(agent: str, date: str, candidates,
                                hyp_path: Path | None = None) -> int:
     """复盘 hypothesis_candidates → 假设库（proposed 待复测），返回新增条数。
-    name 取 description（兼容中文键"描述"——glm 系模型会照复盘模板回中文键）；
+    name 取描述键（兼容中英混用：deepseek 系回 "desc"、glm 系回中文"描述"——
+    2026-09-10 实录 3 条 v4-flash 候选全是 "desc" 键，静默丢失）；
     字符串候选取全文。key 含 agent 前缀：2026-09-08 实录全局 H_{date}_{i} 让
     先跑完的 agent 占 key，后跑 agent 的候选静默丢失。"""
     path = hyp_path or (ROOT / "configs" / "hypotheses.json")
@@ -322,6 +416,7 @@ def register_review_hypotheses(agent: str, date: str, candidates,
     if not isinstance(hyps, dict):
         return 0
     added = 0
+    skipped = 0
     for i, cand in enumerate(candidates or []):
         if isinstance(cand, str):
             txt = cand[:120]
@@ -333,11 +428,17 @@ def register_review_hypotheses(agent: str, date: str, candidates,
         else:
             continue
         key = f"H_{date}_{agent}_{i}"
-        if key not in hyps and txt:
-            hyps[key] = {"name": txt, "direction": direction,
-                         "win_rate": None, "n": None, "updated": date,
-                         "status": "proposed", "source": "review"}
-            added += 1
+        if key in hyps:
+            continue          # 同一 agent+日期重跑：已登记过，不算丢失
+        if not txt:
+            skipped += 1      # 键名不认识（如 {"why": ...}）→ 说出来，别再静默丢
+            continue
+        hyps[key] = {"name": txt, "direction": direction,
+                     "win_rate": None, "n": None, "updated": date,
+                     "status": "proposed", "source": "review"}
+        added += 1
+    if skipped:
+        print(f"  ⚠️ 假设候选 {skipped} 条缺描述键（认得的键：{'/'.join(_DESC_KEYS)}），未登记")
     if added:
         try:
             path.write_text(json.dumps(hyps, ensure_ascii=False, indent=1), encoding="utf-8")

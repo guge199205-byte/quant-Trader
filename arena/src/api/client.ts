@@ -389,10 +389,12 @@ export const fetchQmtAccount = async (): Promise<QmtAccount | null> => {
   return reshapeQmtAccount(body.data);
 };
 
-/** QMT 桥自述（Redis RPC ping，纯只读）：下单总闸在不在、RPC 版本、账号类型。
- *  界面上「通道不支持下单」与「本系统没接线」是两回事，靠这里的 allow_order_methods 区分。 */
+/** QMT 桥自述（Redis RPC ping，纯只读）：两处下单总闸状态、RPC 版本、账号类型。
+ *  Windows 侧 rpc_allow_order_methods 与本侧 allow_trading 是两处独立闸门，
+ *  界面必须分开显示；字段缺失（后端未升级）保持 undefined，界面写「未知」不猜。 */
 export interface QmtStatus {
-  allow_order_methods: boolean;
+  allow_order_methods?: boolean;
+  allow_trading?: boolean;
   version: string;
   account_type: string;
   server_time: string;
@@ -404,8 +406,10 @@ export const fetchQmtStatus = async (): Promise<QmtStatus | null> => {
   const res = await api.get('/qmt/status');
   const body = res.data as { success?: boolean; data?: Partial<QmtStatus> };
   if (!body?.success || !body.data) return null;
+  const tri = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : undefined);
   return {
-    allow_order_methods: body.data.allow_order_methods === true,
+    allow_order_methods: tri(body.data.allow_order_methods),
+    allow_trading: tri(body.data.allow_trading),
     version: body.data.version ?? '',
     account_type: body.data.account_type ?? '',
     server_time: body.data.server_time ?? '',

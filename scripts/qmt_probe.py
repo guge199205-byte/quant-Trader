@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """QMT 桥只读体检：连上 Windows 大 QMT，查账户/持仓/委托/成交——**不下任何单**。
 
-用途：阶段一验收。链路配置好后先跑它，确认「能连、能查、数对得上」，
-再谈接执行。失败信息尽量给到"下一步该查什么"。
+用途：只读验收。链路配置好后先跑它，确认「能连、能查、数对得上」；
+下单另走 broker（buy/sell/cancel_order 已接线，本侧 allow_trading 默认关闭）。
+失败信息尽量给到"下一步该查什么"。
 
 用法：
   /home/zbox/baymax/.venv/bin/python scripts/qmt_probe.py            # 只读体检
@@ -48,8 +49,9 @@ def collect(broker: QmtBridgeBroker) -> dict:
     """只读五连查：ping → 资产 → 持仓 → 委托 → 成交。任一失败记入 errors 而非抛出。"""
     out: dict = {"ok": True, "errors": []}
     try:
-        broker.ping()
+        pong = broker.ping()
         out["ping"] = True
+        out["ping_status"] = (pong or {}).get("result") or {}   # 桥自述：两处下单闸取这里
     except BrokerError as exc:
         out["ping"] = False
         out["ok"] = False
@@ -89,6 +91,14 @@ def render(broker: QmtBridgeBroker, res: dict) -> str:
         return "\n".join(lines)
 
     lines.append("  ✅ ping")
+    # 两处下单闸第一屏可见：本侧默认关闭；Windows 侧一旦 true，能连到桥 Redis 的
+    # 就都能发真单（该实例无密码）——体检时先看这两行再谈别的。
+    st = res.get("ping_status") or {}
+    win_open = st.get("allow_order_methods")
+    lines.append("  下单闸：本侧 allow_trading="
+                 f"{'开启 ★' if broker.allow_trading else '关闭（只读）'} · "
+                 f"Windows 侧 rpc_allow_order_methods="
+                 f"{'已放开 ★' if win_open is True else '未放开' if win_open is False else '未知'}")
     asset = res.get("asset") or {}
     if asset:
         lines.append(f"  账户：总资产 ¥{asset.get('asset', 0):,.0f}   "

@@ -120,9 +120,19 @@ describe('qmtChannel', () => {
     expect(c.lines.find((l) => l.k === '账户资产')?.v).toBe('¥23,850,348');
   });
 
-  it('本系统不下单这件事必须显式写出来（不谎报可下单）', () => {
-    const c = qmtChannel(qmtSum, { ok: true });
-    expect(c.lines.find((l) => l.k === '本系统接线')?.v).toContain('只读');
+  it('本侧总闸关闭（默认）→ 写「总闸关闭」而不是含糊的只读', () => {
+    const c = qmtChannel(qmtSum, { ok: true }, { allow_trading: false });
+    expect(c.lines.find((l) => l.k === '本系统接线')?.v).toContain('总闸关闭');
+    expect(c.lines.find((l) => l.k === '本系统接线')?.tone).toBe('ok');
+    expect(c.stateText).toBe('在线（只读）');
+  });
+
+  it('本侧总闸开启 → 明写「总闸开启」且 warn 色 + 标题改可下单（能花真钱要显眼）', () => {
+    const c = qmtChannel(qmtSum, { ok: true }, { allow_trading: true });
+    const line = c.lines.find((l) => l.k === '本系统接线');
+    expect(line?.v).toContain('总闸开启');
+    expect(line?.tone).toBe('warn');
+    expect(c.stateText).toBe('在线（可下单）');
   });
 
   it('探针失败 → 离线', () => {
@@ -133,10 +143,11 @@ describe('qmtChannel', () => {
 
   // 2026-09-11 实录：Windows 侧 rpc_allow_order_methods 已是 true，
   // 界面还只写「未接入（只读）」会把「本系统没接线」说成「通道不支持下单」——排查会走错方向。
-  it('Windows 侧已放开下单 → 与「本系统未接线」分两行说', () => {
-    const c = qmtChannel(qmtSum, { ok: true }, { allow_order_methods: true });
+  // 2026-09-11 接线后：本侧开关读不到（桥状态整体取不到）就不猜，写未知。
+  it('Windows 侧已放开下单 → 与「本系统接线」分两行说', () => {
+    const c = qmtChannel(qmtSum, { ok: true }, { allow_order_methods: true, allow_trading: false });
     expect(c.lines.find((l) => l.k === 'Windows 侧下单闸')?.v).toBe('已放开');
-    expect(c.lines.find((l) => l.k === '本系统接线')?.v).toContain('未接入');
+    expect(c.lines.find((l) => l.k === '本系统接线')?.v).toContain('总闸关闭');
   });
 
   it('Windows 侧未放开 → 下单闸显示未放开', () => {
@@ -147,6 +158,12 @@ describe('qmtChannel', () => {
   it('桥状态没取到 → 下单闸不猜，写未知', () => {
     const c = qmtChannel(qmtSum, { ok: true }, null);
     expect(c.lines.find((l) => l.k === 'Windows 侧下单闸')?.v).toBe('未知');
+    expect(c.lines.find((l) => l.k === '本系统接线')?.v).toBe('未知');
+  });
+
+  it('本侧总闸字段缺失（后端未升级）→ 不猜成「已开」，写未知', () => {
+    const c = qmtChannel(qmtSum, { ok: true }, { allow_order_methods: true });
+    expect(c.lines.find((l) => l.k === '本系统接线')?.v).toBe('未知');
   });
 
   it('取到桥状态时补出 RPC 版本与账号类型', () => {

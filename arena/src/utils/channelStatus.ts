@@ -131,10 +131,20 @@ export function tdxChannel(
 export interface QmtStatusLite {
   /** Windows 侧总闸 rpc_allow_order_methods：true 表示那边已放开真实下单 */
   allow_order_methods?: boolean;
+  /** 本侧总闸（config/qmt_bridge.json 的 allow_trading）：默认 false，即本系统只读 */
+  allow_trading?: boolean;
   version?: string;
   account_type?: string;
   server_time?: string;
 }
+
+/** 本侧下单总闸 → 一行文案。true 意味着这台机器的脚本真能发单出去，tone 用 warn
+ *  在视觉上与只读分开；字段缺失（后端旧版）不猜成「已开」也不猜成「已关」。 */
+const qmtLocalOrderLine = (status?: QmtStatusLite | null): ChanLine => {
+  if (status?.allow_trading === true) return { k: '本系统接线', v: '已接线 · 总闸开启', tone: 'warn' };
+  if (status?.allow_trading === false) return { k: '本系统接线', v: '已接线 · 总闸关闭', tone: 'ok' };
+  return { k: '本系统接线', v: '未知', tone: 'unknown' };
+};
 
 /** 下单权限两行：必须把「那边放没放开」和「本系统接没接线」分开说。
  *  2026-09-11 实录：Windows 侧 rpc_allow_order_methods 已被打开（passorder 可用），
@@ -150,10 +160,10 @@ const qmtOrderLines = (status?: QmtStatusLite | null): ChanLine[] => [
           : '未知',
     tone: status?.allow_order_methods === true ? 'warn' : 'unknown',
   },
-  { k: '本系统接线', v: '未接入（只读）', tone: 'warn' },
+  qmtLocalOrderLine(status),
 ];
 
-/** 迅投 QMT：账户读取通道（与桥互为独立佐证；本系统未接其下单链路） */
+/** 迅投 QMT：账户读取通道（与桥互为独立佐证；下单已接线，本侧默认关闭） */
 export function qmtChannel(
   summary: RealAccountSummary | undefined,
   probe: { ok: boolean; error?: string } | null,
@@ -161,6 +171,8 @@ export function qmtChannel(
 ): ChannelProbe {
   const age = summary?.age_sec ?? null;
   const fresh = freshnessState(age);
+  // 标题跟随本侧总闸：脚本真能发单时不能还挂「只读」二字
+  const mode = status?.allow_trading === true ? '可下单' : '只读';
   let state: ChanState;
   let stateText: string;
   if (!probe || summary == null) {
@@ -171,15 +183,15 @@ export function qmtChannel(
     stateText = '离线';
   } else if (fresh === 'ok') {
     state = 'ok';
-    stateText = '在线（只读）';
+    stateText = `在线（${mode}）`;
   } else {
     state = 'warn';
-    stateText = '同步滞后（只读）';
+    stateText = `同步滞后（${mode}）`;
   }
   return {
     key: 'qmt',
     label: '迅投 QMT',
-    role: '账户读取（与桥互为独立佐证，本系统未接其下单链路）',
+    role: '账户读取 + 下单（与桥互为独立佐证；本侧下单总闸默认关闭）',
     state,
     stateText,
     lines: [

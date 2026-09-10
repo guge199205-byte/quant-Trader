@@ -100,6 +100,8 @@ def test_qmt_test_connection_success_and_failure(cfg_files, monkeypatch):
     import agent_tools.brokers.qmt_bridge as QB
 
     class _FakeOk:
+        allow_trading = False
+
         def _account_query(self):
             return {"asset": {"asset": 23850348.0, "cash": 21506660.0},
                     "positions": [{"stock_code": "600000.SH"}]}
@@ -108,6 +110,30 @@ def test_qmt_test_connection_success_and_failure(cfg_files, monkeypatch):
     ok = asyncio.run(T.test_broker_connection("qmt"))
     assert ok["success"] is True
     assert "¥23,850,348" in ok["message"] and "1 只" in ok["message"]
+    assert "只读" in ok["message"]          # 总闸默认关：文案必须说清是只读
+
+    # 本侧总闸开启 → 顺带回报 Windows 侧闸门（测连接的说法与界面口径要一致）
+    class _FakeOpen(_FakeOk):
+        allow_trading = True
+
+        def bridge_status(self):
+            return {"allow_order_methods": True}
+
+    monkeypatch.setattr(QB, "QmtBridgeBroker", _FakeOpen)
+    opened = asyncio.run(T.test_broker_connection("qmt"))
+    assert opened["success"] is True
+    assert "已开启" in opened["message"] and "已放开" in opened["message"]
+
+    # 桥自述读不到 ≠ 连接失败（账户查询本身是通的），如实写「读取失败」
+    class _FakeOpenNoStatus(_FakeOk):
+        allow_trading = True
+
+        def bridge_status(self):
+            raise RuntimeError("redis rpc timeout: ping")
+
+    monkeypatch.setattr(QB, "QmtBridgeBroker", _FakeOpenNoStatus)
+    degraded = asyncio.run(T.test_broker_connection("qmt"))
+    assert degraded["success"] is True and "读取失败" in degraded["message"]
 
     class _FakeBoom:
         def __init__(self):

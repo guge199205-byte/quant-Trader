@@ -713,11 +713,12 @@ async def ibkr_orders(limit: int = Query(50, ge=1, le=500)):
         return {"success": False, "error": f"IBKR 委托查询失败: {e}"}
 
 
-# ---------- 迅投 QMT（A股；大 QMT 内置策略 + Redis 桥，当前只读） ----------
+# ---------- 迅投 QMT（A股；大 QMT 内置策略 + Redis 桥） ----------
 # 配置读 config/qmt_bridge.json（与设置页卡片、scripts/qmt_probe.py 同源）。
-# 下单未接线（broker.buy/sell 抛错）——阶段一验收通过前不接执行。
-# ★ 注意：本侧没接线 ≠ 那边不能下单。Windows 侧 rpc_allow_order_methods 是独立总闸，
-#   实际状态由 /api/qmt/status 实时读回（2026-09-11 实录为 true）。
+# 下单已接线（broker.buy/sell/cancel_order 走既有闸门），但本侧总闸默认关闭：
+# config/qmt_bridge.json 的 allow_trading 不显式设为 true 就只读。
+# ★ 本侧开关与 Windows 侧 rpc_allow_order_methods 是两处独立总闸，都要开才能成交；
+#   实际状态由 /api/qmt/status 实时读回（2026-09-11 实录 Windows 侧为 true）。
 
 def _qmt_broker():
     from agent_tools.brokers.qmt_bridge import QmtBridgeBroker
@@ -748,18 +749,24 @@ def qmt_account():
 
 @app.get("/api/qmt/status")
 def qmt_status():
-    """QMT 桥自述（只读 RPC ping）：Windows 侧下单总闸在不在、RPC 版本、账号类型。
+    """QMT 桥自述（只读 RPC ping）：两处下单总闸状态、RPC 版本、账号类型。
 
-    与 /api/qmt/account 分开：账户读得通不代表那边没放开真实下单——
-    Windows 侧 rpc_allow_order_methods 是独立总闸，界面上必须把
-    「通道不支持下单」和「本系统还没接线」分开显示。同步 def 理由同 /api/qmt/account。
+    与 /api/qmt/account 分开：账户读得通不代表那边放开了真实下单——
+    本侧 allow_trading 与 Windows 侧 rpc_allow_order_methods 是两处独立总闸，
+    界面要把「本系统接线开关」和「Windows 侧闸门」分开显示，不能合成一句话。
+    同步 def 理由同 /api/qmt/account。
     """
     try:
-        r = _qmt_broker().ping()
-        result = (r or {}).get("result") or {}
+        br = _qmt_broker()
+        pong = br.ping()
+        result = (pong or {}).get("result") or {}
         return {"success": True, "data": {
-            "account_id": r.get("account_id") or result.get("account_id"),
-            "allow_order_methods": bool(result.get("allow_order_methods")),
+            "account_id": pong.get("account_id") or result.get("account_id"),
+            "allow_trading": bool(br.allow_trading),
+            # 桥没报这个字段就回 null（前端显示「未知」）——回 false 是把「不知道」
+            # 说成「确认为关」，排查时会走错方向
+            "allow_order_methods": (None if result.get("allow_order_methods") is None
+                                    else bool(result.get("allow_order_methods"))),
             "version": result.get("version"),
             "account_type": result.get("account_type"),
             "server_time": result.get("server_time"),

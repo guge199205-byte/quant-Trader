@@ -351,17 +351,27 @@ async def test_broker_connection(broker: str) -> dict:
             return {"success": False,
                     "message": f"IBKR 连接失败：{exc}；请确认 IB Gateway 已启动并开放 API（端口 7497/7496）"}
     if broker == "qmt":
-        # 迅投 QMT：Windows 大 QMT 内置策略 + Redis 桥（阶段一只读，查询即连通性）
+        # 迅投 QMT：Windows 大 QMT 内置策略 + Redis 桥（查询即连通性；下单默认关闭）
         from agent_tools.brokers.qmt_bridge import QmtBridgeBroker
 
         try:
-            data = QmtBridgeBroker()._account_query()
+            b = QmtBridgeBroker()
+            data = b._account_query()
             asset = data.get("asset") or {}
             count = len(data.get("positions") or [])
+            # 本侧总闸开着才多探一次桥（默认关时零额外 RPC，不拖慢测连接）
+            if b.allow_trading:
+                try:
+                    win_open = "已放开" if b.bridge_status().get("allow_order_methods") else "未放开"
+                except Exception:  # noqa: BLE001
+                    win_open = "读取失败"
+                order = f"本侧下单闸已开启（Windows 侧 {win_open}）"
+            else:
+                order = "本侧下单闸关闭（只读）"
             return {"success": True,
                     "message": (f"QMT 桥已连接（总资产 ¥{float(asset.get('asset') or 0):,.0f}，"
                                 f"可用 ¥{float(asset.get('cash') or 0):,.0f}，"
-                                f"持仓 {count} 只；阶段一只读）")}
+                                f"持仓 {count} 只；{order}）")}
         except Exception as exc:  # noqa: BLE001
             return {"success": False,
                     "message": f"QMT 连接失败：{exc}；请确认 Windows 大 QMT 的策略在运行、"

@@ -16,6 +16,7 @@ data/risk_block.json），不重算任何判据——保证报表与闸门**同�
 import argparse
 import csv
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,6 +33,14 @@ BJ = timezone(timedelta(hours=8))
 FUND_LAYERS = [("fin", "财务差"), ("shell", "保壳"), ("trend", "长期下跌"),
                ("flat", "横盘"), ("illiquid", "流动性"), ("new", "次新股")]
 
+# 表格的列序（md 的「层」列与 csv 的勾选列共用，防止两处漂移）
+LAYER_ORDER = ["永久黑名单", "财务差", "保壳", "长期下跌", "横盘",
+               "流动性", "次新股", "低价股"]
+
+# 同一条理由会被三个来源各带一遍（黑名单文案 / 基本面缓存 / risk_block 的合并
+# 文本），按**分句**去重——整串比对去不掉，因为合并文本里混了别层的句子。
+CLAUSE_SEP = re.compile(r"[；;]")
+
 
 def _read(path: Path) -> dict:
     try:
@@ -42,7 +51,7 @@ def _read(path: Path) -> dict:
 
 
 def load_layers() -> dict:
-    """{code6: {"name": str, "layers": [str], "reasons": [str]}}（长期排除各层）。"""
+    """{code6: {"layers": [str], "reasons": [分句]}}（长期排除各层）。"""
     out: dict = {}
 
     def _add(code, layer, reason):
@@ -52,8 +61,10 @@ def load_layers() -> dict:
         it = out.setdefault(c6, {"layers": [], "reasons": []})
         if layer not in it["layers"]:
             it["layers"].append(layer)
-        if reason and reason not in it["reasons"]:
-            it["reasons"].append(reason)
+        for part in CLAUSE_SEP.split(str(reason or "")):
+            part = part.strip()
+            if part and part not in it["reasons"]:
+                it["reasons"].append(part)
 
     for sym in _read(SYMBOLS).get("block_buy") or []:
         _add(sym, "永久黑名单", "新闻复核入永久黑名单")
@@ -104,10 +115,10 @@ def _names() -> dict:
 
 def build(names: dict) -> tuple:
     layers = load_layers()
-    order = ["永久黑名单", "财务差", "保壳", "长期下跌", "横盘", "流动性", "次新股", "低价股"]
     rows = []
     for code, it in layers.items():
-        ls = sorted(it["layers"], key=lambda x: order.index(x) if x in order else 99)
+        ls = sorted(it["layers"],
+                    key=lambda x: LAYER_ORDER.index(x) if x in LAYER_ORDER else 99)
         rows.append({"code": code, "name": names.get(code, ""), "layers": ls,
                      "reason": "；".join(it["reasons"])})
     rows.sort(key=lambda r: (-len(r["layers"]), r["code"]))
@@ -115,8 +126,10 @@ def build(names: dict) -> tuple:
 
 
 def write(rows: list, transient: list, names: dict, asof: str) -> tuple:
-    md = ROOT / "data" / f"长期排除清单_{asof}.md"
-    csv_p = ROOT / "data" / f"长期排除清单_{asof}.csv"
+    out_dir = ROOT / "data"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    md = out_dir / f"长期排除清单_{asof}.md"
+    csv_p = out_dir / f"长期排除清单_{asof}.csv"
     total = len(rows)
     pct = total / 5563 * 100
     lines = [f"# 长期排除清单（买入硬拦，{asof}）", "",
@@ -132,7 +145,7 @@ def write(rows: list, transient: list, names: dict, asof: str) -> tuple:
         lines.append(f"| {code} | {names.get(code, '')} | {kind} | {expire[:10]} | {reason} |")
     md.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    cols = ["永久黑名单", "财务差", "长期下跌", "横盘", "流动性", "次新股", "低价股"]
+    cols = LAYER_ORDER
     with csv_p.open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow(["代码", "名称", "命中层数", *cols, "理由"])

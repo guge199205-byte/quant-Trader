@@ -71,7 +71,6 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 PICKS_JSON = ROOT / ".." / "projects" / "quantmind" / "data" / "reports" / "stock_picks"
 PER_STOCK_PCT = 0.2   # 单票买入 ≤ 剩余额度 20%
 MAX_NEW_BUYS = 3      # 新开仓上限：单轮 + 当日累计（风险预算 max_new_buys 覆盖）
-SELL_LIMIT_DOWN = -9.9  # 跌停不接
 
 # 单实例锁 + 当日执行状态（09:35 主入口与 10:05/11:05 补跑共用）
 LOCK_FILE = ROOT / "logs" / "live_llm_trade.lock"
@@ -346,8 +345,12 @@ def _write_state(day: str, **kw) -> None:
 
     字段：day / started_ts / orders_attempted / ok / note。
     orders_attempted 一旦为真不会被后续合并写抹掉（除新一轮启动显式重置）。
+    跨日则整条作废：旧一天的 orders_attempted/ok 不得带进新一天（否则开关一关、
+    _run 没跑，新一天会顶着一份"今天已下过单"的假状态，10:05 补跑直接被跳过）。
     """
     cur = _read_state()
+    if cur.get("day") != day:
+        cur = {}
     cur.update({"day": day, **kw})
     tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
     try:
@@ -395,6 +398,9 @@ def _apply_exec_switch(args) -> bool:
     降级时落一条当日状态（note=EXEC_SWITCH_OFF_NOTE）：当日「因总闸关闭而未执行」
     是预期行为，alert_checks 据此不再报「主入口未收尾」（否则开关一关就天天误报）。
     状态里 ok≠True、orders_attempted 为假 → 总闸恢复后当日 catch-up 仍可正常补跑。
+    例外（2026-09-11 审查 MEDIUM）：当日**已经真下过单/真失败过**时不许覆盖——
+    09:35 跑过并失败（ok=False），10:05 补跑时总闸被关，这条 note 会把那次真失败
+    洗成「预期行为」，t1/t2 告警全静默。
     """
     if not args.execute or getattr(args, "force", False):
         return False
@@ -403,7 +409,13 @@ def _apply_exec_switch(args) -> bool:
     if intraday_exec_enabled():
         return False
     args.execute = False
-    _write_state(now_cn().date().isoformat(), ok=None, note=EXEC_SWITCH_OFF_NOTE)
+    day = now_cn().date().isoformat()
+    cur = _read_state()
+    if cur.get("day") == day and (cur.get("orders_attempted") or cur.get("ok") is False):
+        print("🔒 自动执行总开关已关，本轮降级为 dry-run；当日已有真执行记录"
+              "（下过单/失败过）→ 保留原状态不覆盖（那是今天的告警依据）")
+        return True
+    _write_state(day, ok=None, note=EXEC_SWITCH_OFF_NOTE)
     print("🔒 自动执行总开关已关（configs/intraday_exec.json enabled=false），"
           "本轮降级为 dry-run：只做决策演练，不下单（人工强跑用 --force）")
     return True
@@ -569,6 +581,9 @@ def _run(args) -> int:
         # 决策校验前重新读盘（口径统一在 live_fills.inflight_codes）；执行前
         # reconcile 之后还会再刷新一次（见下方 sell 执行段）。
         pending_sell = inflight_codes("sell")
+        # 在途买单闸门（2026-09-11，与整点轮同口径）：买单挂 pending 时账本尚未扣现金
+        # /加持仓，补跑或后续轮次再决策买入同一代码 → 桥上是第二笔真委托（重复建仓）。
+        pending_buy = inflight_codes("buy")
         new_buys = 0                          # 本轮新开仓计数
         opened_today = daily_buy_codes(agent)  # 当日已开仓代码（09:35 可能晚于整点轮）
         for d in decisions:
@@ -604,6 +619,9 @@ def _run(args) -> int:
                 print(f"  📉 [{agent}] 卖出 {code} {vol}/{avail}股 "
                       f"({d['pct']:.0%}): {d['reason']}")
             elif d["action"] == "buy":
+                if code in pending_buy:
+                    print(f"  ⏭️ [{agent}] 买入 {code}: 已有在途买单未确认，跳过")
+                    continue
                 bd = check_buy(code, d["pct"], bool(h), new_buys, opened_today, gate,
                                name=(h or {}).get("name") or nm_by_code.get(code))
                 if not bd.ok:
@@ -643,6 +661,7 @@ def _run(args) -> int:
             print(f"  ⚠️ 成交回报 reconcile 失败: {exc}")
         # reconcile 后刷新在途集：上一班超时挂队的卖单 / 分钟哨兵的止损单都在里面
         pending_sell = inflight_codes("sell")
+        pending_buy = inflight_codes("buy")
         from agent_tools.datasources import tdx_aidata
 
         try:
@@ -667,7 +686,9 @@ def _run(args) -> int:
                       f"按实时价 {price} 计算限价")
             try:
                 result = broker.sell(None, None, code, vol, price=round(price * 0.99, 2))
-                print(f"  ✅ [{agent}] 卖出 {code} 已受理: {result}")
+                from live_fills import ack_line
+
+                print("  " + ack_line(f"[{agent}] 卖出 {code}", result))
                 fill = wait_fill(broker, result.get("order_id", ""))
                 if fill and int(fill.get("filled_volume") or 0) > 0:
                     fv = int(fill["filled_volume"])
@@ -724,6 +745,9 @@ def _run(args) -> int:
             continue
         ledger = load_ledger()
         for code, pct, _ in buys:
+            if code in pending_buy:
+                print(f"  ⏭️ [{agent}] 买入 {code}: 执行前已有在途买单未确认，本轮不下单")
+                continue
             remaining = agent_remaining(ledger, agent)
             bars = bars_map.get(code) or broker.get_klines(code, interval="daily")[-5:]
             o = compute_order(bars, remaining, pct, code)
@@ -756,8 +780,10 @@ def _run(args) -> int:
             cash -= o["cost"]
             try:
                 result = broker.buy(None, None, code, o["volume"], price=o["limit_price"])
-                print(f"  ✅ [{agent}] 买入 {code} {o['volume']}股 "
-                      f"限价 ¥{o['limit_price']:.2f} 已受理: {result}")
+                from live_fills import ack_line
+
+                print("  " + ack_line(f"[{agent}] 买入 {code} {o['volume']}股 "
+                                      f"限价 ¥{o['limit_price']:.2f}", result))
                 fill = wait_fill(broker, result.get("order_id", ""))
                 if fill and int(fill.get("filled_volume") or 0) > 0:
                     fv = int(fill["filled_volume"])
@@ -777,6 +803,7 @@ def _run(args) -> int:
                 else:
                     add_pending(result.get("order_id"), agent, code, "buy",
                                 o["volume"], o["price"], now_cn().isoformat())
+                    pending_buy.add(code)    # 同轮重复决策同一代码时不再下第二单
                     log_line({"ts": now_cn().isoformat(), "mode": "execute",
                               "agent": agent, "code": code, "side": "buy",
                               "volume": o["volume"], "price": o["price"],

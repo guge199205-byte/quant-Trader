@@ -12,6 +12,9 @@ quantmind 2026-09-10~11 对真账户压测（40327478）得到的确定性结论
   5. 提交前价格保护带：报价超出涨跌停带（含 2% 容差）→ 拒单并告警，防程序 bug
      把离谱价格当市价单打出去；**取不到行情/市价本身在带外（新股等）则放行**。
   6. 未成交/部分成交/收盘未了结 → 需要人工知晓的事件（此前只写 jsonl，零告警）。
+  7. duplicate 的两处（2026-09-11 代码审查 HIGH）：桥的 plan 去重是 HTTP 409
+     DUPLICATE_PLAN（不是内联 status），客户端必须认出来才不会每分钟空转；
+     回捞时只接管**未记账**的委托——已记过账的再补挂 = 账本双记卖出。
 
 运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_live_order_guards.py -q
 """
@@ -59,9 +62,13 @@ class FakeBroker:
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """隔离 pending/事件/日志文件；返回 (broker, rule, events读取器)。"""
+    import live_trade_picks
+
     monkeypatch.setattr(F, "PENDING_FILE", tmp_path / "pending.json")
     monkeypatch.setattr(F, "EVENTS_FILE", tmp_path / "events.json")
     monkeypatch.setattr(W, "LOG_DIR", tmp_path)
+    # 成交流水（fill_recorded 的判据）落在 live_trade_picks.LOG_DIR
+    monkeypatch.setattr(live_trade_picks, "LOG_DIR", tmp_path)
 
     def events():
         try:
@@ -151,16 +158,17 @@ def test_duplicate_plan_recovers_order_id_from_today_orders(env):
     broker._orders = [{"order_id": "W777", "stock_code": "001312.SZ", "side": "sell",
                        "order_price": LIMIT_DOWN, "total_volume": 500,
                        "filled_volume": 500, "status": "filled"}]
-    assert _sell(broker, rule, 17.50) is True   # 已下过 → 条件位消费
+    assert _sell(broker, rule, 17.50) is False  # 条件位保留（见下节：卖出完成前继续守）
     pend = F.load_pending()
     assert [p["order_id"] for p in pend] == ["W777"]
 
 
 def test_duplicate_without_recovery_records_event(env):
-    """duplicate 但回捞不到委托号：条件位消费（桥已执行过）但必须留告警。"""
+    """duplicate 但回捞不到委托号：单可能在场内也可能压根没进，状态未知 →
+    条件位**保留**（消费掉等于把没卖出去的持仓从保护里摘出去），但必须留告警。"""
     broker, rule, events = env
     broker._result = {"order_id": "", "status": "duplicate", "message": "plan 已执行过"}
-    assert _sell(broker, rule, 17.50) is True
+    assert _sell(broker, rule, 17.50) is False
     assert "dup_unresolved" in json.dumps(events(), ensure_ascii=False)
 
 
@@ -260,3 +268,143 @@ def test_custom_plan_id_used_in_payload(monkeypatch):
     b, sent = _bridge(monkeypatch, _BARS)
     b.sell(None, None, "600000.SH", 100, price=10.00, plan_id="watch-x-1")
     assert sent["payload"]["plan_id"] == "watch-x-1"
+
+
+# ---------- 6. 桥 409 DUPLICATE_PLAN：是「已执行过」，不是失败（审查 HIGH A）----------
+# 2026-09-11 代码审查：桥对 plan_id 的去重在 execute_plan **入口**读
+# _executed_plans（plan_executor.py:49-52），HTTP 层返回 **409 DUPLICATE_PLAN**
+# （routes.py:219-220）——不是 200 内联 status=duplicate。客户端原先只认内联形状，
+# 409 被 raise_for_status 抛成 HTTPError → BrokerError → 哨兵走 sell_failed 异常
+# 分支：同一 plan_id（条件位重试恒同号）每分钟重试一次、每分钟报一次失败、
+# 条件位永远不消费、那笔已受理的委托永远补不进账本。
+
+class _Resp:
+    def __init__(self, status, body):
+        self.status_code, self._body = status, body
+
+    def json(self):
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self._body
+
+
+def _http_error(status, body):
+    import requests
+
+    err = requests.exceptions.HTTPError(f"{status} Client Error")
+    err.response = _Resp(status, body)
+    return err
+
+
+def _bridge_raising(monkeypatch, exc):
+    b, _ = _bridge(monkeypatch, _BARS)
+
+    def _post(path, payload, timeout, idempotent=True):
+        raise exc
+
+    monkeypatch.setattr(b, "_post", _post)
+    return b
+
+
+def test_plan_duplicate_409_surfaces_as_duplicate_not_failure(monkeypatch):
+    """409 DUPLICATE_PLAN → 返回 status=duplicate（走回捞/保留条件位），不抛错。"""
+    b = _bridge_raising(monkeypatch, _http_error(409, {
+        "success": False,
+        "error": {"code": "DUPLICATE_PLAN", "message": "plan 已执行过", "details": {}}}))
+
+    out = b.sell(None, None, "600000.SH", 100, price=9.00)
+
+    assert out["status"] == "duplicate" and out["order_id"] == ""
+    assert "已执行过" in out["message"]
+
+
+@pytest.mark.parametrize("status,body", [
+    (409, {"error": {"code": "OTHER_ERROR", "message": "别的冲突"}}),
+    (502, {"error": {"code": "TDX_UNAVAILABLE", "message": "柜台不可用"}}),
+    (409, ValueError("响应不是 JSON")),
+])
+def test_other_http_errors_still_raise(monkeypatch, status, body):
+    """对照组：只有 DUPLICATE_PLAN 是「非失败」；别的 409/5xx/脏响应照旧抛错。"""
+    from agent_tools.brokers.base import BrokerError
+
+    b = _bridge_raising(monkeypatch, _http_error(status, body))
+
+    with pytest.raises(BrokerError, match="TDX 桥下单失败"):
+        b.sell(None, None, "600000.SH", 100, price=9.00)
+
+
+# ---------- 7. duplicate 回捞：接管未记账的，绝不重记已记账的（审查 HIGH A）----------
+# 回捞到「当日已成交且已记过账」的老单再补挂 pending，reconcile 会从
+# volume_recorded=0 重新补记 → 同一笔卖出扣两次持仓、加两次现金（账本双记）。
+# 触发形状：半仓止损先成交并记账；剩余仓位的另一条规则再触发时，桥按
+# 「当日已有同向成交」判 duplicate，回捞拿到的正是那笔已记账的老单。
+
+def _log_fill(tmp_path, order_id, mode="fill_confirm"):
+    """在当日成交流水写一条记账线（fill_recorded 的判据）。"""
+    stamp = W.now_cn().strftime("%Y%m%d")
+    with open(tmp_path / f"live_trade_{stamp}.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": W.now_cn().isoformat(), "mode": mode,
+                             "order_id": order_id}) + "\n")
+
+
+def _dup_with_order(env, order):
+    broker, rule, events = env
+    broker._result = {"order_id": "", "status": "duplicate", "message": "plan 已执行过"}
+    broker._orders = [order]
+    return broker, rule, events
+
+
+def test_duplicate_recovers_live_order_and_keeps_rule_armed(env):
+    """在途（未终态）那笔：补挂 pending 跟踪成交；条件位保留——卖出真完成或持仓
+    清零之前继续守，期间由在途闸门保证不会下第二笔。"""
+    broker, rule, _ = _dup_with_order(env, {
+        "order_id": "W778", "stock_code": "001312.SZ", "side": "sell",
+        "order_price": LIMIT_DOWN, "total_volume": 500, "filled_volume": 0,
+        "status": "submitted"})
+
+    assert _sell(broker, rule, 17.50) is False
+    assert [p["order_id"] for p in F.load_pending()] == ["W778"]
+
+
+def test_duplicate_does_not_rebook_an_already_recorded_fill(env, tmp_path):
+    """已记账的成交：不许补挂（补挂 = 双记卖出）；条件位保留 + 留告警。"""
+    broker, rule, events = _dup_with_order(env, {
+        "order_id": "W777", "stock_code": "001312.SZ", "side": "sell",
+        "order_price": LIMIT_DOWN, "total_volume": 500, "filled_volume": 500,
+        "status": "filled"})
+    _log_fill(tmp_path, "W777")
+
+    assert _sell(broker, rule, 17.50) is False
+    assert F.load_pending() == []                       # 一笔都没补挂
+    assert "dup_unresolved" in json.dumps(events(), ensure_ascii=False)
+
+
+def test_duplicate_does_not_rebook_order_already_in_pending(env):
+    """防御：回捞到的那笔已在在途表里（同号）→ 不重复补挂。"""
+    broker, rule, _ = _dup_with_order(env, {
+        "order_id": "W779", "stock_code": "001312.SZ", "side": "sell",
+        "order_price": LIMIT_DOWN, "total_volume": 500, "filled_volume": 0,
+        "status": "submitted"})
+    F.add_pending("W779", AGENT, "001312.SZ", "sell", 500, LIMIT_DOWN,
+                  "2026-09-11T10:00:00+08:00")
+
+    _sell(broker, rule, 17.50)
+
+    assert [p["order_id"] for p in F.load_pending()] == ["W779"]   # 还是一条
+
+
+def test_duplicate_recovers_untracked_fill_once(env, tmp_path):
+    """成交流水里没有该委托号 → 是「已受理但本地没存下」那笔（成交成了账外单），
+    补挂一次让 reconcile 补记（fill_recorded 认内联成交线 fill.order_id 形状）。"""
+    broker, rule, _ = _dup_with_order(env, {
+        "order_id": "W780", "stock_code": "001312.SZ", "side": "sell",
+        "order_price": LIMIT_DOWN, "total_volume": 500, "filled_volume": 500,
+        "status": "filled"})
+    stamp = W.now_cn().strftime("%Y%m%d")
+    with open(tmp_path / f"live_trade_{stamp}.jsonl", "a", encoding="utf-8") as fh:
+        # 别的单的成交线：不能因为「文件里出现过别的号」就误判已记账
+        fh.write(json.dumps({"ts": "x", "mode": "execute",
+                             "fill": {"order_id": "OTHER9"}}) + "\n")
+
+    assert _sell(broker, rule, 17.50) is False
+    assert [p["order_id"] for p in F.load_pending()] == ["W780"]

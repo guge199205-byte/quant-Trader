@@ -256,7 +256,9 @@ def sell_flow(broker, args, log_line) -> int:
             log_line({"ts": now_cn().isoformat(), "mode": "sell",
                       "code": code, "volume": vol, "price": limit, "error": str(e)})
             continue
-        print(f"✅ {code} 卖出已受理: {result}")
+        from live_fills import ack_line
+
+        print(ack_line(f"{code} 卖出", result))
         sold.append(result)
         log_line({"ts": now_cn().isoformat(), "mode": "sell",
                   "code": code, "volume": vol, "price": limit, "result": result})
@@ -303,7 +305,8 @@ def main() -> None:
     ap.add_argument("--sell-all", action="store_true", help="卖出全部持仓")
     ap.add_argument("--sell-codes", help="卖出指定股票（逗号分隔：600519.SH,000858.SZ）")
     ap.add_argument("--sell-pct", type=float, default=1.0,
-                    help="每只卖出比例（默认 1.0=全部可卖量）")
+                    help="每只卖出比例（默认 1.0=全部可卖量；按板块手数取整，"
+                         "取整后不足 1 手的标的跳过）")
     args = ap.parse_args()
 
     mode = "🔴 实盘执行" if args.execute else "🟡 DRY-RUN 演练（不下单）"
@@ -427,7 +430,9 @@ def main() -> None:
                       "code": code, "name": name, "volume": o["volume"],
                       "price": o["limit_price"], "error": str(e)})
             continue
-        print(f"✅ [{agent}] {code} {name} 已受理: {result}")
+        from live_fills import ack_line
+
+        print(ack_line(f"[{agent}] {code} {name}", result))
         placed.append(result)
         log_line({"ts": now_cn().isoformat(), "mode": "execute",
                   "code": code, "name": name, "volume": o["volume"],

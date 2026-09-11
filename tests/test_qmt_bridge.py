@@ -386,6 +386,78 @@ def test_cancel_requires_order_id(fake_qmt):
     assert trader.calls == []
 
 
+# ---------- submit 结果诚实性（与 TdxBridgeBroker 2026-09-11 口径对齐）----------
+# 对端 submit_order 的 data 形状 = OrderSubmitResult{status, user_order_id,
+# order_sys_id, message}（redis_rpc.to_jsonable 序列化，见对端 models.py）。
+# 客户端 call() 已把 ok=false / server_error（passorder 提交但委托没进系统）
+# 转成异常；这里钉的是**异常之外**仍可能出现的三种假成功。
+
+def _submit_says(fake_qmt, data):
+    trader = _FakeTrader(rpc=dict(_WIN_OPEN, submit_order=data))
+    broker, _, _ = fake_qmt(trader, **_OPEN_CFG)
+    return broker
+
+
+def test_submit_rejected_status_raises_instead_of_looking_accepted(fake_qmt):
+    """对端回废单（status=57/REJECTED）必须抛错——废单不是成功。
+
+    数值码要过 STATUS_MAP（代码注释承诺的「status 口径同 STATUS_MAP」此前没兑现，
+    `str(57).lower()` 会原样吐出 "57"，下游按终态集合比对时谁也认不出来）。
+    """
+    for raw_status in (57, "57", "REJECTED"):
+        broker = _submit_says(fake_qmt, {
+            "status": raw_status, "user_order_id": "baymax-1",
+            "order_sys_id": "", "message": "可用资金不足"})
+
+        with pytest.raises(BrokerError) as ei:
+            broker.buy("glm", "2026-09-10", "600309.SH", 100, 80.0)
+        assert "废单" in str(ei.value) or "rejected" in str(ei.value).lower()
+        assert "可用资金不足" in str(ei.value)
+
+
+def test_submit_numeric_status_maps_through_status_map(fake_qmt):
+    """数值状态码按 STATUS_MAP 归一（对端有的版本给码、有的给串）。
+
+    浮点形状也要认（2026-09-11 审查 LOW）：JSON 里 50.0 很常见，只判 isdigit
+    会得成字符串 "50.0"，落不进 live_fills 的终态集合。"""
+    for raw_status in (50, "50", 50.0, "50.0"):
+        broker = _submit_says(fake_qmt, {
+            "status": raw_status, "user_order_id": "baymax-1",
+            "order_sys_id": "S1", "message": ""})
+
+        assert broker.buy("glm", "2026-09-10", "600309.SH", 100, 80.0)["status"] \
+            == "submitted", f"status={raw_status!r} 没归一"
+
+
+def test_submit_ok_flag_requires_order_id(fake_qmt):
+    """ok 口径 = 可跟踪的受理：无委托号时不得为 True（原为死条件 status!="rejected"）。"""
+    with_id = _submit_says(fake_qmt, {
+        "status": "SUBMITTED", "user_order_id": "baymax-1",
+        "order_sys_id": "S1", "message": ""})
+    assert with_id.buy("glm", "2026-09-10", "600309.SH", 100, 80.0)["ok"] is True
+
+    without_id = _submit_says(fake_qmt, {
+        "status": "SUBMITTED", "user_order_id": "baymax-1",
+        "order_sys_id": None, "message": "passorder submitted"})
+    assert without_id.buy("glm", "2026-09-10", "600309.SH", 100, 80.0)["ok"] is False
+
+
+def test_submit_without_order_id_does_not_claim_acceptance(fake_qmt):
+    """回 200 但没回填委托号：单可能已在柜台（对端查单异常时就是这个形状，
+    静默降级、无 server_error）。成交跟踪不了 → 必须如实说明，不能写「已受理」，
+    也不能让 message 看着像已成功（与 tdx_bridge 2026-09-11 同口径）。"""
+    broker = _submit_says(fake_qmt, {
+        "status": "SUBMITTED", "user_order_id": "baymax-1",
+        "order_sys_id": None, "message": "passorder submitted"})
+
+    out = broker.buy("glm", "2026-09-10", "600309.SH", 100, 80.0)
+
+    assert out["order_id"] == "" and out["order_sys_id"] == ""
+    assert "未返回委托号" in out["message"]
+    assert "不要重发" in out["message"]      # 对端无 plan_id 去重，重试=重复下单
+    assert "已受理" not in out["message"]
+
+
 def test_order_rpc_failure_is_redacted(fake_qmt):
     """底层 RPC 报错会把 Redis URL 连密码带出来——不能原样进日志。"""
     trader = _FakeTrader(rpc=_WIN_OPEN)

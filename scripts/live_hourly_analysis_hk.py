@@ -434,7 +434,9 @@ def execute_hk_decisions(agent: str, decisions: list, dry_run: bool = True) -> l
                 continue
             try:
                 result = broker.sell(None, "", sym, vol)
-                print(f"  ✅ [{agent}] 卖出 {code} 已受理: {result}")
+                from live_fills import ack_line
+
+                print("  " + ack_line(f"[{agent}] 卖出 {code} {vol}股", result))
                 # 记账价用 Tiger 现价兜底成本价（成交回报在 Tiger 侧，简化 v1）
                 price = float(pos.get("cost_price") or 0)
                 try:
@@ -488,7 +490,9 @@ def execute_hk_decisions(agent: str, decisions: list, dry_run: bool = True) -> l
                 continue
             try:
                 result = broker.buy(None, "", sym, vol, price=round(price * 1.005, 2))
-                print(f"  ✅ [{agent}] 买入 {code} 已受理: {result}")
+                from live_fills import ack_line
+
+                print("  " + ack_line(f"[{agent}] 买入 {code} {vol}股", result))
                 ledger = record_buy(load_ledger(), agent, code, vol, price,
                                     now_cn().isoformat())
                 save_ledger(ledger)

@@ -10,11 +10,16 @@
 用法: 执行路径调 wait_fill；调度入口（整点/哨兵/record-only）开头调 reconcile(broker)。
 reconcile 自带跨进程互斥（fcntl.flock，data/live_reconcile.lock）：三处入口都由 cron
 在整分钟边界触发，撞车时后来者直接跳过（读-改-写无锁并发会把同一笔成交补记两次）。
+**写者都要过同一把锁**（2026-09-11 审查 HIGH B）：reconcile 是「读 pending → 查桥
+（网络往返）→ 整表写回」，add_pending / record_event 若不加锁，网络窗口里刚挂上的
+新单会被整表回写冲掉（成交从此进不了账本）；故这两个写者阻塞等锁，非阻塞抢锁只留给
+reconcile（抢占方跳过本轮，不排队积压）。
 """
 import fcntl
 import json
 import os
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -91,7 +96,6 @@ def add_pending(order_id, agent: str, code: str, side: str, volume: int,
                      f"成交无法记账（限价 ¥{price}）——需人工核对当日委托",
                      side=side)
         return
-    pend = load_pending()
     entry = {
         "order_id": str(order_id), "agent": agent, "code": code, "side": side,
         "volume": int(volume), "price": float(price or 0), "volume_recorded": 0,
@@ -99,8 +103,12 @@ def add_pending(order_id, agent: str, code: str, side: str, volume: int,
     }
     if protect:
         entry["protect"] = True
-    pend.append(entry)
-    save_pending(pend)
+    # 持锁读-改-写：reconcile 的整表回写（查桥的网络窗口里）会用旧快照覆盖文件，
+    # 不持锁的新单会被静默抹掉 → 成交成账外单，且在途闸门也拦不住重复下单
+    with _file_lock():
+        pend = load_pending()
+        pend.append(entry)
+        save_pending(pend)
 
 
 def inflight(code: str, side: str | None = None) -> list:
@@ -135,24 +143,71 @@ def record_event(kind: str, code: str, msg: str, *, side: str = "",
     """
     now = now or now_cn()
     ev_id = key or f"{kind}:{code}:{now:%Y-%m-%d}"
-    try:
-        doc = json.loads(EVENTS_FILE.read_text(encoding="utf-8"))
-        doc = doc if isinstance(doc, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        doc = {}
     cutoff = now - timedelta(hours=EVENT_KEEP_H)
-    doc = {k: v for k, v in doc.items()
-           if isinstance(v, dict) and (_parse_ts(v.get("ts")) or cutoff) >= cutoff}
-    doc[ev_id] = {"ts": now.isoformat(), "kind": kind, "code": code, "side": side,
-                  "msg": msg, "alert": bool(alert)}
-    try:
-        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = EVENTS_FILE.with_name(EVENTS_FILE.name + ".tmp")
-        tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(EVENTS_FILE)
-    except OSError:
-        pass  # 事件落盘失败不能反过来打断交易路径
+    with _file_lock():          # 读-改-写要排队：与对账/哨兵并发写事件时不许互相覆盖
+        try:
+            doc = json.loads(EVENTS_FILE.read_text(encoding="utf-8"))
+            doc = doc if isinstance(doc, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            doc = {}
+        doc = {k: v for k, v in doc.items()
+               if isinstance(v, dict) and (_parse_ts(v.get("ts")) or cutoff) >= cutoff}
+        doc[ev_id] = {"ts": now.isoformat(), "kind": kind, "code": code, "side": side,
+                      "msg": msg, "alert": bool(alert)}
+        try:
+            EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = EVENTS_FILE.with_name(EVENTS_FILE.name + ".tmp")
+            tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(EVENTS_FILE)
+        except OSError:
+            pass  # 事件落盘失败不能反过来打断交易路径
     return ev_id
+
+
+def fill_recorded(order_id: str, now: datetime | None = None) -> bool:
+    """该委托号是否已经进过当日成交流水（= 已记过账，不能再接管重记）。
+
+    两种记账形状都算：reconcile 的 fill_confirm 线（顶层 order_id）与下单路径
+    成交后内联写的 fill 段（fill.order_id）。**不算**的是下单/挂 pending 的
+    「result」嵌字段——那是委托，不是成交。
+    """
+    order_id = str(order_id or "")
+    if not order_id:
+        return True                      # 空号按「不许接管」处理，交给人工
+    from live_trade_picks import LOG_DIR
+
+    now = now or now_cn()
+    path = LOG_DIR / f"live_trade_{now:%Y%m%d}.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False                     # 当天还没有流水文件 = 什么都没记过
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("order_id") or "") == order_id:
+            return True
+        if str((rec.get("fill") or {}).get("order_id") or "") == order_id:
+            return True
+    return False
+
+
+def ack_line(head: str, result: dict | None) -> str:
+    """下单回执的统一文案：受理以**委托号**为准（2026-09-11 审查 MEDIUM）。
+
+    桥没返回委托号时不能印「✅ 已受理」——单可能已在柜台、也可能根本没进去，
+    两种情况都必须让人看见（成交跟踪不了 / 需人工核对当日委托）。此前四条下单
+    路径各自写死「已受理: {result}」，人看日志以为单在跟踪。
+    """
+    r = result if isinstance(result, dict) else {}
+    oid = str(r.get("order_id") or "")
+    if oid:
+        return f"✅ {head} 已受理（委托号 {oid}）: {r}"
+    return f"⚠️ {head} 未拿到委托号（受理状态未知，勿当已成交）: {r}"
 
 
 # ---------- 成交查询 ----------
@@ -175,7 +230,10 @@ def wait_fill(broker, order_id, timeout_s: int = 30, interval: int = 3) -> dict 
     """下单后轮询桥当日委托匹配 order_id；返回有成交或有终态的回报，超时返回 None。"""
     if not order_id:
         return None
-    terminal = ("cancelled", "withdrawn", "rejected", "expired", "filled")
+    # partial_cancelled（桥 TDX 状态 4：部分成交后被撤/失效）也是终态：
+    # 不复投回等，已成交部分立刻按增量补记，未成交部分落未卖出事件
+    terminal = ("cancelled", "withdrawn", "rejected", "expired",
+                "partial_cancelled", "filled")
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
@@ -192,31 +250,60 @@ def wait_fill(broker, order_id, timeout_s: int = 30, interval: int = 3) -> dict 
     return None
 
 
-@contextmanager
-def _reconcile_lock():
-    """跨进程互斥（非阻塞）。拿不到锁 yield False，调用方直接跳过本轮。
+_LOCK_DEPTH = threading.local()
 
-    锁文件建不出来（磁盘/权限）时不阻断对账——退回无锁旧行为，宁可偶发重复
-    也不能让补记彻底停摆。锁随进程退出自动释放（flock 语义），无残留锁死风险。
+
+@contextmanager
+def _file_lock(blocking: bool = True):
+    """跨进程互斥（flock，data/live_reconcile.lock）。yield True=可以继续写，
+    yield False=非阻塞模式下被别人占着（调用方本轮跳过）。同进程同线程可重入
+    （reconcile 持锁期间调 record_event/save_pending 不会自锁）。
+
+    锁文件打不开（磁盘/权限）→ 告警并按**无锁继续**（yield True）：宁可偶发重复
+    记账，也不能让补记彻底停摆。与「被别人抢占」是两回事——后者才该跳过
+    （2026-09-11 审查 MEDIUM C：老实现把两种 OSError 混在一个分支里静默跳过，
+    锁文件一旦建不出来，对账就每轮空转且零日志）。
     """
+    depth = getattr(_LOCK_DEPTH, "depth", 0)
+    if depth:                      # 已持锁（同线程嵌套）：直接放行
+        _LOCK_DEPTH.depth = depth + 1
+        try:
+            yield True
+        finally:
+            _LOCK_DEPTH.depth = depth
+        return
     fh = None
+    locked = False
     try:
         RECONCILE_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
         fh = open(RECONCILE_LOCK_FILE, "a+")
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        if fh is not None:
-            fh.close()
-            fh = None
-    try:
-        yield fh is not None
+        fcntl.flock(fh, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        locked = True
+    except BlockingIOError:            # 非阻塞抢锁失败：别人正在写，正常跳过
+        yield False
+        return
+    except OSError as exc:
+        print(f"⚠️ live_fills: 锁文件不可用（{exc}），本次按无锁继续", file=sys.stderr)
+        yield True
+        return
     finally:
-        if fh is not None:
-            try:
-                fcntl.flock(fh, fcntl.LOCK_UN)
-            except OSError:
-                pass
+        if not locked and fh is not None:
             fh.close()
+    _LOCK_DEPTH.depth = 1
+    try:
+        yield True
+    finally:
+        _LOCK_DEPTH.depth = 0
+        try:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fh.close()
+
+
+def _reconcile_lock():
+    """reconcile 专用：非阻塞抢锁——别人正在对账就跳过本轮（不排队积压）。"""
+    return _file_lock(blocking=False)
 
 
 def reconcile(broker, now: datetime | None = None) -> int:
@@ -252,6 +339,7 @@ def _reconcile_locked(broker, now: datetime | None = None) -> int:
     hm = now.hour * 60 + now.minute
     fills, kept = 0, []
     for p in pend:
+        tag = f"[{p.get('agent')}] {p.get('code')} {p.get('side')}"
         o = orders.get(p.get("order_id"))
         if not o:
             # 桥查不到：隔日过期（当日委托不保留），当日则继续等
@@ -259,6 +347,17 @@ def _reconcile_locked(broker, now: datetime | None = None) -> int:
                 log_line({"ts": now.isoformat(), "mode": "fill_expire",
                           "agent": p.get("agent"), "code": p.get("code"),
                           "order_id": p.get("order_id"), "side": p.get("side")})
+                # 隔夜过期 = 这笔单的归宿没被任何一轮对账观察到。若还有未记账的量，
+                # 它可能昨天已成交（进程收盘前掉线、没人看到终态）→ 账外单，账本与
+                # 账户永久不一致（2026-09-11：老实现只写日志，成交静默消失）。
+                wanted = int(p.get("volume") or 0)
+                unrecorded = wanted - int(p.get("volume_recorded") or 0)
+                msg = (f"昨日委托 {p.get('order_id')}（{tag}）今日已查不到，"
+                       f"{unrecorded}/{wanted} 股未记账——可能昨日已成交，需核对账户与账本"
+                       if unrecorded > 0 else
+                       f"昨日委托 {p.get('order_id')}（{tag}）过期清理（成交已全部记账）")
+                record_event("fill_expire", p.get("code") or "", msg,
+                             side=str(p.get("side") or ""), alert=unrecorded > 0, now=now)
             else:
                 kept.append(p)
             continue
@@ -266,7 +365,6 @@ def _reconcile_locked(broker, now: datetime | None = None) -> int:
         filled = int(o.get("filled_volume") or 0)
         recorded = int(p.get("volume_recorded") or 0)
         wanted = int(p.get("volume") or 0)
-        tag = f"[{p.get('agent')}] {p.get('code')} {p.get('side')}"
         delta = filled - recorded
         if delta > 0:
             fprice = float(o.get("filled_price") or p.get("price") or 0)
@@ -289,9 +387,11 @@ def _reconcile_locked(broker, now: datetime | None = None) -> int:
             p["volume_recorded"] = filled
             p["filled_price"] = fprice
             fills += 1
-        if status in ("cancelled", "withdrawn", "rejected", "expired") or (
+        if status in ("cancelled", "withdrawn", "rejected", "expired",
+                      "partial_cancelled") or (
                 status == "filled" and filled >= wanted):
-            if status in ("cancelled", "withdrawn", "rejected", "expired"):
+            if status in ("cancelled", "withdrawn", "rejected", "expired",
+                          "partial_cancelled"):
                 if recorded < filled:
                     log_line({"ts": now.isoformat(), "mode": "fill_abort",
                               "agent": p.get("agent"), "code": p.get("code"),

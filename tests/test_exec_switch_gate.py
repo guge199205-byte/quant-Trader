@@ -215,6 +215,52 @@ def test_llm_trade_switch_off_writes_state_note(llm_state, monkeypatch):
     assert st["ok"] is None and not st.get("orders_attempted")
 
 
+def test_llm_trade_switch_off_does_not_mask_same_day_failure(llm_state, monkeypatch, capsys):
+    """当日已有真执行记录（下过单/失败过）时，关闸的 note 不得覆盖它。
+
+    2026-09-11 审查 MEDIUM：09:35 真跑过并失败（ok=False、orders_attempted=True），
+    10:05 补跑时若总闸被关，`_apply_exec_switch` 会把 state 改写成
+    note=exec_switch_off → alert_checks 认定为「预期行为」静默 → 当天那次真失败
+    从告警面上消失（t1/t2 都不报）。
+    """
+    import json
+
+    import live_hourly_analysis
+    import live_llm_trade as L
+
+    day = L.now_cn().date().isoformat()
+    llm_state.write_text(json.dumps({"day": day, "ok": False, "orders_attempted": True,
+                                     "note": "crashed: bridge_account_query"}),
+                         encoding="utf-8")
+    monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: False)
+    args = types.SimpleNamespace(execute=True, force=False)
+
+    assert L._apply_exec_switch(args) is True     # 仍然降级 dry-run（不真下单）
+
+    st = json.loads(llm_state.read_text(encoding="utf-8"))
+    assert st["ok"] is False and st["note"] == "crashed: bridge_account_query"
+    assert st["orders_attempted"] is True
+    assert "保留" in capsys.readouterr().out
+
+
+def test_llm_trade_switch_off_writes_note_when_no_real_run_yet(llm_state, monkeypatch):
+    """对照组：当天还没真跑过（老记录是别日的/dry-run 残留）→ 照常写标记。"""
+    import json
+
+    import live_hourly_analysis
+    import live_llm_trade as L
+
+    llm_state.write_text(json.dumps({"day": "2026-09-08", "ok": False,
+                                     "orders_attempted": True}), encoding="utf-8")
+    monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: False)
+
+    assert L._apply_exec_switch(types.SimpleNamespace(execute=True, force=False)) is True
+
+    st = json.loads(llm_state.read_text(encoding="utf-8"))
+    assert st["note"] == L.EXEC_SWITCH_OFF_NOTE and st["ok"] is None
+    assert not st.get("orders_attempted")
+
+
 def test_llm_trade_switch_on_keeps_execute(llm_state, monkeypatch, capsys):
     """对照组：开关开 → --execute 原样保留，不打字也不落状态。"""
     import live_hourly_analysis

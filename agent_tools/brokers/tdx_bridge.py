@@ -246,6 +246,24 @@ class TdxBridgeBroker(Broker):
         }
         try:
             data = self._post("/api/v1/plans/execute", payload, 15, idempotent=False)
+        except requests.HTTPError as exc:
+            # 409 DUPLICATE_PLAN（routes.py:219）=「这个 plan 已执行过」（入口去重，
+            # 见 plan_executor.py:49-52）——不是失败，是**非失败状态**：同号重试
+            # 必然走到这里。当异常抛会让哨兵每分钟重报失败、条件位永不消费、
+            # 已受理的那笔永远补不进账（2026-09-11 审查 HIGH A）。
+            resp = getattr(exc, "response", None)
+            try:
+                body = resp.json() if resp is not None else {}
+            except (ValueError, TypeError):
+                body = {}
+            err = (body or {}).get("error") if isinstance(body, dict) else {}
+            err = err if isinstance(err, dict) else {}
+            if resp is not None and resp.status_code == 409 \
+                    and str(err.get("code") or "") == "DUPLICATE_PLAN":
+                return {"order_id": "", "status": "duplicate",
+                        "message": str(err.get("message") or "plan 已执行过（桥去重）"),
+                        "plan_id": plan_id}
+            raise BrokerError(f"TDX 桥下单失败: {exc}") from exc
         except requests.RequestException as exc:
             raise BrokerError(f"TDX 桥下单失败: {exc}") from exc
         orders = data.get("orders") or []

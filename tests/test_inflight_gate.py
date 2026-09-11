@@ -205,3 +205,46 @@ def test_llm_trade_dry_run_passes_without_inflight(llm_trade, pending_file, caps
     out = capsys.readouterr().out
     assert "已有在途卖单未确认" not in out
     assert "📉" in out
+
+
+def test_llm_trade_dry_run_skips_inflight_buy(llm_trade, pending_file, monkeypatch, capsys):
+    """在途**买**单未确认 → 同代码的买入决策在校验段就被跳过。
+
+    09:35 主入口此前只拦卖出侧（pending_sell）：买单挂 pending（尚未成交）时
+    账本还没扣现金/加持仓，补跑或后续复盘再决策买入同一代码 → 桥上是第二笔
+    真委托（重复建仓）。整点轮两条方向都拦（live_hourly_analysis 的同名闸门），
+    主入口漏了买入侧——本用例把两边口径钉齐。
+    """
+    import symbol_policy
+
+    _write_pending(pending_file, {"code": CODE, "side": "buy", "order_id": "T1002",
+                                  "agent": AGENT, "volume": 500})
+    monkeypatch.setattr(symbol_policy, "load_policy_with_risk",
+                        symbol_policy.SymbolPolicy)
+    monkeypatch.setattr(llm_trade, "parse_decision", lambda text: [
+        {"action": "buy", "code": CODE, "pct": 0.2, "reason": "回调加仓"}])
+
+    args = types.SimpleNamespace(execute=False, agents=AGENT, top=20)
+
+    assert llm_trade._run(args) == 0
+
+    assert "已有在途买单未确认，跳过" in capsys.readouterr().out
+
+
+def test_llm_trade_dry_run_buy_passes_without_inflight(llm_trade, pending_file,
+                                                       monkeypatch, capsys):
+    """对照组：无在途买单 → 买入决策正常进入买入清单（闸门不误伤）。"""
+    import symbol_policy
+
+    monkeypatch.setattr(symbol_policy, "load_policy_with_risk",
+                        symbol_policy.SymbolPolicy)
+    monkeypatch.setattr(llm_trade, "parse_decision", lambda text: [
+        {"action": "buy", "code": CODE, "pct": 0.2, "reason": "回调加仓"}])
+
+    args = types.SimpleNamespace(execute=False, agents=AGENT, top=20)
+
+    assert llm_trade._run(args) == 0
+
+    out = capsys.readouterr().out
+    assert "已有在途买单未确认" not in out
+    assert "📈" in out

@@ -346,7 +346,9 @@ def execute_us_decisions(broker, agent: str, decisions: list, rows: list,
                 continue
             try:
                 result = broker.sell(None, "", code, vol, price=round(price * 0.99, 2))
-                print(f"  ✅ [{agent}] 卖出 {code} 已受理: {result}")
+                from live_fills import ack_line
+
+                print("  " + ack_line(f"[{agent}] 卖出 {code}", result))
                 ledger = record_sell(load_ledger(), agent, code, vol, price,
                                      now_cn().isoformat())
                 save_ledger(ledger)
@@ -395,7 +397,9 @@ def execute_us_decisions(broker, agent: str, decisions: list, rows: list,
                 continue
             try:
                 result = broker.buy(None, "", code, vol, price=round(price * 1.01, 2))
-                print(f"  ✅ [{agent}] 买入 {code} 已受理: {result}")
+                from live_fills import ack_line
+
+                print("  " + ack_line(f"[{agent}] 买入 {code}", result))
                 ledger = record_buy(load_ledger(), agent, code, vol, price,
                                     now_cn().isoformat())
                 save_ledger(ledger)

@@ -136,6 +136,9 @@ data/agent_last_decisions.json
 logs/live_analysis.lock
 # reconcile 跨进程互斥锁（live_fills，每进程退出自动释放；文件本身无内容）
 data/live_reconcile.lock
+# 委托事件（live_fills，含委托号/代码/告警文案；alert.sh 消费）——曾漏忽略，
+# 一次 git add -A 就会把实盘委托事件提交进库
+data/live_order_events.json
 
 # L2 逐笔因子采集运行时产物
 data/l2_factors_live.json

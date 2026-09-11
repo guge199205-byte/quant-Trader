@@ -107,6 +107,26 @@ def _to_bool(v: Any, default: bool = False) -> bool:
     return str(v).strip().lower() in _TRUE
 
 
+def _normalize_order_status(v: Any) -> str:
+    """委托状态归一：数值码走 STATUS_MAP，字符串取小写；空值按 submitted。
+
+    对端不同版本/不同 gateway 给的形状不一：真机 gateway 给 "SUBMITTED" 串，
+    查单类接口给 48-57 数值码，dry-run gateway 给 "DRY_RUN"。数值原样小写会得到
+    "57" 这种谁也认不出的「状态」，落不进 live_fills 的终态集合。
+    """
+    if v is None or v == "" or isinstance(v, bool):
+        return "submitted"
+    if isinstance(v, (int, float)):
+        return STATUS_MAP.get(int(v), "submitted")
+    s = str(v).strip()
+    try:
+        # 数值码也认字符串与浮点形状（"57" / "57.0"）——只判 isdigit 会把 JSON
+        # 里的 57.0 得成字符串 "57.0"，谁也不认识，落不进 live_fills 的终态集合
+        return STATUS_MAP.get(int(float(s)), "submitted")
+    except (TypeError, ValueError, OverflowError):
+        return s.lower() or "submitted"
+
+
 class QmtBridgeBroker(Broker):
     """大 QMT 桥。下单已接线但默认关闭（allow_trading）；接口形状对齐 TdxBridgeBroker。"""
 
@@ -395,18 +415,41 @@ class QmtBridgeBroker(Broker):
     @staticmethod
     def _submit_result(raw: Any, code: str, side: str, volume: int,
                        remark: str) -> Dict[str, Any]:
-        """把对端 OrderSubmitResult 归一成稳定形状（status 口径同 STATUS_MAP）。"""
+        """把对端 OrderSubmitResult 归一成稳定形状（status 口径同 STATUS_MAP）。
+
+        诚实性三则（与 TdxBridgeBroker._place_order 的 2026-09-11 口径对齐）：
+        - 数值状态码（对端有的版本给码、有的给串）走 STATUS_MAP；
+        - status 归一为 rejected → 抛 BrokerError（废单不是成功）；
+        - order_sys_id 为空 → message 如实说明「委托号未知、成交跟踪不了」，
+          不写「已受理」也不再转述对端那句看着像成功的 "passorder submitted"
+          （对端在查单异常时会静默降级成这个形状，order_sys_id 恒 None）。
+        """
         info = dict(raw) if isinstance(raw, dict) else {"message": str(raw)}
+        status = _normalize_order_status(info.get("status"))
+        order_id = str(info.get("order_sys_id") or "")
+        message = str(info.get("message") or "")
+        if status == "rejected":
+            raise BrokerError(
+                f"QMT 下单被拒（废单 rejected，{side} {code} {volume}）："
+                f"{message or '对端未给原因'}")
+        if not order_id:
+            # 对端直连 RPC 无 plan 队列、不做去重 → 重试会变成第二笔真委托
+            message = (f"QMT 未返回委托号（受理状态未知）——单可能已在柜台，"
+                       f"成交无法跟踪，不要重发；请按备注 {remark} 人工核对当日委托。"
+                       + (f" 对端说明：{message}" if message else ""))
         return {
-            "ok": True,
-            "order_id": str(info.get("order_sys_id") or ""),
-            "order_sys_id": str(info.get("order_sys_id") or ""),
+            # ok = 可跟踪的受理（有委托号）。原实现写 status != "rejected" 是死条件
+            # （rejected 已在上面 raise），无委托号时也 True → 若有调用方按 ok 判成功
+            # 就会被误导（2026-09-11 审查 LOW）。当前唯一消费方 qmt_probe 只读只读接口。
+            "ok": bool(order_id),
+            "order_id": order_id,
+            "order_sys_id": order_id,
             "user_order_id": str(info.get("user_order_id") or remark),
             "stock_code": code,
             "side": side,
             "volume": volume,
-            "status": str(info.get("status") or "").lower() or "submitted",
-            "message": str(info.get("message") or ""),
+            "status": status,
+            "message": message,
             "raw": info,
         }
 

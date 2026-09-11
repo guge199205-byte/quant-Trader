@@ -1543,7 +1543,9 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
         limit = round(price * 0.99, 2)  # 限价卖：现价 -1%
         try:
             result = broker.sell(None, None, code, vol, price=limit)
-            print(f"  ✅ [{agent}] 卖出 {code} 已受理: {result}")
+            from live_fills import ack_line
+
+            print("  " + ack_line(f"[{agent}] 卖出 {code}", result))
             fill = wait_fill(broker, result.get("order_id", ""),
                              timeout_s=FILL_POLL_TIMEOUT_S)
             if fill and int(fill.get("filled_volume") or 0) > 0:
@@ -1621,8 +1623,10 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
         cash -= o["cost"]
         try:
             result = broker.buy(None, None, code, o["volume"], price=o["limit_price"])
-            print(f"  ✅ [{agent}] 买入 {code} {o['volume']}股 "
-                  f"限价 ¥{o['limit_price']:.2f} 已受理: {result}")
+            from live_fills import ack_line
+
+            print("  " + ack_line(f"[{agent}] 买入 {code} {o['volume']}股 "
+                                  f"限价 ¥{o['limit_price']:.2f}", result))
             fill = wait_fill(broker, result.get("order_id", ""),
                              timeout_s=FILL_POLL_TIMEOUT_S)
             if fill and int(fill.get("filled_volume") or 0) > 0:

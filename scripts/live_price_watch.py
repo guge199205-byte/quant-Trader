@@ -26,6 +26,7 @@
 cron（本机 JST，北京=JST-1）: * 10-12,14-16 * * 1-5
 """
 import argparse
+import copy
 import json
 import os
 import re
@@ -49,7 +50,6 @@ from ashare_rules import (at_limit_down, after_hours_eligible, board_of,  # noqa
 WATCH_FILE = ROOT / "data" / "live_watch.json"
 LOG_DIR = ROOT / "logs"
 SKIP_STATE_FILE = LOG_DIR / "live_watch_notify_state.json"  # 账户级提醒的跨进程去重（见 _notify_once）
-SELL_LIMIT_DOWN = -9.9   # 跌停不接（与 live_hourly_analysis 同口径）
 POLL_SLEEP_SEC = 1       # 桥限流：每条规则之间隔 1 秒
 SKIP_NOTIFY_HOUR = True  # 同一规则同一小时的重复跳过只提醒一次（防刷屏）
 
@@ -101,6 +101,49 @@ def save_watch(rules: dict) -> None:
     tmp = WATCH_FILE.with_name(WATCH_FILE.name + ".tmp")
     tmp.write_text(json.dumps(rules, ensure_ascii=False, indent=1), encoding="utf-8")
     tmp.replace(WATCH_FILE)
+
+
+def _rule_key(rule: dict) -> tuple:
+    """规则身份 = (代码, 创建时间)。同一 agent 可对同一代码挂两条（止损 + 止盈），
+    只有 created_ts 能区分；两者都由 save_watch_rules 写入，是稳定键。"""
+    return (str(rule.get("code") or ""), str(rule.get("created_ts") or ""))
+
+
+def flush_watch(snapshot: dict, result: dict) -> None:
+    """本轮**只施加自己的差量**回写（复刻 quantmind 止损执行器 LOW 12 口径）。
+
+    2026-09-11：run_watch 原来结尾整表回写，用的是轮询开始时的快照。但一轮要跑
+    十几秒（每条规则 1s 桥限流 + 逐只行情），期间整点分析 / 收盘复盘可能刚调
+    save_watch_rules 给某个 agent 换上新条件位 —— 陈旧快照一写回去，新挂的止损
+    就被静默冲掉（持仓裸奔到下一次分析；收盘复盘挂的直接等次日）。
+
+    合并规则（先读回当前文件，再逐 agent 施加本轮差量）：
+      - 本轮消费掉的（snapshot 有、result 没有）→ 从当前文件删；
+      - 本轮改过的（如 move_stop 上移、方向校正、跳过提醒去重位）→ 用本轮值覆盖；
+      - 本轮没碰的（当前文件有、snapshot 没有）→ 原样保留（那是别人的写入）。
+    """
+    cur = load_watch()
+    out = dict(cur)
+    for agent in set(snapshot) | set(result):
+        before = {_rule_key(r): r for r in snapshot.get(agent, [])}
+        after = {_rule_key(r): r for r in result.get(agent, [])}
+        if before == after:
+            continue                    # 本轮没动过该 agent：整组不碰
+        merged = []
+        for r in cur.get(agent, []):
+            k = _rule_key(r)
+            if k in before and k not in after:
+                continue                # 本轮消费掉的 → 删
+            merged.append(after[k] if k in before else r)
+        have = {_rule_key(r) for r in merged}
+        for k, r in after.items():
+            if k not in before and k not in have:
+                merged.append(r)        # 本轮新增的（run_watch 不新增，保持自洽）
+        if merged:
+            out[agent] = merged
+        else:
+            out.pop(agent, None)
+    save_watch(out)
 
 
 def save_watch_rules(agent: str, decisions: list) -> int:
@@ -308,23 +351,59 @@ def _same_code(a, b) -> bool:
     return str(a or "").split(".")[0] == str(b or "").split(".")[0]
 
 
-def _recover_duplicate(broker, code: str, vol: int, limit: float) -> str:
-    """桥回 duplicate（上次已受理）后回捞当日委托号。
+def _fnum(v, default: float = 0.0) -> float:
+    """桥回报里的数字字段容错解析（字符串/浮点都收，脏值回退默认）。"""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
 
-    优选「同代码+同价+同量」的卖单；退化到同代码任一卖单（价格可能被手数合规
-    调整过）。回捞不到返回 ""，由调用方告警。
+
+def _recover_duplicate(broker, code: str, vol: int, limit: float) -> dict:
+    """桥判重复（409 DUPLICATE_PLAN / 内联 duplicate）后，回捞**可接管**的当日委托。
+
+    优选「同代码+同价+同量」的卖单；同代码卖单**只此一笔**时才退化接它（价格可能
+    被手数合规调整过）。四处找「能接管的单」会把别的 agent 的成交记到本 agent 头上。
+
+    接管判据（缺一不可，2026-09-11 审查 HIGH A）：
+      1. 该委托号没进过当日成交流水（fill_recorded）——接管是从
+         volume_recorded=0 开始补记的，已记过账的再挂一次 = 同一笔卖出双记
+         （半仓止损先成交记账，剩余仓位的另一条规则再触发就会撞上）；
+      2. 不在在途表里（在的话调用方早被在途闸门挡住，这里只做防御性检查）。
+    候选**不唯一**时不猜（2026-09-11 审查 MEDIUM）：同代码多笔可接管单并存
+    （两次「下单成功但 add_pending 前进程崩」的窗口）时按「最新一笔」接管会把
+    别人的成交记进本规则的分账——错账比不接管更难查，宁可返回 {} 落
+    dup_unresolved 事件等人工。回捞不到/不可接管返回 {}，由调用方告警并保留条件位。
     """
     try:
         orders = [o for o in broker.get_orders()
                   if str(o.get("side") or "") == "sell" and _same_code(o.get("stock_code"), code)]
     except Exception:  # noqa: BLE001  桥查询失败：交给调用方记事件，不阻断
-        return ""
+        return {}
     if not orders:
-        return ""
+        return {}
+    orders.sort(key=lambda o: str(o.get("time") or ""), reverse=True)   # 新的优先
     exact = [o for o in orders
-             if abs(float(o.get("order_price") or 0) - float(limit or 0)) < 0.005
-             and int(o.get("total_volume") or 0) == int(vol)]
-    return str((exact or orders)[0].get("order_id") or "")
+             if abs(_fnum(o.get("order_price")) - _fnum(limit)) < 0.005
+             and int(_fnum(o.get("total_volume"))) == int(vol)]
+    if len(exact) > 1:
+        return {}
+    if exact:
+        cand = exact[0]
+    elif len(orders) == 1:
+        cand = orders[0]          # 同代码卖单只此一笔：只能是它（量价取桥回报真值）
+    else:
+        return {}                 # 多笔且无一精确匹配：同样不猜
+    oid = str(cand.get("order_id") or "")
+    if not oid:
+        return {}
+    from live_fills import fill_recorded, load_pending
+
+    if any(str(p.get("order_id") or "") == oid for p in load_pending()):
+        return {}
+    if fill_recorded(oid):
+        return {}
+    return cand
 
 
 def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
@@ -396,28 +475,37 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
                    "trigger": rule.get(trig), "error": str(exc)})
         return False  # 下次重试
     if str(result.get("status") or "") == "duplicate":
-        # 桥判定「这个 plan 已执行过」= 上次崩溃前已受理。规则必须消费（否则每分钟
-        # 重试同一 plan_id 空转），但要回捞委托号补挂 pending，否则这笔成交永远
-        # 进不了分账账本；回捞不到就如实告警。
+        # 桥判定「这个 plan 已执行过」（409 DUPLICATE_PLAN 或内联 duplicate）=
+        # 上次那笔已在柜台。回捞**未记账**的委托号补挂 pending；条件位一律保留——
+        # 卖出真完成（或持仓清零）之前继续守，期间由在途闸门保证不下第二笔，
+        # 持仓一旦清零下次触发就会走「已不在持仓中」自动作废。消费掉条件位等于
+        # 把没卖出去的持仓从保护里摘出去（2026-09-11 审查 HIGH A）。
         recovered = _recover_duplicate(broker, code, vol, limit)
-        if recovered:
-            print(f"  ♻️ [{agent}] {code}: 桥回 duplicate（上次已受理），回捞委托号 "
-                  f"{recovered} 补挂成交跟踪")
+        oid = str(recovered.get("order_id") or "")
+        if oid:
+            # 挂 pending 用**桥回报的真值**（量/价），不用本规则此刻算出的 vol/limit：
+            # 回捞到的单可能量价都不同（手数合规调整过/改过仓位的旧单），按我们的数挂
+            # 会永远等不到「filled >= wanted」→ 条目压在在途表把该代码的卖出闸门封到收盘
+            rvol = int(_fnum(recovered.get("total_volume"), vol) or vol)
+            rprice = _fnum(recovered.get("order_price")) or limit
+            print(f"  ♻️ [{agent}] {code}: 桥判重复（上次已受理），回捞委托号 "
+                  f"{oid}（{rvol} 股 限价 ¥{rprice:.2f}）补挂成交跟踪"
+                  f"（条件位保留至卖出完成）")
             from live_fills import add_pending
 
-            add_pending(recovered, agent, code, "sell", vol, limit,
+            add_pending(oid, agent, code, "sell", rvol, rprice,
                         now_cn().isoformat(), protect=at_ld)
         else:
-            print(f"  ⚠️ [{agent}] {code}: 桥回 duplicate 但回捞不到当日委托号——"
-                  f"这笔成交不会进分账账本，需人工核对")
+            print(f"  ⚠️ [{agent}] {code}: 桥判重复但回捞不到可接管的委托——"
+                  f"状态未知（可能已在柜台、也可能没进去），条件位保留，需人工核对")
             record_event("dup_unresolved", code,
                          f"[{agent}] {code} 卖出被桥判重复（上次已受理）但当日委托里"
-                         f"找不到对应单，成交未记账，需人工核对")
+                         f"找不到可接管的单：若已在柜台则成交未记账，需人工核对")
         _log_line({"ts": now_cn().isoformat(), "mode": f"watch_{trig}", "agent": agent,
                    "code": code, "volume": vol, "price": limit, "plan_id": plan_id,
                    "trigger": rule.get(trig), "duplicate": True,
-                   "recovered_order_id": recovered, "result": result})
-        return True
+                   "recovered_order_id": oid, "result": result})
+        return False
     if not str(result.get("order_id") or ""):
         # 桥回 200 但没给委托号：单可能已在柜台，系统却跟踪不了（挂不上 pending、
         # reconcile 补记不了）。**不消费条件位**——下一分钟用同一 plan_id 重试；
@@ -439,7 +527,9 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
         record_event("protect_queue", code,
                      f"[{agent}] {code} 已跌停（{chg:+.2f}%），{label}卖出已在跌停价 "
                      f"¥{limit:.2f} 挂队 {vol} 股：有买盘即成交，封死则排队等开板")
-    print(f"  ✅ [{agent}] 卖出 {code} {vol} 股 限价 ¥{limit:.2f} 已受理: {result}")
+    from live_fills import ack_line
+
+    print(f"  {ack_line(f'[{agent}] 卖出 {code} {vol} 股 限价 ¥{limit:.2f}', result)}")
     if vol != raw_qty:
         print(f"  ⚖️ [{agent}] {code}: 意图 {raw_qty} 股 → 手数合规实际 {vol} 股"
               f"（{board_of(code)} 口径）")
@@ -497,6 +587,8 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
     rules = load_watch()
     if not rules:
         return 0
+    # 快照供结尾差量回写用（本轮可能跑十几秒，期间别人可能改了同一文件）
+    snapshot = copy.deepcopy(rules)
     try:
         acct = broker._account_query()
     except Exception as exc:  # noqa: BLE001  桥重启窗口/断线：本轮放弃，下分钟再守
@@ -587,7 +679,7 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
             rules[agent] = kept
         else:
             rules.pop(agent, None)
-    save_watch(rules)
+    flush_watch(snapshot, rules)
     return fired
 
 

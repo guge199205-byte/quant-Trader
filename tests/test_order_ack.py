@@ -117,6 +117,36 @@ def test_add_pending_with_order_id_stays_quiet(files):
     assert not (files / "events.json").exists()
 
 
+# ---------- 下单回执文案：受理以委托号为准（2026-09-11 审查 MEDIUM）----------
+# 四条下单路径的 print 写死「✅ 已受理」——桥没回委托号时照样打✅，人看日志
+# 以为成交在跟踪，实际是账外单。文案必须由委托号决定。
+
+def test_ack_line_marks_accepted_only_with_order_id():
+    from live_fills import ack_line
+
+    ok = ack_line("[pro] 卖出 600362.SH", {"order_id": "T1", "status": "submitted"})
+    assert ok.startswith("✅") and "已受理" in ok and "T1" in ok
+
+    bare = ack_line("[pro] 卖出 600362.SH", {
+        "order_id": "", "status": "unknown", "message": "桥未返回委托号（受理状态未知）"})
+    assert "已受理" not in bare and bare.startswith("⚠️")
+    assert "桥未返回委托号" in bare
+
+
+def test_order_paths_have_no_hardcoded_accepted_print():
+    """源码级钉子：下单回执不许写死「已受理: {result}」（结果里没有委托号时是假话）。
+
+    HK 也要扫（2026-09-11 审查 LOW）：漏了它，这个钉子会给出「全仓下单回执已统一」
+    的假安心，而 HK 路径照样在无委托号时打 ✅。"""
+    root = Path(__file__).resolve().parents[1]
+    for name in ("live_price_watch", "live_llm_trade", "live_trade_picks",
+                 "live_hourly_analysis", "live_hourly_analysis_us",
+                 "live_hourly_analysis_hk"):
+        text = (root / "scripts" / f"{name}.py").read_text(encoding="utf-8")
+        assert "已受理: {result}" not in text, f"{name} 里还有写死的受理回执"
+        assert "已受理: {res}" not in text, f"{name} 里还有写死的受理回执"
+
+
 # ---------- 哨兵面：拿不到委托号 → 条件位保留 ----------
 
 @pytest.fixture
@@ -162,3 +192,63 @@ def test_sentinel_consumes_rule_with_order_id(sentinel, files):
 
     assert ok is True
     assert live_fills.load_pending()[0]["order_id"] == "T9"
+
+
+# ---------- 回捞不猜：候选不唯一 → 人工（2026-09-11 审查 MEDIUM）----------
+# _recover_duplicate 原来按「同价同量优先，否则取最新一笔」回捞。两笔未跟踪单
+# 并存时（两次「下单成功但 add_pending 前进程崩」），会把**别人的**成交记进本
+# 规则的分账——错账比不接管更难查。改为：精确匹配必须唯一，否则交人工。
+
+class _OrdersBroker:
+    def __init__(self, orders):
+        self._orders = orders
+
+    def get_orders(self):
+        return self._orders
+
+
+def _order(oid, price, vol, time_):
+    return {"order_id": oid, "side": "sell", "stock_code": CODE,
+            "order_price": price, "total_volume": vol, "time": time_}
+
+
+@pytest.fixture
+def recover(monkeypatch):
+    import live_price_watch as W
+
+    monkeypatch.setattr(W, "_log_line", lambda rec: None)
+    return W._recover_duplicate
+
+
+def test_recover_unique_exact_candidate_is_adopted(recover):
+    """常态：同代码卖单只此一笔且同价同量 → 回捞到它。"""
+    cand = recover(_OrdersBroker([_order("T7", 15.5, 300, "13:35:09")]),
+                   CODE, 300, 15.5)
+
+    assert cand["order_id"] == "T7"
+
+
+def test_recover_single_loose_candidate_is_adopted(recover):
+    """同代码卖单只一笔、价格手数被合规调整过 → 仍接它（量价由调用方取桥真值）。"""
+    cand = recover(_OrdersBroker([_order("T8", 15.50, 330, "13:35:09")]),
+                   CODE, 300, 15.5)
+
+    assert cand["order_id"] == "T8" and cand["total_volume"] == 330
+
+
+def test_recover_ambiguous_exact_match_refuses(recover):
+    """两笔同价同量（都是候选）→ 不许猜，返回 {} 落 dup_unresolved 人工事件。"""
+    cand = recover(_OrdersBroker([_order("T1", 15.5, 300, "13:35:09"),
+                                  _order("T2", 15.5, 300, "13:40:00")]),
+                   CODE, 300, 15.5)
+
+    assert cand == {}
+
+
+def test_recover_multiple_none_exact_refuses(recover):
+    """多笔同代码卖单、无一精确匹配 → 同样不猜。"""
+    cand = recover(_OrdersBroker([_order("T1", 15.30, 200, "13:35:09"),
+                                  _order("T2", 16.10, 500, "13:40:00")]),
+                   CODE, 300, 15.5)
+
+    assert cand == {}

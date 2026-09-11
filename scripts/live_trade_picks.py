@@ -129,6 +129,23 @@ def compute_order(bars: list, cash: float, pct: float, code: str = "") -> dict:
     }
 
 
+def _pend_or_warn(order_id, agent: str, code: str, side: str,
+                  vol: int, price: float) -> None:
+    """未确认成交 → 挂 pending 交 reconcile 兜底；桥没给委托号则如实说明。
+
+    add_pending 对空委托号会落一条 untracked_order 事件（不写假在途单），CLI 输出
+    必须与之一致——原来无条件打印「已挂 pending」，操作员会以为成交已受跟踪。
+    """
+    from live_fills import add_pending
+
+    add_pending(order_id, agent, code, side, vol, price, now_cn().isoformat())
+    if order_id:
+        print(f"   ⏳ {code}: 未确认成交 → 已挂 pending，reconcile 按真实成交兜底记账")
+    else:
+        print(f"   ⚠️ {code}: 桥未返回委托号——成交无法跟踪，"
+              f"已落事件需人工核对当日委托")
+
+
 def sell_flow(broker, args, log_line) -> int:
     """卖出流程：桥持仓 → TdxAiData 行情 → 限价卖出。
     标的：--sell-all（默认）全部持仓 | --sell-codes 指定；
@@ -152,7 +169,7 @@ def sell_flow(broker, args, log_line) -> int:
     ledger = load_ledger()
     # 在途卖单提示（不拦截，人工路径以操作员意图为准）：自动路径（哨兵/整点轮）
     # 可能刚下过同一代码的止损单，再下一单柜台会按可用量驳回或造成超卖
-    from live_fills import add_pending, inflight_codes, wait_fill
+    from live_fills import inflight_codes, wait_fill
 
     pending_sell = inflight_codes("sell")
 
@@ -208,14 +225,24 @@ def sell_flow(broker, args, log_line) -> int:
             print(f"⏭️  {code}: 无有效价格，跳过")
             continue
         chg = (price - prev_close) / prev_close * 100
-        if chg <= -9.9:
+        # 板块口径统一走 ashare_rules（主板 ±10 / 创业板·科创 ±20 / 北交 ±30，含 ST）：
+        # 原 `chg <= -9.9` 硬编码对 20% 板块会把 -10%~-20% 的可卖仓位误判成跌停跳过
+        from ashare_rules import at_limit_down, protect_sell_price, round_sell_qty
+
+        if at_limit_down(code, chg):
             print(f"⏭️  {code}: 跌停（{chg:+.1f}%），卖不出，跳过")
             continue
-        vol = int(avail * args.sell_pct / 100) * 100
+        # 手数合规：主板/创业板整手、科创/北交 ≥200/100 起 1 股递增 + 碎股一次性全清
+        # （原 int(avail*pct/100)*100 在科创 250 股只想卖 200，剩 50 股烂账）
+        vol = round_sell_qty(code, int(avail * args.sell_pct), avail)
         if vol <= 0:
             print(f"⏭️  {code}: 卖出量不足 1 手，跳过")
             continue
         limit = round(price * 0.99, 2)  # 限价卖：现价 -1%
+        floor = protect_sell_price(code, prev_close)   # 当日跌停价
+        if floor is not None and limit < floor:
+            # 近跌停时现价-1% 会低于跌停价 → 桥的本地价格保护带直接拒单（带外报价）
+            limit = floor
         print(f"📉 {code}: 现价 ¥{price:.2f} ({chg:+.2f}%) 拟卖 {vol}/{avail} 股 限价 ¥{limit:.2f}")
         if code in pending_sell:
             print(f"   ⚠️  {code}: 已有在途卖单未确认（data/live_pending_orders.json）"
@@ -237,7 +264,8 @@ def sell_flow(broker, args, log_line) -> int:
         # 由 reconcile 兜底（2026-09-11 前按委托限价即刻记账：跌停封死没卖出去也照样
         # 扣减持仓、释放额度，账本与真实持仓脱节）
         holder = find_holder(ledger, code)
-        fill = wait_fill(broker, result.get("order_id", ""))
+        order_id = str(result.get("order_id") or "")
+        fill = wait_fill(broker, order_id)
         fv = int((fill or {}).get("filled_volume") or 0)
         if fv > 0:
             fp = float(fill.get("filled_price") or limit)
@@ -247,9 +275,7 @@ def sell_flow(broker, args, log_line) -> int:
                 print(f"   📒 分账释放: {holder} -{fv}股 {code} 成交 ¥{fp:.2f}"
                       f"（剩余 ¥{agent_remaining(ledger, holder):,.0f}）")
         elif holder:
-            add_pending(result.get("order_id"), holder, code, "sell", vol, limit,
-                        now_cn().isoformat())
-            print(f"   ⏳ {code}: 未确认成交 → 已挂 pending，reconcile 按真实成交兜底记账")
+            _pend_or_warn(order_id, holder, code, "sell", vol, limit)
         else:
             print(f"   ℹ️  {code}: 无分账 agent 持有该代码，跳过记账（仅桥账户变动）")
         time.sleep(1)  # 桥限流 60 req/min
@@ -357,7 +383,7 @@ def main() -> None:
         print(f"   {a}: 已用 ¥{agent_used(ledger, a):,.0f} 剩余 ¥{agent_remaining(ledger, a):,.0f}")
     placed = []
     planned_cost = 0.0  # dry-run 也累计，现金兜底在演练时同样生效
-    from live_fills import add_pending, wait_fill   # 记账口径：下单≠成交（见下单段）
+    from live_fills import wait_fill   # 记账口径：下单≠成交（见下单段）
 
     for i, p in enumerate(picks):
         agent = agents[i % len(agents)]
@@ -408,16 +434,15 @@ def main() -> None:
                   "price": o["limit_price"], "result": result})
         # 分账记账：记到该 agent 名下（券商持仓按股票合并，账本按 agent 分开）。
         # 下单≠成交：等成交回报按真实成交价/量入账，未确认成交挂 pending 由 reconcile 兜底
-        fill = wait_fill(broker, result.get("order_id", ""))
+        order_id = str(result.get("order_id") or "")
+        fill = wait_fill(broker, order_id)
         fv = int((fill or {}).get("filled_volume") or 0)
         if fv > 0:
             fp = float(fill.get("filled_price") or o["price"])
             ledger = record_buy(ledger, agent, code, fv, fp, now_cn().isoformat())
             save_ledger(ledger)
         else:
-            add_pending(result.get("order_id"), agent, code, "buy", o["volume"],
-                        o["limit_price"], now_cn().isoformat())
-            print(f"   ⏳ {code}: 未确认成交 → 已挂 pending，reconcile 按真实成交兜底记账")
+            _pend_or_warn(order_id, agent, code, "buy", o["volume"], o["limit_price"])
         time.sleep(1)  # 桥限流 60 req/min
 
     # 6. 委托验证

@@ -97,6 +97,9 @@ def manual(monkeypatch, tmp_path):
     monkeypatch.setattr(P, "record_buy", _record_buy)
 
     def _add_pending(order_id, agent, code, side, volume, price, ts, protect=False):
+        # 与真实 add_pending 同口径：空委托号不写假在途单（只落 untracked_order 事件）
+        if not order_id:
+            return
         rec["pending"].append({"order_id": order_id, "agent": agent, "code": code,
                                "side": side, "volume": volume, "price": price})
 
@@ -194,6 +197,19 @@ def test_sell_flow_untracked_code_no_pending(manual, monkeypatch, capsys):
     assert "无分账 agent 持有该代码" in capsys.readouterr().out
 
 
+def test_sell_flow_no_order_id_warns_instead_of_claiming_pending(manual, monkeypatch, capsys):
+    """桥回 200 但无委托号 → 不谎报「已挂 pending」（没号根本挂不上，成交跟踪不了）。"""
+    broker = FakeBroker(result={"order_id": "", "status": "unknown",
+                                "message": "桥未返回委托号（受理状态未知）"})
+    monkeypatch.setattr(live_fills, "wait_fill", lambda b, oid, **kw: None)
+
+    assert P.sell_flow(broker, _args(), manual["logs"].append) == 0
+
+    out = capsys.readouterr().out
+    assert "桥未返回委托号" in out and "已挂 pending" not in out
+    assert manual["pending"] == []
+
+
 # ---------- 买入路径（main()）：同一记账口径 ----------
 
 class FakeBuyBroker(FakeBroker):
@@ -251,4 +267,62 @@ def test_buy_pends_when_not_filled(buy_env, monkeypatch):
     assert len(broker.bought) == 1
     assert rec["ledger"] == [] and rec["saved"] == 0
     assert rec["pending"][0]["side"] == "buy" and rec["pending"][0]["agent"] == AGENT
+
+
+# ---------- 板块口径：跌停判据 / 手数 / 限价带 ----------
+
+class BoardBroker(FakeBroker):
+    """按给定板块标的与昨收/现价返回盘面的桥桩。"""
+
+    def __init__(self, code, prev_close, price, avail=500):
+        super().__init__(avail=avail)
+        self._code, self._prev, self._price = code, prev_close, price
+
+    def _account_query(self):
+        return {"asset": {"asset": 200000.0, "cash": 50000.0},
+                "positions": [{"stock_code": self._code, "total_volume": self._avail,
+                               "available_volume": self._avail}]}
+
+    def get_klines(self, code, interval="daily", **kw):
+        return [{"close": self._prev, "volume": 1000000},
+                {"close": self._price, "volume": 1200000}]
+
+
+def test_sell_flow_chinext_minus_12pct_is_not_limit_down(manual, monkeypatch, capsys):
+    """创业板 ±20%：-12% 不是跌停。原 `chg <= -9.9` 硬编码会把可卖的仓位误判成
+    「跌停卖不出」而跳过——止损单在 -10%~-20% 区间永远发不出去。"""
+    code = "300777.SZ"
+    broker = BoardBroker(code, prev_close=20.00, price=17.60)      # -12.0%
+    monkeypatch.setattr(live_fills, "wait_fill", lambda b, oid, **kw: _fill(500, 17.55))
+
+    assert P.sell_flow(broker, _args(), manual["logs"].append) == 0
+
+    assert len(broker.sold) == 1 and broker.sold[0]["code"] == code
+    assert "跌停" not in capsys.readouterr().out
+
+
+def test_sell_flow_star_odd_lot_sold_at_once(manual, monkeypatch):
+    """科创板 250 股：1 股递增、剩余不足 200 会成「只能一次性卖」的碎股 →
+    一次性全清 250 股。原 `int(avail*pct/100)*100` 只会卖 200，剩 50 股烂在账户。"""
+    code = "688111.SH"
+    broker = BoardBroker(code, prev_close=20.00, price=20.40, avail=250)
+    monkeypatch.setattr(live_fills, "wait_fill", lambda b, oid, **kw: _fill(250, 20.35))
+
+    assert P.sell_flow(broker, _args(), manual["logs"].append) == 0
+
+    assert broker.sold[0]["volume"] == 250
+
+
+def test_sell_flow_limit_clamped_into_band_near_limit_down(manual, monkeypatch):
+    """近跌停（-9.5%，主板）：现价 -1% = ¥17.92 已跌破跌停价 ¥18.00 —— 桥的
+    本地价格保护带会直接拒单。限价钳到跌停价（=当日最激进合法报价）。"""
+    from ashare_rules import protect_sell_price
+
+    broker = BoardBroker(CODE, prev_close=20.00, price=18.10)      # -9.5%，未跌停
+    monkeypatch.setattr(live_fills, "wait_fill", lambda b, oid, **kw: _fill(500, 18.05))
+
+    assert P.sell_flow(broker, _args(), manual["logs"].append) == 0
+
+    assert protect_sell_price(CODE, 20.00) == 18.00
+    assert broker.sold[0]["price"] == 18.00
 

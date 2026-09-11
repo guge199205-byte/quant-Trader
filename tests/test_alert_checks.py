@@ -91,6 +91,30 @@ def test_llm_trade_tier_quiet_when_ok_or_outside_window():
     assert A.llm_trade_tier(_bj(2026, 9, 12, 11, 0), {}) is None     # 周末
 
 
+def test_llm_trade_tier_quiet_when_exec_switch_off():
+    """总闸关闭（note=exec_switch_off）→ 当日不调仓是预期行为，t1/t2 都不报。"""
+    doc = {"day": "2026-09-09", "ok": None, "orders_attempted": False,
+           "note": A.EXEC_SWITCH_OFF_NOTE}
+
+    assert A.llm_trade_tier(_bj(2026, 9, 9, 10, 5), doc) is None
+    assert A.llm_trade_tier(_bj(2026, 9, 9, 11, 15), doc) is None
+
+
+def test_exec_switch_off_note_literal_matches_writer():
+    """标记字面量跨模块必须一致：写方 live_llm_trade ↔ 读方 alert_checks。"""
+    import live_llm_trade as L
+
+    assert A.EXEC_SWITCH_OFF_NOTE == L.EXEC_SWITCH_OFF_NOTE
+
+
+def test_llm_trade_tier_other_notes_still_alert():
+    """对照组：别的 note（真失败）不受豁免影响。"""
+    doc = {"day": "2026-09-09", "ok": None, "orders_attempted": False,
+           "note": "bridge_account_query"}
+
+    assert A.llm_trade_tier(_bj(2026, 9, 9, 10, 5), doc).startswith("t1|")
+
+
 # ---------- 抓取桶失败 ----------
 
 def test_folder_failures_threshold_and_shape():

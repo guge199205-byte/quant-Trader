@@ -41,6 +41,10 @@ NEWS_AFTERNOON_END = 15 * 60
 LLM_T1_START = 10 * 60                # 10:00 起判「主入口未收尾」
 LLM_T2_START = 11 * 60 + 10           # 11:10 起判「两班补跑均未成功」
 LLM_END = 15 * 60
+# 总闸关闭时 live_llm_trade 降级 dry-run 并写入 state.note 的标记
+# （live_llm_trade.EXEC_SWITCH_OFF_NOTE，同字面量；tests/test_alert_checks.py 钉住）：
+# 当日不调仓是预期行为，不能天天按「主入口未收尾」误报
+EXEC_SWITCH_OFF_NOTE = "exec_switch_off"
 
 FOLDER_FAIL_MIN = 3                   # 抓取桶失败 ≥3 才值得打扰
 
@@ -183,6 +187,7 @@ def llm_trade_tier(now: datetime, doc: dict | None) -> str | None:
 
     t1 = 主入口未正常收尾（需人工确认是否已下单）；t2 = 两班补跑（10:05/11:05）也未成功。
     `ok is True` 才算完成——`ok: null`（启动了但没走完）与缺文件都算异常。
+    例外：note=EXEC_SWITCH_OFF_NOTE（总闸关闭 → 当日不执行是预期，不告警）。
     """
     if now.weekday() >= 5:
         return None
@@ -194,6 +199,8 @@ def llm_trade_tier(now: datetime, doc: dict | None) -> str | None:
     same_day = str(d.get("day") or "") == today
     if same_day and d.get("ok") is True:
         return None
+    if same_day and str(d.get("note") or "") == EXEC_SWITCH_OFF_NOTE:
+        return None     # 总闸关闭：当天不执行是预期行为（开关一关不该天天报）
     note = str(d.get("note") or "无说明")
     if not same_day:
         why = "当日无执行记录（09:35 未运行或未落状态）"

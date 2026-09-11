@@ -76,6 +76,9 @@ SELL_LIMIT_DOWN = -9.9  # 跌停不接
 # 单实例锁 + 当日执行状态（09:35 主入口与 10:05/11:05 补跑共用）
 LOCK_FILE = ROOT / "logs" / "live_llm_trade.lock"
 STATE_FILE = ROOT / "logs" / "live_llm_trade_state.json"
+# 总闸关闭降级 dry-run 时写进 state.note 的标记（alert_checks 同字面量读取，
+# 两侧由 tests/test_alert_checks.py 钉住一致；语义见 _apply_exec_switch）
+EXEC_SWITCH_OFF_NOTE = "exec_switch_off"
 ACCT_QUERY_ATTEMPTS = 3       # 桥账户查询重试次数（断线/假活）
 ACCT_QUERY_SLEEP_SEC = 60     # 重试间隔
 
@@ -337,6 +340,10 @@ def _read_state() -> dict:
 def _write_state(day: str, **kw) -> None:
     """当日执行状态原子落盘（仅 --execute 路径调用；dry-run 不写，免得卡住当天补跑）。
 
+    例外：总闸关闭导致的降级（_apply_exec_switch）会写一条 note 标记——那是
+    「当日确定不会执行」的如实记录，ok≠True 不阻塞补跑，只为免掉 10:00 的
+    「主入口未收尾」误报。
+
     字段：day / started_ts / orders_attempted / ok / note。
     orders_attempted 一旦为真不会被后续合并写抹掉（除新一轮启动显式重置）。
     """
@@ -377,9 +384,36 @@ def _query_account_with_retry(attempts: int = ACCT_QUERY_ATTEMPTS,
     raise BrokerError(f"桥账户查询重试 {attempts} 次仍失败：{last}")
 
 
+def _apply_exec_switch(args) -> bool:
+    """自动执行总开关关掉时把 --execute 降级为 dry-run。返回是否降级。
+
+    本脚本由 cron 固定以 `--execute` 调用（无人值守），若「命令行显式传参」一律
+    压过 configs/intraday_exec.json，总闸对这条**买入**路径就形同虚设——哨兵/
+    整点轮/强平守护/延期重放都受它管，只有它例外（2026-09-11 盘点）。
+    人工非要强跑：加 --force（别写进 crontab）。
+
+    降级时落一条当日状态（note=EXEC_SWITCH_OFF_NOTE）：当日「因总闸关闭而未执行」
+    是预期行为，alert_checks 据此不再报「主入口未收尾」（否则开关一关就天天误报）。
+    状态里 ok≠True、orders_attempted 为假 → 总闸恢复后当日 catch-up 仍可正常补跑。
+    """
+    if not args.execute or getattr(args, "force", False):
+        return False
+    from live_hourly_analysis import intraday_exec_enabled
+
+    if intraday_exec_enabled():
+        return False
+    args.execute = False
+    _write_state(now_cn().date().isoformat(), ok=None, note=EXEC_SWITCH_OFF_NOTE)
+    print("🔒 自动执行总开关已关（configs/intraday_exec.json enabled=false），"
+          "本轮降级为 dry-run：只做决策演练，不下单（人工强跑用 --force）")
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="模型自主调仓（候选池 + 持仓 → LLM 决策 → 桥执行）")
     ap.add_argument("--execute", action="store_true", help="真下单（默认仅 dry-run 决策演练）")
+    ap.add_argument("--force", action="store_true",
+                    help="人工显式覆盖自动执行总开关（仅手动使用，勿写入 crontab）")
     ap.add_argument("--agents", default="", help="只跑指定 agent（逗号分隔；默认全部 enabled）")
     ap.add_argument("--top", type=int, default=20, help="候选池上限（默认 20）")
     ap.add_argument("--catch-up", action="store_true",
@@ -403,6 +437,11 @@ def main() -> int:
         if not in_trading_window(now_cn()):
             print(f"⏭️ {now_cn():%F %T} 不在 A股交易时段，不补跑")
             return 0
+
+    # 自动执行总开关：cron 恒传 --execute，此闸若不加，总闸对 09:35 买入路径无效
+    if _apply_exec_switch(args) and args.catch_up:
+        print("⏭️ --catch-up 在总闸关闭时跳过（补跑的唯一目的就是真执行）")
+        return 0
 
     if not _acquire_lock():
         print(f"⏭️ {now_cn():%F %T} 已有另一班在跑（{LOCK_FILE.name}），跳过本轮")

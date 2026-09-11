@@ -1,16 +1,18 @@
 """自动执行总开关（configs/intraday_exec.json {"enabled": ...}）必须罩住所有无人值守下单路径。
 
-2026-09-11 盘点（与 order-path 清单对账）：哨兵 live_price_watch 与整点轮/09:35
-早已受开关约束（关掉=「只打印不真卖」/dry-run），但两条**无 --execute 参数**的
-cron 自动卖出路径漏了开关：
+2026-09-11 盘点（与 order-path 清单对账）：哨兵 live_price_watch 与整点轮受开关约束
+（关掉=「只打印不真卖」/dry-run），但有三条 **cron 无人值守路径**漏了开关：
 
   - leverage_guard（分钟强平守护）：开关关掉后仍会真下强平卖单；
   - replay_deferred（分钟延期单重放）：只查 after_hours 键，不看 enabled，
-    开关关掉后仍会重放延期卖单。
+    开关关掉后仍会重放延期卖单；
+  - live_llm_trade（09:35 开盘调仓，crontab 恒定传 --execute）：命令行显式参数
+    一律压过开关 → 总闸对它形同虚设。这条路径还能**买入**，是三条里最重的。
 
 总开关的语义是「本机自动下单总闸」——关掉它就不能有任何自动路径真下单
 （人工 CLI live_trade_picks 的 --execute 是操作员显式动作，不在此列）。
-两条路径都照哨兵口径：只报不卖 / 保留延期单，等开关打开或过期作废。
+三条路径都照哨兵口径：只报不卖 / 保留延期单 / 降级 dry-run，等开关打开或过期作废。
+人工对 live_llm_trade 的显式覆盖走 --force（工具内单测覆盖）。
 
 运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_exec_switch_gate.py -q
 """
@@ -168,3 +170,83 @@ def test_replay_switch_on_replays(replay, monkeypatch, capsys):
     assert replay.sold[0]["code"] == CODE and replay.sold[0]["volume"] == 100
     assert replay.saved                     # 重放成功 → 清延期回写账本
     assert "自动执行开关已关" not in capsys.readouterr().out
+
+
+# ---------- 09:35 开盘调仓 live_llm_trade（cron 恒传 --execute）----------
+
+@pytest.fixture
+def llm_state(monkeypatch, tmp_path):
+    """state 文件隔离到 tmp：真实 logs/live_llm_trade_state.json 是 10:00「主入口
+    未收尾」告警与日报的判据，测试写入会篡改当日真实执行记录。"""
+    import live_llm_trade as L
+
+    monkeypatch.setattr(L, "STATE_FILE", tmp_path / "llm_state.json")
+    return tmp_path / "llm_state.json"
+
+
+def test_llm_trade_switch_off_downgrades_execute(llm_state, monkeypatch, capsys):
+    """总开关关 → --execute 降级为 dry-run（09:35 的买入路径不再下单）。"""
+    import live_hourly_analysis
+    import live_llm_trade as L
+
+    monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: False)
+    args = types.SimpleNamespace(execute=True, force=False)
+
+    assert L._apply_exec_switch(args) is True
+    assert args.execute is False
+    assert "降级为 dry-run" in capsys.readouterr().out
+
+
+def test_llm_trade_switch_off_writes_state_note(llm_state, monkeypatch):
+    """降级同日落 state.note 标记：alert_checks 据此不报「主入口未收尾」误报；
+    且 ok≠True、orders_attempted 非真 → 总闸恢复后当日 catch-up 仍能补跑。"""
+    import json
+
+    import live_hourly_analysis
+    import live_llm_trade as L
+
+    monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: False)
+    args = types.SimpleNamespace(execute=True, force=False)
+
+    assert L._apply_exec_switch(args) is True
+
+    st = json.loads(llm_state.read_text(encoding="utf-8"))
+    assert st["note"] == L.EXEC_SWITCH_OFF_NOTE
+    assert st["ok"] is None and not st.get("orders_attempted")
+
+
+def test_llm_trade_switch_on_keeps_execute(llm_state, monkeypatch, capsys):
+    """对照组：开关开 → --execute 原样保留，不打字也不落状态。"""
+    import live_hourly_analysis
+    import live_llm_trade as L
+
+    monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: True)
+    args = types.SimpleNamespace(execute=True, force=False)
+
+    assert L._apply_exec_switch(args) is False
+    assert args.execute is True
+    assert capsys.readouterr().out == ""
+    assert not llm_state.exists()
+
+
+def test_llm_trade_force_overrides_switch(monkeypatch):
+    """人工 --force 显式覆盖总闸（仅手动；crontab 不得使用）。"""
+    import live_hourly_analysis
+    import live_llm_trade as L
+
+    monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: False)
+    args = types.SimpleNamespace(execute=True, force=True)
+
+    assert L._apply_exec_switch(args) is False
+    assert args.execute is True
+
+
+def test_llm_trade_dry_run_untouched(monkeypatch, capsys):
+    """本来就没 --execute（dry-run 演练）→ 助手不碰也不打字。"""
+    import live_llm_trade as L
+
+    args = types.SimpleNamespace(execute=False, force=False)
+
+    assert L._apply_exec_switch(args) is False
+    assert args.execute is False
+    assert capsys.readouterr().out == ""

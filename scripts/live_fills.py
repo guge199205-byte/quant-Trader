@@ -306,6 +306,33 @@ def _reconcile_lock():
     return _file_lock(blocking=False)
 
 
+def _recorded_baseline(ledger: dict, p: dict, today: str) -> int:
+    """该委托「已记账成交量」的基准 = max(pending 的 volume_recorded, 账本幂等标记)。
+
+    为什么不能只看 pending（2026-09-11 审查 MEDIUM）：save_ledger 与 save_pending
+    不是一次原子写。中间被 kill（cron 叠跑）、OOM，或 log_line/record_event 落盘
+    抛异常（异常穿透出 _reconcile_locked，整轮 pending 回写全丢）→ pending 仍停在
+    旧的 volume_recorded → 下一轮把同一笔成交再记一次：现金多记、持仓多扣，账本
+    自身看不出异常。标记与持仓变更走同一次 save_ledger 原子落地，最坏只是 pending
+    慢一轮更新。
+
+    只认当日标记：A 股委托号每日重排，昨天的同号标记必须失效（否则今天的新单
+    会被旧标记吞掉，真成交永远不记账）。
+    """
+    applied = (ledger.get("applied_fills") or {}).get(p.get("order_id"))
+    booked = int(applied.get("filled") or 0) \
+        if isinstance(applied, dict) and applied.get("ts") == today else 0
+    return max(int(p.get("volume_recorded") or 0), booked)
+
+
+def _with_applied(cur, order_id: str, filled: int, today: str) -> dict:
+    """刷新幂等标记（不可变，返回新表）；顺带清掉隔日条目，免得账本无限膨胀。"""
+    out = {k: v for k, v in (cur or {}).items()
+           if isinstance(v, dict) and v.get("ts") == today}
+    out[str(order_id)] = {"filled": int(filled), "ts": today}
+    return out
+
+
 def reconcile(broker, now: datetime | None = None) -> int:
     """把在途单的成交增量按真实成交价/量记入分账账本。返回补记笔数。
 
@@ -315,6 +342,8 @@ def reconcile(broker, now: datetime | None = None) -> int:
 
     读-改-写全程持跨进程锁：哨兵（每分钟）/整点轮/record-only 采样会在同一
     分钟边界撞车，无锁并发下两边都会基于旧 volume_recorded 补记同一笔成交。
+    补记本身幂等：已记账量取 pending 与账本 applied_fills 标记的较大者
+    （见 _recorded_baseline），save_ledger 与 save_pending 之间崩溃也不会重复记账。
     """
     with _reconcile_lock() as got:
         if not got:
@@ -363,12 +392,15 @@ def _reconcile_locked(broker, now: datetime | None = None) -> int:
             continue
         status = str(o.get("status") or "")
         filled = int(o.get("filled_volume") or 0)
-        recorded = int(p.get("volume_recorded") or 0)
         wanted = int(p.get("volume") or 0)
+        ledger = load_ledger()
+        recorded = _recorded_baseline(ledger, p, today)
+        if recorded > int(p.get("volume_recorded") or 0):
+            p["volume_recorded"] = recorded      # 自愈：把落后的一侧追平（见上）
         delta = filled - recorded
         if delta > 0:
             fprice = float(o.get("filled_price") or p.get("price") or 0)
-            ledger = load_ledger()
+            prev_applied = ledger.get("applied_fills")
             cost_p = 0.0
             if p.get("side") != "buy":  # 卖出成交带成本基准（已完成 feed 盈亏用）
                 cost_p = float((((ledger.get("agents") or {}).get(p["agent"]) or {})
@@ -379,6 +411,9 @@ def _reconcile_locked(broker, now: datetime | None = None) -> int:
             else:
                 ledger = record_sell(ledger, p["agent"], p["code"], delta, fprice,
                                      now.isoformat())
+            # 幂等标记与持仓变更同一次原子写落地：崩在 save_pending 之前也不会重复记账
+            ledger["applied_fills"] = _with_applied(prev_applied, p.get("order_id"),
+                                                    filled, today)
             save_ledger(ledger)
             log_line({"ts": now.isoformat(), "mode": "fill_confirm",
                       "agent": p["agent"], "code": p["code"], "side": p.get("side"),

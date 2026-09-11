@@ -293,3 +293,96 @@ def test_expired_pending_fully_recorded_stays_silent(monkeypatch, tmp_path):
     assert live_fills.reconcile(Broker(), now=NOW) == 0
     ev = json.loads(events.read_text(encoding="utf-8"))[f"fill_expire:{CODE}:2026-09-11"]
     assert ev["alert"] is False
+
+
+# ---------- 6) 记账幂等：账本写了、pending 没写回也不许重复记账（审查 MEDIUM D）----------
+# reconcile 是「save_ledger（补记成交）→ save_pending（写回 volume_recorded）」两步，
+# 不是一次原子写。中间被 kill（cron 叠跑）、OOM，或 log_line/record_event 落盘抛异常
+# （异常直接穿透出 _reconcile_locked，整轮 pending 回写全丢）→ pending 仍是旧
+# volume_recorded → 下一轮同一笔成交再记一次：现金多记、持仓多扣，且账本自身看不出
+# 异常（静默账实不符，之后所有额度/闸门/告警都建立在假账上）。
+# 修法：把「这笔委托已记账的量」写进账本本身（与持仓变更同一次原子落地），
+# 下一轮取 pending 与账本标记的较大者作为基准。
+
+def _seed_ledger(tmp_path):
+    """账本初值：500 股 @16，虚拟现金 ¥100,000（monkeypatch 由用例自己做）。"""
+    return {"version": 1, "agents": {AGENT: {
+        "virtual_cash": 100000.0,
+        "positions": {CODE: {"volume": 500, "cost_price": 16.0,
+                             "buy_ts": NOW.isoformat(), "last_ts": NOW.isoformat()}}}}}
+
+
+class _FilledBroker:
+    def get_orders(self):
+        return [{"order_id": "T1001", "status": "filled", "filled_volume": 100,
+                 "filled_price": 17.5, "order_price": 17.0, "total_volume": 100,
+                 "stock_code": CODE}]
+
+
+@pytest.fixture
+def crash_env(monkeypatch, tmp_path):
+    """账本 + pending + 锁全部落 tmp；返回 (ledger_file, pending_file)。"""
+    import live_ledger
+
+    ledger_file = tmp_path / "ledger.json"
+    ledger_file.write_text(json.dumps(_seed_ledger(tmp_path), ensure_ascii=False),
+                           encoding="utf-8")
+    monkeypatch.setattr(live_ledger, "LEDGER_FILE", ledger_file)
+
+    pending = tmp_path / "pending.json"
+    pending.write_text(json.dumps([_pending_entry()]), encoding="utf-8")
+    monkeypatch.setattr(live_fills, "PENDING_FILE", pending)
+    monkeypatch.setattr(live_fills, "RECONCILE_LOCK_FILE", tmp_path / "reconcile.lock")
+    return ledger_file, pending
+
+
+def test_crash_between_ledger_and_pending_writeback_does_not_double_book(crash_env):
+    """账本已补记、pending 没来得及写回（模拟崩溃）→ 下一轮不得再记一次。"""
+    ledger_file, pending = crash_env
+
+    assert live_fills.reconcile(_FilledBroker(), now=NOW) == 1
+    booked = json.loads(ledger_file.read_text(encoding="utf-8"))
+    assert booked["agents"][AGENT]["positions"][CODE]["volume"] == 400
+    assert booked["agents"][AGENT]["virtual_cash"] == 101750.0     # +100×17.5
+
+    # 崩溃窗口：账本已落地，pending 却还是下单时的旧快照
+    pending.write_text(json.dumps([_pending_entry()]), encoding="utf-8")
+
+    assert live_fills.reconcile(_FilledBroker(), now=NOW) == 0      # 不再补记
+    again = json.loads(ledger_file.read_text(encoding="utf-8"))
+    assert again["agents"][AGENT]["positions"][CODE]["volume"] == 400
+    assert again["agents"][AGENT]["virtual_cash"] == 101750.0
+    assert live_fills.load_pending() == []                          # 终态照常移除
+
+
+def test_applied_marker_is_scoped_to_today(crash_env):
+    """标记只认当日：委托号每日重复，昨天的同号标记不得吞掉今天的成交。"""
+    ledger_file, pending = crash_env
+    doc = json.loads(ledger_file.read_text(encoding="utf-8"))
+    doc["applied_fills"] = {"T1001": {"filled": 100, "ts": "2026-09-10"}}
+    ledger_file.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+    assert live_fills.reconcile(_FilledBroker(), now=NOW) == 1      # 昨天的标记失效
+    booked = json.loads(ledger_file.read_text(encoding="utf-8"))
+    assert booked["agents"][AGENT]["positions"][CODE]["volume"] == 400
+    assert booked["applied_fills"] == {"T1001": {"filled": 100, "ts": "2026-09-11"}}
+
+
+def test_ledger_without_marker_still_books(monkeypatch, tmp_path):
+    """存量账本没有标记字段 → 行为与从前一致（不漏记）。"""
+    import live_ledger
+
+    ledger_file = tmp_path / "ledger.json"
+    ledger_file.write_text(json.dumps({"agents": {AGENT: {
+        "virtual_cash": 100000.0,
+        "positions": {CODE: {"volume": 500, "cost_price": 16.0}}}}}),
+        encoding="utf-8")
+    monkeypatch.setattr(live_ledger, "LEDGER_FILE", ledger_file)
+    pending = tmp_path / "pending.json"
+    pending.write_text(json.dumps([_pending_entry()]), encoding="utf-8")
+    monkeypatch.setattr(live_fills, "PENDING_FILE", pending)
+    monkeypatch.setattr(live_fills, "RECONCILE_LOCK_FILE", tmp_path / "reconcile.lock")
+
+    assert live_fills.reconcile(_FilledBroker(), now=NOW) == 1
+    assert json.loads(ledger_file.read_text(encoding="utf-8"))[
+        "agents"][AGENT]["positions"][CODE]["volume"] == 400

@@ -105,6 +105,13 @@ def test_to_annual_ignores_malformed_periods():
     assert ff.to_annual(rows) == [("20241231", 4e8, 4e8)]
 
 
+def test_to_annual_carries_extra_columns():
+    """列数任意：income 传 (净利润, 扣非, 营收) 三列，各列独立按年合计。"""
+    rows = [(f"2025{q}", 1e8, 2e8, 10e8)
+            for q in ("0331", "0630", "0930", "1231")]
+    assert ff.to_annual(rows) == [("20251231", 4e8, 8e8, 40e8)]
+
+
 # ---------------------------------------------------------------- 取值 / 区间文案
 
 def test_latest_value_takes_newest_period():
@@ -162,6 +169,61 @@ def test_shell_signal_skips_when_net_profit_also_negative():
 def test_shell_signal_healthy_stock_false():
     rows = [("20241231", 5e8, 4e8), ("20251231", 6e8, 5e8)]
     assert ff.shell_signal(rows, 2) is False
+
+
+# ---------------------------------------------------------------- 财务类退市预警
+
+def _delist_fin(rev, np_, ded, year="2025"):
+    return {"600001.SH": {"fy_year": year, "fy_rev": rev, "fy_np": np_, "fy_ded": ded}}
+
+
+def test_delist_flags_low_revenue_loss_hits():
+    """营收低于板块线且亏损 → 退市风险（明年年报不改善就是 *ST）。"""
+    out = ff.delist_flags(_delist_fin(1.5e8, -1e8, -1.2e8), {})
+    assert "600001" in out
+    assert "退市风险" in out["600001"] and "2025年" in out["600001"]
+    assert "1.50亿" in out["600001"] and "3亿线" in out["600001"]
+
+
+def test_delist_flags_healthy_revenue_not_hit():
+    """营收达标（10 亿）→ 亏损再多也不触发退市线（亏损本身归 fin 判据）。"""
+    assert ff.delist_flags(_delist_fin(1e9, -1e8, -1.2e8), {}) == {}
+
+
+def test_delist_flags_profit_positive_not_hit():
+    assert ff.delist_flags(_delist_fin(1e7, 1e6, 8e5), {}) == {}
+
+
+def test_delist_flags_board_thresholds():
+    """同一个营收（0.8 亿）在不同板块命不同：主板 3 亿线中、创业板 1 亿线中、
+    北交所 0.5 亿线放行——阈值按板块取。"""
+    fin = {"600001.SH": {"fy_year": "2025", "fy_rev": 8e7, "fy_np": -5e7, "fy_ded": None},
+           "300001.SZ": {"fy_year": "2025", "fy_rev": 8e7, "fy_np": -5e7, "fy_ded": None},
+           "688001.SH": {"fy_year": "2025", "fy_rev": 8e7, "fy_np": -5e7, "fy_ded": None},
+           "920001.BJ": {"fy_year": "2025", "fy_rev": 8e7, "fy_np": -5e7, "fy_ded": None}}
+    out = ff.delist_flags(fin, {})
+    assert set(out) == {"600001", "300001", "688001"}
+    assert "3亿线" in out["600001"] and "1亿线" in out["300001"]
+
+
+def test_delist_flags_uses_worse_of_np_and_deducted():
+    """扣非前后孰低：净利为正但扣非为负（保壳型）→ 仍算负。"""
+    out = ff.delist_flags(_delist_fin(1e8, 5e6, -3e7), {})
+    assert "600001" in out and "-0.30亿" in out["600001"]
+
+
+def test_delist_flags_missing_revenue_skips():
+    """营收缺数据 → 不判（不在数据不全时扣帽子）。"""
+    assert ff.delist_flags(_delist_fin(None, -1e8, -1e8), {}) == {}
+
+
+def test_delist_flags_all_profit_columns_missing_skips():
+    assert ff.delist_flags(_delist_fin(1e8, None, None), {}) == {}
+
+
+def test_delist_flags_zero_floor_disables():
+    """营收线设 0 = 关闭该板块判据。"""
+    assert ff.delist_flags(_delist_fin(1e8, -1e8, -1e8), {"delist_rev_main_yi": 0}) == {}
 
 
 # ---------------------------------------------------------------- 趋势统计
@@ -385,13 +447,11 @@ def test_new_stock_flag_zero_disables():
 
 # ---------------------------------------------------------------- 组装 / 落盘
 
-def _income(code, losses, annual=-1e8):
-    """{symbol: 单季度行三元组}，一年 4 行 → 年度合计 = annual（income 表是单季值）。"""
-    rows = []
-    for y in losses:
-        rows += [(f"{y}{q}", annual / 4, annual / 4)
-                 for q in ("0331", "0630", "0930", "1231")]
-    return {code: rows}
+def _income(code, losses, annual=-1e8, revenue=1e9):
+    """{symbol: [(年报期, 年归母, 年扣非, 年营收)]}——**与 read_income 输出同契约**
+    （已是年度合计值；build 直接消费它，不再二次合计）。
+    revenue 默认 10 亿——高于退市营收线，不让 delist 判据干扰既有用例。"""
+    return {code: [(f"{y}1231", annual, annual, revenue) for y in losses]}
 
 
 def _day(closes, amount=1e4):
@@ -438,6 +498,19 @@ def test_build_healthy_stock_absent(tmp_path):
     st = ff.build(ASOF, {}, out,
                   income=_income("600001.SH", ()), balance={}, daily={})
     assert st["total"] == 0 and json.loads(out.read_text(encoding="utf-8"))["items"] == {}
+
+
+def test_build_flags_delist_risk(tmp_path):
+    """只亏 1 年但营收踩线也要拦——比 fin 的连亏 3 年早两年预警。"""
+    out = tmp_path / "ff.json"
+    income = _income("600001.SH", (2025,), revenue=1e9)         # 营收 10 亿 → 放行
+    income.update(_income("600002.SH", (2025,), revenue=1e8))   # 营收 1 亿 → 踩线
+    st = ff.build(ASOF, {}, out, income=income, balance={}, daily={})
+    items = json.loads(out.read_text(encoding="utf-8"))["items"]
+    assert "600001" not in items
+    assert items["600002"]["flags"] == ["delist"]
+    assert "退市风险" in items["600002"]["reason"]
+    assert st["delist"] == 1
 
 
 # ---------------------------------------------------------------- IO（读日线，防未来）
@@ -506,24 +579,25 @@ def test_trend_uses_backward_adjusted_kline():
 
 
 def _write_income(tmp_path, rows):
-    """rows: (Symbol, m_timetag, m_anntime, np, ded) → income 风格 parquet。"""
+    """rows: (Symbol, m_timetag, m_anntime, np, ded, revenue) → income 风格 parquet。"""
     import duckdb
 
     d = tmp_path / "3_financial_data" / "income"
     d.mkdir(parents=True, exist_ok=True)
-    vals = ", ".join(f"('{s}', '{t}', '{a}', {np_}, {dd})"
-                     for s, t, a, np_, dd in rows)
+    vals = ", ".join(f"('{s}', '{t}', '{a}', {np_}, {dd}, {rv})"
+                     for s, t, a, np_, dd, rv in rows)
     con = duckdb.connect()
     con.execute(f"CREATE TABLE t AS SELECT * FROM (VALUES {vals}) AS v("
                 f"Symbol, m_timetag, m_anntime, net_profit_excl_min_int_inc, "
-                f"deducted_net_profit)")
+                f"deducted_net_profit, revenue)")
     con.execute(f"COPY t TO '{d / '600001.SH.parquet'}' (FORMAT PARQUET)")
     con.close()
 
 
-def _q(code, year, values, anntime=None):
-    """一年四个季度的**单季**行（anntime 缺省 = 次年 3/30）。"""
-    return [(code, f"{year}{q}", anntime or f"{year + 1}0330", v, v)
+def _q(code, year, values, anntime=None, revenue=2.5e8):
+    """一年四个季度的**单季**行（anntime 缺省 = 次年 3/30；revenue 是**单季**营收，
+    默认 2.5 亿 → 年 10 亿）。"""
+    return [(code, f"{year}{q}", anntime or f"{year + 1}0330", v, v, revenue)
             for q, v in zip(("0331", "0630", "0930", "1231"), values)]
 
 
@@ -533,12 +607,12 @@ def test_read_income_dedupes_restatements_by_anntime(tmp_path, monkeypatch):
     _write_income(tmp_path,
                   _q("600001.SH", 2023, [-2.5e7] * 4)
                   + _q("600001.SH", 2024, [-2.5e7] * 4)
-                  + [("600001.SH", "20241231", "20260601", -1e8, -1e8)]  # Q4 重述
+                  + [("600001.SH", "20241231", "20260601", -1e8, -1e8, 2.5e8)]  # Q4 重述
                   + _q("600001.SH", 2025, [-2.5e7] * 4))
     rows = ff.read_income(ASOF)["600001.SH"]
     assert len(rows) == 3                              # 三个年度，不是四行
-    assert ("20241231", -1.75e8, -1.75e8) in rows       # 取重述后的 Q4 再合计
-    assert ff.loss_streak([(t, v) for t, v, _ in rows]) == 3
+    assert ("20241231", -1.75e8, -1.75e8, 1e9) in rows  # 取重述后的 Q4 再合计
+    assert ff.loss_streak([(t, v) for t, v, *_ in rows]) == 3
 
 
 def test_read_income_excludes_future_announcements(tmp_path, monkeypatch):
@@ -547,7 +621,15 @@ def test_read_income_excludes_future_announcements(tmp_path, monkeypatch):
     _write_income(tmp_path,
                   _q("600001.SH", 2025, [-2.5e7] * 4, anntime="20260330")
                   + _q("600001.SH", 2026, [-9e8] * 4, anntime="20270330"))  # 未来
-    assert ff.read_income(ASOF)["600001.SH"] == [("20251231", -1e8, -1e8)]
+    assert ff.read_income(ASOF)["600001.SH"] == [("20251231", -1e8, -1e8, 1e9)]
+
+
+def test_read_income_carries_annual_revenue(tmp_path, monkeypatch):
+    """营收按年合计并随年报一起产出（delist 判据的数据源）。"""
+    monkeypatch.setattr(ff, "QUANTDB", tmp_path)
+    _write_income(tmp_path, _q("600001.SH", 2025, [2.5e7] * 4, revenue=2.5e7))  # 四季各 2500 万 → 年 1 亿
+    rev = ff.read_income(ASOF)["600001.SH"][-1][3]
+    assert rev == pytest.approx(1e8)
 
 
 def test_read_income_missing_source_fails_open(tmp_path, monkeypatch):

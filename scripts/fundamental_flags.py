@@ -7,8 +7,11 @@
   「长期没有成交量的、需要排除吗？」→ 需要（卖出端执行风险）
   「对比最近几年的走势，是不是不好？然后不要误伤一些」
 
-八类判据（全部基于 quantdb 本地数据，不依赖网络）：
+九类判据（全部基于 quantdb 本地数据，不依赖网络）：
   fin       连亏≥3年报 或 净资产为负 或 扣非连亏≥3年
+  delist    财务类退市预警：最近一个完整年度营收低于板块线（主板 3 亿 /
+            创业板科创板 1 亿 / 北交所 5000 万）且扣非前后孰低为负——
+            比 fin 的"连亏 3 年"早两年预警（2024 退市新规口径）
   shell     保壳特征：最近 2 年扣非为负但净利润为正（靠补贴/卖资产撑账面）
   goodwill  商誉/净资产 > 50%（减值一夜亏光净资产）
   debt      资产负债率 > 85%（金融业豁免——银行保险天然 90%+）
@@ -84,6 +87,11 @@ DEFAULTS = {
     "min_amount_yi": 0.2,       # 日均成交额下限（亿元；0 = 关闭）
     "amount_days": 60,          # 成交额窗口（交易日）
     "new_stock_days": 60,       # 次新股门槛（上市交易日数）
+    # 财务类退市预警的营收线（亿元，按板块）。监管口径的营收还要"扣除与主业
+    # 无关/不具商业实质的收入"，这里用全口径（不扣）→ 偏保守，只会少拦不会多拦。
+    "delist_rev_main_yi": 3.0,  # 主板
+    "delist_rev_gem_yi": 1.0,   # 创业板 / 科创板
+    "delist_rev_bj_yi": 0.5,    # 北交所
 }
 
 # 金融业豁免负债率判据（银行/保险/证券的负债率天然 90%+，不是风险信号）
@@ -117,27 +125,27 @@ def to_annual(rows: list) -> list:
 
     直接拿 1231 行当"年度净利润"会把 Q4 单季亏损读成"全年亏损"：南航 2016-2019
     四年 Q4 都是单季亏损，被误判成"连续 10 年亏损"（实际那四年全年都是盈利的）。
-    **只有 4 个季度齐全的年份才产出**（缺季不猜），净利润与扣非各自独立求和
-    （某一列缺季 → 该列该年 None，另一列不受影响）。
+    **只有 4 个季度齐全的年份才产出**（缺季不猜），各数值列独立求和
+    （某一列缺季 → 该列该年 None，其余列不受影响）。
 
-    rows: [(报告期, 净利润, 扣非净利润)] → [(f"{年}1231", 年度净利润, 年度扣非)]。
+    rows: [(报告期, 列1, 列2, ...)] → [(f"{年}1231", 年列1, 年列2, ...)]，
+    列数任意（income 传 净利润/扣非/营收 三列）。
     """
     by_year: dict = {}
-    for t, np_, ded in rows:
-        t = str(t)
+    for row in rows:
+        t = str(row[0])
         if len(t) != 8 or not t.isdigit():
             continue
-        by_year.setdefault(t[:4], {})[t[4:]] = (np_, ded)
+        by_year.setdefault(t[:4], {})[t[4:]] = tuple(row[1:])
     out = []
     for year, qs in sorted(by_year.items()):
         vals = [qs.get(q) for q in ("0331", "0630", "0930", "1231")]
         if any(v is None for v in vals):
             continue  # 缺季（未上市/数据断档）→ 这年不出数
-        np_a = _sum_or_none([v[0] for v in vals])
-        ded_a = _sum_or_none([v[1] for v in vals])
-        if np_a is None and ded_a is None:
+        cols = [_sum_or_none([v[i] for v in vals]) for i in range(len(vals[0]))]
+        if all(v is None for v in cols):
             continue
-        out.append((f"{year}1231", np_a, ded_a))
+        out.append((f"{year}1231", *cols))
     return out
 
 
@@ -190,10 +198,10 @@ def latest_span(rows: list) -> str:
 def shell_signal(rows: list, years: int = 2) -> bool:
     """保壳特征：最近 years 年**扣非为负但净利润为正**（靠非经常性损益撑账面）。
 
-    rows: [(报告期, 净利润, 扣非净利润)]。这是最经典的爆雷前兆——主业已经不赚钱，
-    靠政府补贴/卖房/卖股权把报表做成微利，一旦补贴断档就是大额亏损。
+    rows: [(报告期, 净利润, 扣非净利润, ...)]。这是最经典的爆雷前兆——主业已经
+    不赚钱，靠政府补贴/卖房/卖股权把报表做成微利，一旦补贴断档就是大额亏损。
     """
-    ann = sorted((str(t), np_, ded) for t, np_, ded in rows if str(t).endswith("1231"))
+    ann = sorted((str(r[0]), r[1], r[2]) for r in rows if str(r[0]).endswith("1231"))
     ann = [r for r in ann if r[1] is not None and r[2] is not None]
     if len(ann) < years:
         return False
@@ -358,6 +366,45 @@ def shell_flags(fin: dict, conf: dict) -> dict:
     return out
 
 
+def delist_rev_floor(sym: str, conf: dict) -> float:
+    """该票适用的"财务类退市"营收阈值（元）。板块按代码前缀/后缀判。"""
+    s = str(sym)
+    code = s.split(".")[0]
+    if code[:3] in ("300", "301", "688", "689"):
+        return _num(conf, "delist_rev_gem_yi") * 1e8
+    if s.endswith(".BJ") or code[:2] in ("43", "83", "87", "88", "92"):
+        return _num(conf, "delist_rev_bj_yi") * 1e8
+    return _num(conf, "delist_rev_main_yi") * 1e8
+
+
+def delist_flags(fin: dict, conf: dict) -> dict:
+    """财务类退市预警 → {code6: 理由}（2024 退市新规口径）。
+
+    最近一个**完整**会计年度：营收低于板块线 且 净利润（扣非前后孰低）为负
+    → 明年年报再不改善就是 *ST。比 fin 的"连亏 3 年"早两年预警，实测全市场
+    39 只踩线、其中 34 只已被其他判据拦下，增量 4 只是"只亏一年"的早期信号。
+
+    fin: {symbol: {"fy_year","fy_rev","fy_np","fy_ded", ...}}。数据缺任一项
+    或营收为 None → 不判（不在数据不全时扣帽子）。
+    """
+    out: dict = {}
+    for sym, f in (fin or {}).items():
+        code = str(sym).split(".")[0]
+        if len(code) != 6 or not code.isdigit():
+            continue
+        rev, np_a, ded_a = f.get("fy_rev"), f.get("fy_np"), f.get("fy_ded")
+        cands = [v for v in (np_a, ded_a) if v is not None]
+        floor = delist_rev_floor(sym, conf)
+        if rev is None or not cands or floor <= 0:
+            continue
+        worse = min(cands)
+        if rev < floor and worse < 0:
+            out[code] = (f"退市风险：{f.get('fy_year')}年营收{rev / 1e8:.2f}亿"
+                         f"（低于{floor / 1e8:g}亿线）且扣非前后孰低为负"
+                         f"（{worse / 1e8:.2f}亿）")
+    return out
+
+
 def _num(conf: dict, key: str) -> float:
     return float(conf.get(key, DEFAULTS[key]))
 
@@ -428,7 +475,8 @@ def read_daily(asof: date) -> dict:
 
 
 def read_income(asof: date) -> dict:
-    """{symbol: [(年报期, 年度归母净利润, 年度扣非净利润)]}，只用 m_anntime ≤ asof。
+    """{symbol: [(年报期, 年度归母净利润, 年度扣非净利润, 年度营收)]}，只用
+    m_anntime ≤ asof。
 
     两道口径闸门：
       1. **每个报告期只留最新版本**（同报告期多条 = 财报重述）。当前数据里只有
@@ -441,7 +489,7 @@ def read_income(asof: date) -> dict:
     try:
         df = _con().execute(
             f"SELECT Symbol, m_timetag, net_profit_excl_min_int_inc AS np, "
-            f"deducted_net_profit AS ded FROM ("
+            f"deducted_net_profit AS ded, revenue FROM ("
             f"  SELECT *, row_number() OVER (PARTITION BY Symbol, m_timetag "
             f"    ORDER BY m_anntime DESC) AS rn "
             f"  FROM read_parquet('{QUANTDB}/3_financial_data/income/*.parquet', "
@@ -449,7 +497,7 @@ def read_income(asof: date) -> dict:
     except Exception as exc:  # noqa: BLE001 数据缺失不阻塞（fail-open）
         print(f"⚠️ 读 income 失败：{str(exc)[:120]}", file=sys.stderr)
         return {}
-    return {s: to_annual(list(zip(g["m_timetag"], g["np"], g["ded"])))
+    return {s: to_annual(list(zip(g["m_timetag"], g["np"], g["ded"], g["revenue"])))
             for s, g in df.groupby("Symbol")}
 
 
@@ -493,12 +541,13 @@ def read_fin_sectors() -> set:
 # ---------------------------------------------------------------- 组装 / 落盘
 
 def _fin_snapshot(inc: dict, bal: dict, conf: dict, fins: set) -> dict:
-    """逐票财务画像（供 fin_flags / shell_flags 消费）。"""
+    """逐票财务画像（供 fin_flags / shell_flags / delist_flags 消费）。"""
     snap = {}
     for sym in set(inc) | set(bal):
-        rows = inc.get(sym, [])
-        np_rows = [(t, v) for t, v, _ in rows]
-        ded_rows = [(t, d) for t, _, d in rows]
+        rows = inc.get(sym, [])          # [(年报期, 归母, 扣非, 营收)]（to_annual 升序）
+        np_rows = [(r[0], r[1] if len(r) > 1 else None) for r in rows]
+        ded_rows = [(r[0], r[2] if len(r) > 2 else None) for r in rows]
+        fy = rows[-1] if rows else ()     # 最近一个完整年度
         b = list(bal.get(sym, []))   # [(报告期, 净资产, 商誉, 总资产, 总负债)]
         eq = latest_value([(t, v) for t, v, _, _, _ in b])
         gw = latest_value([(t, v) for t, _, v, _, _ in b])
@@ -511,6 +560,10 @@ def _fin_snapshot(inc: dict, bal: dict, conf: dict, fins: set) -> dict:
             "is_fin": sym in fins,
             "is_shell": shell_signal(rows, int(_num(conf, "shell_years"))),
             "shell_years": int(_num(conf, "shell_years")),
+            "fy_year": str(fy[0])[:4] if fy else None,
+            "fy_np": fy[1] if len(fy) > 1 else None,
+            "fy_ded": fy[2] if len(fy) > 2 else None,
+            "fy_rev": fy[3] if len(fy) > 3 else None,
         }
     return snap
 
@@ -542,6 +595,7 @@ def build(asof: date | None = None, conf: dict | None = None, out: Path | None =
     items: dict = {}
     sources = [
         ("fin", fin_flags(snap, conf)),
+        ("delist", delist_flags(snap, conf)),
         ("shell", shell_flags(snap, conf)),
         ("trend", trend_flags(stats, conf)),
         ("flat", flat_flags(stats, conf)),

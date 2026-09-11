@@ -37,6 +37,9 @@ for p in (str(ROOT), str(ROOT / "scripts"), str(ROOT / "agent_tools")):
 # test_live_breaker / test_live_llm_trade_retry），提前导入不引入新依赖，
 # 实测总耗时 0.08s。
 _OPTIONAL_STATE_MODULES = {
+    # STATE_PATH 故意不列在这里：test_volatility_guard 在 setup_module 里把它指到
+    # /tmp 并在用例里直接读写（模块级赋值不受 monkeypatch 管），显式 patch 会在
+    # 每个用例开头把它拨回 tmp 路径 → 读到的状态是空的。它归下面的兜底网管。
     "live_hourly_analysis": ("LAST_DECISIONS_FILE",),
     "live_llm_trade": ("LOCK_FILE", "STATE_FILE"),
     "live_breaker": ("TRIP_DIR",),
@@ -47,6 +50,46 @@ for _m in _OPTIONAL_STATE_MODULES:
         __import__(_m)
     except ImportError:      # 缺依赖时跳过：隔离面少一块，但不让整个套件无法收集
         pass
+
+_PROD_LOGS = (ROOT / "logs").resolve()
+_PROD_DATA = (ROOT / "data").resolve()
+
+
+def _redirect_leftover_state_paths(monkeypatch, tmp_path, modules) -> list:
+    """兜底网：仍指向生产 logs/、data/ 的模块级 Path 常量，一律重定向到 tmp。
+
+    显式清单拦不住「import 时就按旧根算好的派生常量」——2026-09-11 审查 HIGH 实录：
+    `live_price_watch.SKIP_STATE_FILE = LOG_DIR / "live_watch_notify_state.json"` 是
+    独立常量，只 patch LOG_DIR 对它无效。测试跑到账户快照退化分支（哨兵假的账户
+    通道）就写真实文件，把**实盘同一小时的告警去重标记吃掉**：之后真出现假活，
+    `_notify_once` 命中去重直接 return，告警被静默。同类的还有
+    live_hourly_analysis.STATE_PATH、live_breaker.EQUITY_LOG 等，以后新加的常量
+    也归这张网管。
+    """
+    moved = []
+    for mod in modules:
+        for attr, val in list(vars(mod).items()):
+            if attr.startswith("__") or not isinstance(val, Path):
+                continue
+            try:
+                real = val.resolve()
+            except OSError:
+                continue
+            # 落点单独开一棵 prod-state/ 树（不走 tmp_path/"logs"）：有些用例自己
+            # 会 mkdir(tmp_path/"logs")，预建同名目录会让它们 FileExistsError。
+            for root, dest in ((_PROD_LOGS, tmp_path / "prod-state" / "logs"),
+                               (_PROD_DATA, tmp_path / "prod-state" / "data")):
+                if real == root:
+                    target = dest
+                elif str(real).startswith(str(root) + "/"):
+                    target = dest / val.name
+                else:
+                    continue
+                dest.mkdir(parents=True, exist_ok=True)   # 父目录可得（见 writable 用例）
+                monkeypatch.setattr(mod, attr, target)
+                moved.append(f"{mod.__name__}.{attr}")
+                break
+    return moved
 
 
 @pytest.fixture(autouse=True)
@@ -75,12 +118,21 @@ def _isolate_production_state(monkeypatch, tmp_path):
     # 条件位：写坏它 = 真实止损被抹掉
     monkeypatch.setattr(live_price_watch, "WATCH_FILE", tmp_path / "live_watch.json")
 
-    # 次级状态：模块已在收集期导入（见文件头），一律重定向
+    # 次级状态：模块已在收集期导入（见文件头），一律重定向；父目录先建好——
+    # 少了它，锁文件 open("a+") 抛 FileNotFoundError 被 except OSError 吞掉 →
+    # 用例静默走进「已有另一班在跑」，状态文件也只是打印告警后丢失（假绿）。
     for mod_name, attrs in _OPTIONAL_STATE_MODULES.items():
         mod = sys.modules.get(mod_name)
         if mod is None or not getattr(mod, "__file__", None):
             continue
         if str(Path(mod.__file__).resolve()).startswith(str(ROOT / "scripts")):
+            state_dir = tmp_path / mod_name
+            state_dir.mkdir(exist_ok=True)
             for attr in attrs:
                 if hasattr(mod, attr):
-                    monkeypatch.setattr(mod, attr, tmp_path / mod_name / attr)
+                    monkeypatch.setattr(mod, attr, state_dir / attr)
+
+    # 兜底网：上面清单漏掉的、或以后新加的「指向生产 logs//data/ 的模块常量」
+    mods = [live_fills, live_ledger, live_price_watch, live_trade_picks]
+    mods += [sys.modules[m] for m in _OPTIONAL_STATE_MODULES if sys.modules.get(m)]
+    _redirect_leftover_state_paths(monkeypatch, tmp_path, mods)

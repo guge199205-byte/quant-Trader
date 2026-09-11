@@ -38,9 +38,53 @@ def test_production_state_constants_are_redirected(tmp_path):
         "watch": live_price_watch.WATCH_FILE,
         "trade_logs": live_trade_picks.LOG_DIR,
         "watch_logs": live_price_watch.LOG_DIR,
+        # import 时就从 LOG_DIR 算好的派生常量：只 patch LOG_DIR 拦不住它们
+        # （审查 HIGH：测试写它 = 吃掉实盘同小时的告警去重标记）
+        "watch_notify_state": live_price_watch.SKIP_STATE_FILE,
     }
     for name, path in live.items():
         assert str(path).startswith(str(tmp_path)), f"{name} 没被隔离: {path}"
+
+
+def test_no_module_constant_points_into_production_state_dirs(tmp_path):
+    """兜底网契约：这些模块里不许再有 Path 常量指向生产 logs//data/。
+
+    新加一个 `FOO_FILE = LOG_DIR / "x"` 忘了进清单时，这条会红——这正是
+    SKIP_STATE_FILE 漏网半年的形态。
+    """
+    import live_breaker
+    import live_hourly_analysis
+    import live_l2_capture
+    import live_llm_trade
+
+    prod = [str((ROOT / "logs").resolve()) + "/", str((ROOT / "data").resolve()) + "/"]
+    leaked = []
+    for mod in (live_fills, live_ledger, live_price_watch, live_trade_picks,
+                live_hourly_analysis, live_llm_trade, live_breaker, live_l2_capture):
+        for attr, val in vars(mod).items():
+            if attr.startswith("__") or not isinstance(val, Path):
+                continue
+            real = str(val.resolve())
+            if any(real.startswith(p) for p in prod):
+                leaked.append(f"{mod.__name__}.{attr}={val}")
+    assert leaked == [], "这些常量仍指向生产状态目录: " + ", ".join(leaked)
+
+
+def test_redirected_state_paths_are_writable(tmp_path):
+    """重定向后的父目录必须真的存在：否则锁文件 open() 失败会被 except OSError
+    吞掉，用例静默走「已有另一班在跑」分支（假绿），状态也只打印告警后丢失。"""
+    import live_breaker
+    import live_hourly_analysis
+    import live_llm_trade
+
+    for path in (live_llm_trade.LOCK_FILE, live_llm_trade.STATE_FILE,
+                 live_hourly_analysis.LAST_DECISIONS_FILE,
+                 live_hourly_analysis.STATE_PATH, live_breaker.TRIP_DIR):
+        assert str(path).startswith(str(tmp_path)), f"没被隔离: {path}"
+        assert path.parent.is_dir(), f"{path.parent} 不存在（conftest 没建父目录）"
+        probe = path.parent / ".writable-probe"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
 
 
 def test_secondary_state_modules_are_redirected_here(tmp_path):
@@ -83,6 +127,10 @@ def test_conftest_imports_secondary_modules_eagerly():
 
 def test_reconcile_fill_never_touches_real_ledger():
     """真跑一轮带成交的 reconcile：补记只进 tmp 账本，仓库账本字节不变。"""
+    # 先验隔离再动手：本用例是**整文档覆盖写**，若隔离坏了，digest 断言会红——
+    # 但那已经在真实账本被合成账本（只含一个 agent 一只票）覆盖之后了。
+    assert live_ledger.LEDGER_FILE != PROD_LEDGER, "隔离失效：要先修 conftest 再跑本用例"
+
     before = _digest(PROD_LEDGER)
 
     live_ledger.save_ledger({"version": 1, "agents": {AGENT: {
@@ -115,3 +163,21 @@ def _digest(path: Path) -> str | None:
     if not path.is_file():
         return None
     return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def test_notify_once_only_writes_the_redirected_state_file():
+    """哨兵的账户级去重标记：写了它 = 吃掉同一小时的真实告警。
+
+    `SKIP_STATE_FILE = LOG_DIR / ...` 是 import 时算好的独立常量，只 patch
+    LOG_DIR 拦不住（2026-09-11 审查 HIGH）。这里真跑一次 _notify_once 钉住：
+    真实文件字节不变，标记只落在 tmp。
+    """
+    prod_state = ROOT / "logs" / "live_watch_notify_state.json"
+    before = _digest(prod_state)
+
+    assert live_price_watch.SKIP_STATE_FILE != prod_state
+    live_price_watch._notify_once("isolation-probe", "【隔离自检】不应出现在真实日志")
+
+    assert _digest(prod_state) == before
+    tmp_state = json.loads(Path(live_price_watch.SKIP_STATE_FILE).read_text(encoding="utf-8"))
+    assert "isolation-probe" in tmp_state

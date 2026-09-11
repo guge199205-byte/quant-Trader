@@ -616,16 +616,21 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
     ]
     # 事件风险警示（解禁窗口内/近期负面新闻）：持仓提示退出，候选提示别选
     # （闸门已硬拦买入，这里省一轮无效决策；2026-09-08 用户口径）
+    # + 行业整体劣化（赛道级软提示，不硬拦；2026-09-11 用户口径）
     try:
-        from live_prompt_context import risk_warning_block
+        from live_prompt_context import industry_caution_block, risk_warning_block
 
         _nm = {r["code"]: r.get("name") for r in rows}
         _nm.update({p.get("code"): p.get("name") for p in (pool or [])})
-        rb = risk_warning_block([r["code"] for r in rows],
-                                [p.get("code") for p in (pool or [])], _nm)
+        _hc = [r["code"] for r in rows]
+        _pc = [p.get("code") for p in (pool or [])]
+        rb = risk_warning_block(_hc, _pc, _nm)
         if rb:
             lines += [rb]
-    except Exception:  # noqa: BLE001 风险清单不可用不阻塞提示词
+        ib = industry_caution_block(_hc, _pc, _nm)
+        if ib:
+            lines += ["", ib]
+    except Exception:  # noqa: BLE001 风险清单/行业榜不可用不阻塞提示词
         pass
     # 候选池实时行情（非持仓）：换仓/新开仓的定价依据。此前持仓 agent 既拿不到
     # 池内价格、闸门也不放行非持仓买入 → "允许换仓"实际无法执行（2026-09-08 修复）
@@ -831,16 +836,22 @@ def build_flat_content(pool: list, direction: dict, cash: float, agent: str,
 
     lines += ["", budget_filter_note(PER_STOCK_PCT)]
     # 池内实时价（桥口径）：无价 → 模型无法定价 → 只能空转/挂 watch（哨兵不执行买单）
-    from live_prompt_context import build_pool_quote_block, risk_warning_block
+    from live_prompt_context import (build_pool_quote_block,
+                                     industry_caution_block, risk_warning_block)
 
     qb = build_pool_quote_block(pool)
     if qb:
         lines += ["", qb]
     # 事件风险警示：候选池里命中解禁/负面新闻的标的一律别选（闸门会毙掉）
-    rb = risk_warning_block(None, [p.get("code") for p in pool],
-                            {p.get("code"): p.get("name") for p in pool})
+    _nm = {p.get("code"): p.get("name") for p in pool}
+    _pc = [p.get("code") for p in pool]
+    rb = risk_warning_block(None, _pc, _nm)
     if rb:
         lines += [rb]
+    # 行业整体劣化：赛道级软提示（不硬拦；2026-09-11 用户口径）
+    ib = industry_caution_block(None, _pc, _nm)
+    if ib:
+        lines += ["", ib]
     if direction:
         lines += ["", f"大盘方向：{direction}", ""]
     ctx = load_market_context()

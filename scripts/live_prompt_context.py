@@ -525,6 +525,66 @@ def build_gap_note(start_iso: str, end_iso: str, holdings: list,
     return "\n".join(lines)
 
 
+def industry_caution_block(held_codes=None, pool_codes=None, names=None,
+                           max_items: int = 10, path=None) -> str:
+    """【行业整体劣化】：赛道级软提示（**不硬拦**）→ 注入交易提示词。
+
+    用户口径（2026-09-11）：「这些行业也要谨慎点」——某行业在长期排除清单里的
+    占比远高于全市场基线时，个股自己没踩雷，也可能是整条赛道在沉（地产链、
+    光伏、酿酒……）。只提示不禁买：行业是统计口径，一刀切会误伤同行业里
+    没问题的公司；硬拦仍只认个股判据（symbol_policy + risk_list 闸门）。
+
+    榜单来自 scripts/industry_risk.py 每日落盘的 data/industry_risk.json
+    （与清单同源，阈值见 configs/live_symbols.json 的 risk 段）；
+    产物缺失/过期 → ""（fail-open，不阻塞提示词构建）。
+    """
+    try:
+        from industry_risk import load_doc
+
+        doc = load_doc(path)
+    except Exception:  # noqa: BLE001 提示词少一段不阻塞本轮
+        return ""
+    items = doc.get("items") or []
+    warn = doc.get("warn_codes") or {}
+    if not items or not isinstance(warn, dict):
+        return ""
+    nm = names or {}
+    stat = {it["industry"]: it for it in items}
+
+    def _hit(code) -> tuple:
+        c6 = str(code or "").split(".")[0]
+        ind = warn.get(c6)
+        if not ind:
+            return "", ""
+        it = stat.get(ind) or {}
+        return ind, f"{it.get('n')}/{it.get('total')} 只被剔除"
+
+    def _name(code) -> str:
+        c6 = str(code or "").split(".")[0]
+        return nm.get(str(code)) or nm.get(c6) or ""
+
+    lines = ["- 行业风险榜（剔除率 = 该行业被长期排除清单剔除数 / 行业股票总数）："
+             + "、".join(f"{it['industry']} {it['n']}/{it['total']}（{it['rate']:.0%}）"
+                         for it in items)]
+    hit_lines = []
+    for code in pool_codes or []:
+        ind, s = _hit(code)
+        if ind:
+            hit_lines.append(f"- 候选池命中：{code} {_name(code)} 属「{ind}」（该行业 {s}）"
+                             "——赛道整体在下沉，买入理由要更强，别只看个股分数")
+    for code in held_codes or []:
+        ind, s = _hit(code)
+        if ind:
+            hit_lines.append(f"- 持仓命中：{code} {_name(code)} 属「{ind}」（该行业 {s}）"
+                             "——评估是否降低赛道暴露，但不要只凭行业标签卖")
+    body = hit_lines[:max_items]
+    if len(hit_lines) > len(body):
+        body.append(f"（另有 {len(hit_lines) - len(body)} 只命中未列）")
+    return "\n".join(
+        ["【行业整体劣化（赛道级提示，非硬拦——个股干净也可能被赛道拖着走）】",
+         *lines, *body])
+
+
 def risk_warning_block(held_codes=None, pool_codes=None, names=None,
                        max_items: int = 10, path=None) -> str:
     """【事件风险警示】：持仓/候选池里命中事件风险清单的标的（解禁窗口内 / 近期负面新闻）。
@@ -537,6 +597,7 @@ def risk_warning_block(held_codes=None, pool_codes=None, names=None,
     2026-09-11 增加【监管关注】软段：问询函/监管函/警示函等只提醒不禁买
     （用户口径「监管的可以提醒，里面有因子，不去拿时[再]黑名单」）——
     这类事件的信息含量大于即期风险，模型当因子自评，不进买入闸门。
+    （行业级赛道提示是**独立**一段：见 industry_caution_block。）
 
     清单缺失 → 返回 ""（fail-open，不阻塞提示词构建）。
     """

@@ -22,7 +22,6 @@ data/risk_block.json），不重算任何判据——保证报表与闸门**同�
 import argparse
 import csv
 import json
-import os
 import re
 import sys
 from collections import Counter
@@ -35,7 +34,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 SYMBOLS = ROOT / "configs" / "live_symbols.json"
 FUND = ROOT / "data" / "fundamental_flags.json"
 RISK = ROOT / "data" / "risk_block.json"
-QUANTDB = Path(os.environ.get("QUANTDB_DIR", "/home/zbox/projects/quantmind/data/quantdb"))
 BJ = timezone(timedelta(hours=8))
 
 # 长期层：fundamental_flags 的 flag → 中文层名（顺序即表格列序）
@@ -123,27 +121,11 @@ def _names() -> dict:
         return {}
 
 
-def _industries() -> tuple:
-    """({code6: 行业}, Counter(全市场各行业总数))——quantdb 通达信 rs_hyname。
-
-    覆盖 5536/5563 只（98%+）。拿不到 → ({}, {})：只是少一列标签，不影响清单本体。
-    """
-    try:
-        import duckdb
-
-        p = QUANTDB / "2_base_sector" / "instrument_detail" / "*.parquet"
-        df = duckdb.connect().execute(
-            f"SELECT Symbol, rs_hyname FROM read_parquet('{p}') "
-            f"WHERE rs_hyname IS NOT NULL AND rs_hyname <> ''").df()
-        ind = {str(s).split(".")[0]: str(h) for s, h in zip(df.Symbol, df.rs_hyname)}
-        return ind, Counter(ind.values())
-    except Exception:  # noqa: BLE001
-        return {}, Counter()
-
-
 def build(names: dict, industries: dict | None = None) -> tuple:
+    from industry_risk import load_industries
+
     layers = load_layers()
-    ind = _industries()[0] if industries is None else industries
+    ind = load_industries()[0] if industries is None else industries
     rows = []
     for code, it in layers.items():
         ls = sorted(it["layers"],
@@ -187,9 +169,17 @@ def write(rows: list, transient: list, names: dict, asof: str,
                      f"{len(r['layers'])} | {'/'.join(r['layers'])} | {r['reason']} |")
     rank = industry_ranking(rows, totals or Counter())
     if rank:
+        from risk_list import load_conf
+
+        c = load_conf()
         lines += ["", "## 行业风险榜（剔除率 = 被排除数 / 该行业全部股票数）", "",
                   "> 剔除率高的行业整体谨慎：赛道景气下行时个体会集体劣化，",
-                  "> 单看个股名单看不出「整条赛道在沉」。", "",
+                  "> 单看个股名单看不出「整条赛道在沉」。",
+                  f"> 提示词只取其中 剔除率≥{float(c.get('industry_warn_rate_min', 0.45)):.0%} "
+                  f"且 行业总数≥{int(c.get('industry_warn_total_min', 10))} 的前 "
+                  f"{int(c.get('industry_warn_top_n', 15))} 个（阈值见 configs/live_symbols.json "
+                  "的 risk 段）——小样本行业这里列出供参考，但不进决策链，",
+                  "> 避免 4/4=100% 这类噪声挤占注意力。", "",
                   "| 行业 | 被排除 | 行业总数 | 剔除率 |", "|---|---:|---:|---:|"]
         for h, n, t, r in rank[:25]:
             lines.append(f"| {h} | {n} | {t} | {r:.0%} |")
@@ -213,8 +203,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="长期排除清单报告")
     ap.add_argument("--print", dest="print_only", action="store_true", help="只打印摘要")
     a = ap.parse_args()
+    from industry_risk import load_industries
+
     names = _names()
-    ind, totals = _industries()
+    ind, totals = load_industries()
     rows, transient = build(names, ind)
     asof = datetime.now(BJ).date().isoformat()
 

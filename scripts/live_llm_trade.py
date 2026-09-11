@@ -261,16 +261,21 @@ def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
             lines += ["", qb]
     # 事件风险警示（解禁窗口内/近期负面新闻）：持仓提示退出，候选提示别选
     # （闸门已硬拦买入，这里省一轮无效决策；2026-09-08 用户口径）
+    # + 行业整体劣化（赛道级软提示，不硬拦；2026-09-11 用户口径）
     try:
-        from live_prompt_context import risk_warning_block
+        from live_prompt_context import industry_caution_block, risk_warning_block
 
         _nm = {h["code"]: h.get("name") for h in holdings}
         _nm.update({p.get("code"): p.get("name") for p in (pool or [])})
-        rb = risk_warning_block([h["code"] for h in holdings],
-                                [p.get("code") for p in (pool or [])], _nm)
+        _hc = [h["code"] for h in holdings]
+        _pc = [p.get("code") for p in (pool or [])]
+        rb = risk_warning_block(_hc, _pc, _nm)
         if rb:
             lines += [rb]
-    except Exception:  # noqa: BLE001 风险清单不可用不阻塞提示词
+        ib = industry_caution_block(_hc, _pc, _nm)
+        if ib:
+            lines += ["", ib]
+    except Exception:  # noqa: BLE001 风险清单/行业榜不可用不阻塞提示词
         pass
     lines += [
         "",

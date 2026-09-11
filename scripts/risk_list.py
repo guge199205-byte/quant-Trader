@@ -83,6 +83,11 @@ DEFAULTS = {
     # 财务/趋势判据的阈值不在这里——它们在 scripts/fundamental_flags.py 现算，
     # 键名同存于 configs/live_symbols.json 的 risk 段（单一事实来源，避免两处漂移）。
     "flag_days": 7,             # 基本面缓存的过期窗口（自然日）
+    # 行业风险榜（scripts/industry_risk.py → data/industry_risk.json，**只提示不禁买**）：
+    # 剔除率 = 该行业被长期排除清单剔除数 / 该行业股票总数，行业名取 quantdb rs_hyname。
+    "industry_warn_rate_min": 0.45,   # 上榜剔除率下限
+    "industry_warn_total_min": 10,    # 行业股票数下限（小样本不上榜）
+    "industry_warn_top_n": 15,        # 榜长上限（提示词 token 预算）
 }
 
 # 存续状态类风险：与短事件合并时取**更晚**失效日，不被提前解除。

@@ -315,8 +315,12 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
     limit = price if after_hours else round(price * 0.99, 2)
     label = "跌破止损" if trig == "stop_loss" else "达到止盈"
     if dry_run:
-        print(f"  🟡 DRY-RUN 卖出 {code} {vol}/{avail} 股 限价 ¥{limit:.2f}（{label}）")
-        return True
+        # 只报不卖 —— 规则**不消费**（返回 False）。曾返回 True 当"已消费"，
+        # 结果是开关关闭期间触发的止损被静默吃掉（2026-09-11 600309 实录）。
+        # 调用方 run_watch 已在 dry-run 时提前分流，这里是二次兜底。
+        print(f"  🟡 DRY-RUN 卖出 {code} {vol}/{avail} 股 限价 ¥{limit:.2f}（{label}）——"
+              f"条件位保留")
+        return False
     try:
         result = broker.sell(None, None, code, vol, price=limit)
     except Exception as exc:  # noqa: BLE001
@@ -436,8 +440,19 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
                 time.sleep(POLL_SLEEP_SEC)
                 continue
             label = "跌破止损" if trig == "stop_loss" else "达到止盈"
-            print(f"  🎯 [{agent}] {r['code']} 现价 ¥{price:.2f} {label}位 "
-                  f"¥{r[trig]:.2f}（减仓 {r.get('pct', 1.0):.0%}）: {r.get('reason', '')}")
+            notice = (f"  🎯 [{agent}] {r['code']} 现价 ¥{price:.2f} {label}位 "
+                      f"¥{r[trig]:.2f}（减仓 {r.get('pct', 1.0):.0%}）")
+            if dry_run:
+                # 只报不卖（执行开关未开 / --dry-run）→ 条件位必须保留、不消费。
+                # 2026-09-11 实录：600309 的 75.50 止损在开关关闭时于 09:44 触发，
+                # dry-run 分支照样按「已消费」上报 → 规则被吃掉、当天再无人守，
+                # 持仓裸奔（价格 74.41 → 73.85 无保护）。提醒按规则整点去重防刷屏。
+                _notify_skip(r, f"{notice} —— 执行开关未开/试运行，只报不卖、"
+                                f"条件位保留: {r.get('reason', '')}")
+                kept.append(r)
+                time.sleep(POLL_SLEEP_SEC)
+                continue
+            print(f"{notice}: {r.get('reason', '')}")
             if in_close_auction(now):
                 print(f"  ⏭️ [{agent}] {r['code']} 收盘集合竞价时段（14:57-15:00），"
                       f"不触发实单，条件保留")

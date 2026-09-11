@@ -84,3 +84,31 @@ def test_run_watch_defaults_now_from_now_cn(sentinel, monkeypatch):
 
     assert fired == 1
     assert sentinel["sell"] == [("agentA", "600362.SH", "stop_loss", 48.89)]
+
+
+def test_run_watch_keeps_rule_when_exec_switch_off(sentinel, monkeypatch):
+    """执行开关关闭（自动降级 dry-run）时触发条件位：只报不卖，且**条件位必须保留**。
+
+    2026-09-11 实录：600309 的 75.50 止损在开关关闭时于 09:44 触发，dry-run 分支
+    照样返回「已消费」→ 规则被吃掉、当天再无人守，持仓裸奔（价格 74.41 → 73.85）。
+    """
+    import live_hourly_analysis
+
+    monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: False)
+
+    fired = W.run_watch(_FakeBroker(), now=datetime(2026, 9, 11, 9, 44, 0, tzinfo=CN))
+
+    assert fired == 0
+    assert sentinel["sell"] == []
+    kept = sentinel["saved"][-1]["agentA"]
+    assert [r["code"] for r in kept] == ["600362.SH"]  # 保留 → 下一分钟继续守
+
+
+def test_run_watch_dry_run_flag_keeps_rule(sentinel):
+    """显式 --dry-run（手工试运行）同样不消费条件位——试运行不该改状态。"""
+    fired = W.run_watch(_FakeBroker(), dry_run=True,
+                        now=datetime(2026, 9, 11, 10, 0, 0, tzinfo=CN))
+
+    assert fired == 0
+    assert sentinel["sell"] == []
+    assert [r["code"] for r in sentinel["saved"][-1]["agentA"]] == ["600362.SH"]

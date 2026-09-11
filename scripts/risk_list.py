@@ -17,6 +17,16 @@
     「垃圾股、财务造假……都黑名单」；立案调查是存续状态，窗口比新闻长得多。
   - 监管关注（watch，2026-09-11）：问询函/监管函/警示函等 → **只提醒不禁买**，
     落 `watch` 段进提示词当因子自评。口径「监管的可以提醒，里面有因子」。
+  - 低价/面值退市（penny，2026-09-11）：未复权收盘价 < `min_price`（默认 2.0 元）
+    → 禁买。口径「还有一些垃圾股……都黑名单」。A股最硬的垃圾股判据就是面值退市
+    （连续 20 个交易日收盘 < 1 元即终止上市），这里设的是**预警带**而非等到 1 元。
+    数据源 quantdb 日线分区（未复权；复权价会把面值判据算错），每夜落盘，
+    数据停更超过 `penny_days` 自然失效（fail-open）。
+  - 基本面/长期趋势劣化（weak，2026-09-11）：读 fundamental_flags.py 每日算好的
+    缓存 `data/fundamental_flags.json`（连亏≥3年 / 净资产为负 / 相对全市场长期
+    跑输且跌破年线）→ 禁买。用户口径「财务状况一直不好的也需要排除、长期下跌
+    趋势，不管牛市熊市都不好的」。**不在本模块现算**：全市场 5600 只的一轮扫描
+    ~11s，而本清单每交易日要重建 6 次。缓存超过 `flag_days` 自然日即失效。
   - 质押：**只告警不拦买**（慢性状态而非事件；比例高不等于当期风险）。
 
 设计取舍：
@@ -44,6 +54,13 @@ sys.path.insert(0, str(ROOT / "scripts"))
 CONF = ROOT / "configs" / "live_symbols.json"
 OUT = ROOT / "data" / "risk_block.json"
 NEWS_HISTORY = ROOT / "data" / "news_brief" / "history.jsonl"
+# 全市场未复权日线（quantdb 分区 dt=YYYYMMDD/data.parquet，每夜 ~01:55 落盘）。
+# 用**未复权**口径：面值退市看的是实际成交价，复权价会把判据算错。
+KLINE_DIR = Path(os.environ.get(
+    "QUANTDB_KLINE_DIR",
+    "/home/zbox/projects/quantmind/data/quantdb/1_kline_data/daily_unadjusted"))
+# 基本面/长期趋势劣化缓存（scripts/fundamental_flags.py 每日 build，cron 08:35）。
+FUND_FLAGS = ROOT / "data" / "fundamental_flags.json"
 
 BJ = timezone(timedelta(hours=8))
 
@@ -58,7 +75,17 @@ DEFAULTS = {
     "pledge_warn_ratio": 50.0,  # 质押比例告警阈值（%，只告警）
     "grave_days": 60,           # 重大违规（立案/造假/处罚）存续窗口（自然日）
     "regulatory_days": 30,      # 监管关注（问询/警示）提醒窗口（自然日，不禁买）
+    "min_price": 2.0,           # 收盘价低于此值禁买（元；0 = 关闭）
+    "penny_days": 5,            # 低价条目的数据新鲜度窗口（自然日）
+    "loss_years": 3,            # 连续亏损年数阈值（年报口径）
+    "net_assets_min_yi": 0.0,   # 净资产低于此值（亿元）算资不抵债
+    "trend_rel250_max": -0.25,  # 近 1 年相对全市场中位收益下限
+    "trend_rel500_max": -0.35,  # 近 2 年相对全市场中位收益下限
+    "flag_days": 7,             # 基本面缓存的过期窗口（自然日）
 }
+
+# 存续状态类风险：与短事件合并时取**更晚**失效日，不被提前解除。
+STICKY_KINDS = {"grave", "penny", "weak"}
 
 # 重大违规关键词：命中即按 grave_days 长窗口拉黑（不依赖 sentiment）→ **禁买**。
 # 口径（2026-09-11 用户）：「垃圾股、财务造假……这些股票，都黑名单」。
@@ -123,6 +150,17 @@ def _as_dt(v) -> datetime | None:
     except (ValueError, TypeError):
         return None
     return d.replace(tzinfo=BJ) if d.tzinfo is None else d
+
+
+def _ymd(v) -> date | None:
+    """20260908 / "20260908" / "2026-09-08" 都归一成 date；其余 None。"""
+    s = str(v or "").strip()
+    if len(s) >= 8 and s[:8].isdigit():
+        try:
+            return datetime.strptime(s[:8], "%Y%m%d").date()
+        except ValueError:
+            return None
+    return _as_date(v)
 
 
 def unlock_items(rows: list, asof: date, conf: dict) -> dict:
@@ -267,6 +305,70 @@ def regulatory_watch(lines: list, asof: date, conf: dict) -> dict:
     return out
 
 
+def price_items(rows: list, asof: date, conf: dict) -> dict:
+    """低价股（面值退市预警带）→ {code6: {reason, kind, expire}}。
+
+    用户口径（2026-09-11）「还有一些垃圾股……都黑名单」。A股最硬的垃圾股判据是
+    **面值退市**：连续 20 个交易日收盘价 < 1 元即终止上市。这里不等跌到 1 元才拦，
+    而是设预警带 `min_price`（默认 2.0 元）——跌到这条线附近的票，退市风险与流动性
+    枯竭已经同时出现，而"便宜"恰恰会让模型更想买。
+    停牌/脏数据（close 为 0、缺失、'-'）**不算**低价：那是数据缺口不是风险
+    （fail-open 同全模块）。数据是未复权日收盘，取 dt ≤ asof 的最新分区。
+    """
+    out: dict = {}
+    floor = _num(conf.get("min_price"), DEFAULTS["min_price"])
+    fresh = int(_num(conf.get("penny_days"), DEFAULTS["penny_days"]))
+    if floor <= 0:
+        return out
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        code = _code6(r.get("symbol") or r.get("股票代码") or r.get("证券代码"))
+        day = _ymd(r.get("dt") or r.get("time"))
+        close = _num(r.get("close") if r.get("close") is not None else r.get("最新价"), 0.0)
+        if not code or day is None or close <= 0:
+            continue
+        if day < asof - timedelta(days=fresh):
+            continue  # 快照停更 → 条目失效（fail-open）
+        if close >= floor:
+            continue
+        out[code] = {
+            "reason": f"股价{close:.2f}元低于{floor:.1f}元预警线（逼近面值退市）",
+            "kind": "penny",
+            "expire": (day + timedelta(days=fresh)).isoformat(),
+        }
+    return out
+
+
+def fundamental_items(doc: dict, asof: date, conf: dict) -> dict:
+    """基本面/长期趋势劣化缓存 → {code6: {reason, kind, expire}}。
+
+    用户口径（2026-09-11）「财务状况不好的基于 quantdb 也需要排除、财务状况一直
+    不好的也需要排除、长期下跌趋势，不管牛市熊市都不好的」。判据与全市场扫描在
+    `scripts/fundamental_flags.py`（cron 每日 build），这里只做**消费**：
+      - 缓存 asof 超过 `flag_days` 自然日 → 整份失效（fail-open；行情/财报都会变，
+        陈旧结论比没有结论更危险）；
+      - 条目自带 asof（与文档同源），过期同样失效。
+    存续状态类（kind "weak"）：连亏与年线下方不会一两天就修复，合并时取更晚失效日。
+    """
+    out: dict = {}
+    fresh = int(_num(conf.get("flag_days"), DEFAULTS["flag_days"]))
+    src = _as_date(doc.get("asof")) if isinstance(doc, dict) else None
+    if src is None or src < asof - timedelta(days=fresh):
+        return out  # 缓存缺失/过期 → 空白（fail-open）
+    items = doc.get("items") if isinstance(doc, dict) else None
+    for code, it in (items or {}).items():
+        c6 = _code6(code)
+        if not c6 or not isinstance(it, dict):
+            continue
+        reason = str(it.get("reason") or "").strip()
+        if not reason:
+            continue
+        out[c6] = {"reason": f"基本面劣化：{reason}", "kind": "weak",
+                   "expire": (src + timedelta(days=fresh)).isoformat()}
+    return out
+
+
 def pledge_warns(rows: list, conf: dict) -> dict:
     """质押比例 ≥ 阈值 → {code6: 告警文本}。只告警，不进买入闸门。"""
     out: dict = {}
@@ -286,8 +388,9 @@ def pledge_warns(rows: list, conf: dict) -> dict:
 def _merge(a: dict, b: dict) -> dict:
     """同一标的命中多类风险 → 理由合并。
 
-    失效日：一般的解禁/新闻取**更早**（先失效的为准）；含 grave（立案/造假等
-    重大违规）则取**更晚**——存续期风险不该被一个两天后到期的解禁条目提前解除。
+    失效日：一般的解禁/新闻取**更早**（先失效的为准）；含存续状态类（grave 立案/
+    造假、penny 低价）则取**更晚**——存续期风险不该被一个两天后到期的解禁条目
+    提前解除；条目真解除要么等事件窗口走完，要么等数据源不再报（价格回升）。
     """
     out = dict(a)
     for code, it in b.items():
@@ -297,8 +400,9 @@ def _merge(a: dict, b: dict) -> dict:
         prev = out[code]
         kinds = "+".join(sorted({prev["kind"], it["kind"]}))
         expires = (prev["expire"], it["expire"])
+        sticky = bool(set(kinds.split("+")) & STICKY_KINDS)
         out[code] = {"reason": f"{prev['reason']}；{it['reason']}", "kind": kinds,
-                     "expire": max(expires) if "grave" in kinds else min(expires)}
+                     "expire": max(expires) if sticky else min(expires)}
     return out
 
 
@@ -322,6 +426,38 @@ def _read_pledge_rows() -> list:
         return []
 
 
+def read_price_rows(asof: date | None = None, root: Path | None = None) -> list:
+    """全市场未复权日收盘（quantdb 分区，取 dt ≤ asof 的最新一天）。失败 → []。
+
+    root 默认 KLINE_DIR（QUANTDB_KLINE_DIR 可覆盖），入参留给测试。只读一天的
+    parquet（≈5500 行）——不扫全量历史。
+    """
+    try:
+        import duckdb
+
+        base = Path(root or KLINE_DIR)
+        parts = [p for p in base.glob("dt=*") if p.is_dir() and p.name[3:].isdigit()]
+        if asof is not None:
+            parts = [p for p in parts if p.name[3:] <= asof.strftime("%Y%m%d")]
+        if not parts:
+            return []
+        f = sorted(parts)[-1] / "data.parquet"
+        df = duckdb.connect().execute(
+            f"SELECT symbol, close, dt FROM read_parquet('{f}')").df()
+        return df.to_dict("records")
+    except Exception:  # noqa: BLE001 数据源缺失不阻塞交易（fail-open）
+        return []
+
+
+def _read_fundamental_flags(path: Path | None = None) -> dict:
+    """读 fundamentals 缓存（fundamental_flags.py 产出）；缺失/损坏 → {}。"""
+    try:
+        doc = json.loads((path or FUND_FLAGS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
 def _read_news_lines() -> list:
     try:
         text = NEWS_HISTORY.read_text(encoding="utf-8")
@@ -338,7 +474,8 @@ def _read_news_lines() -> list:
 
 def build(asof: date | None = None, conf: dict | None = None,
           unlock_rows: list | None = None, news_lines: list | None = None,
-          pledge_rows: list | None = None) -> dict:
+          pledge_rows: list | None = None, price_rows: list | None = None,
+          fundamental: dict | None = None) -> dict:
     """组装风险清单（items）。显式传入行数据即不读真实数据源（测试用）。"""
     asof = asof or datetime.now(BJ).date()
     conf = conf if conf is not None else load_conf()
@@ -347,18 +484,23 @@ def build(asof: date | None = None, conf: dict | None = None,
     rows_u = _read_unlock_rows() if unlock_rows is None else unlock_rows
     rows_p = _read_pledge_rows() if pledge_rows is None else pledge_rows
     lines_n = _read_news_lines() if news_lines is None else news_lines
-    return _merge(_merge(unlock_items(rows_u, asof, conf),
-                         news_items(lines_n, asof, conf)),
-                  grave_items(lines_n, asof, conf))
+    rows_pr = read_price_rows(asof) if price_rows is None else price_rows
+    fund = _read_fundamental_flags() if fundamental is None else fundamental
+    return _merge(_merge(_merge(_merge(unlock_items(rows_u, asof, conf),
+                                       news_items(lines_n, asof, conf)),
+                                grave_items(lines_n, asof, conf)),
+                         price_items(rows_pr, asof, conf)),
+                  fundamental_items(fund, asof, conf))
 
 
 def refresh(path: Path | None = None, asof: date | None = None,
             unlock_rows: list | None = None, news_lines: list | None = None,
-            pledge_rows: list | None = None) -> dict:
+            pledge_rows: list | None = None, price_rows: list | None = None,
+            fundamental: dict | None = None) -> dict:
     """重建清单并原子落盘。返回 {"items","warns","watch"}（供 cron 日志）。"""
     asof = asof or datetime.now(BJ).date()
     conf = load_conf()
-    items = build(asof, conf, unlock_rows, news_lines, pledge_rows)
+    items = build(asof, conf, unlock_rows, news_lines, pledge_rows, price_rows, fundamental)
     rows_p = _read_pledge_rows() if pledge_rows is None else pledge_rows
     lines_n = _read_news_lines() if news_lines is None else news_lines
     on = bool(conf.get("enabled", True))

@@ -59,7 +59,7 @@
   ],
   "allow_st": false,
   "risk": {
-    "_risk_note": "enabled=false 关闭整条风险清单（只留 ST/黑名单）。unlock_days=解禁前多少自然日内禁买；unlock_after_days=解禁后多少自然日内仍禁买（抛压兑现期，用户 2026-09-11：解禁是超级利空，前后双向拦）；unlock_ratio_min=解禁占流通市值百分比阈值（源数据是小数，此处填百分数）。news_days=负面新闻回溯天数；news_sentiment_max=情绪阈值（-1..1，≤该值算负面）；news_max_tickers=事件涉及标的数上限，超过视为板块级不拦。grave_days=重大违规（立案调查/财务造假/行政处罚/退市风险等关键词命中）的禁买存续窗口——比普通新闻长得多，且不看情绪值。regulatory_days=监管关注（问询函/监管函/警示函）提醒窗口，**只提醒不禁买**（当因子看）。pledge_warn_ratio=质押比例告警线（只告警不拦买）。",
+    "_risk_note": "enabled=false 关闭整条风险清单（只留 ST/黑名单）。unlock_days=解禁前多少自然日内禁买；unlock_after_days=解禁后多少自然日内仍禁买（抛压兑现期，用户 2026-09-11：解禁是超级利空，前后双向拦）；unlock_ratio_min=解禁占流通市值百分比阈值（源数据是小数，此处填百分数）。news_days=负面新闻回溯天数；news_sentiment_max=情绪阈值（-1..1，≤该值算负面）；news_max_tickers=事件涉及标的数上限，超过视为板块级不拦。grave_days=重大违规（立案调查/财务造假/行政处罚/退市风险等关键词命中）的禁买存续窗口——比普通新闻长得多，且不看情绪值。regulatory_days=监管关注（问询函/监管函/警示函）提醒窗口，**只提醒不禁买**（当因子看）。min_price=未复权收盘价低于此值禁买（元，默认 2.0；0=关闭）——垃圾股/面值退市预警带（连续 20 日收盘<1 元即终止上市），数据取 quantdb 日线最新分区。penny_days=低价条目的数据新鲜度窗口（自然日，数据停更即失效）。loss_years=连续亏损年数阈值（年报口径，默认 3；实际读数由 scripts/fundamental_flags.py 每日 08:35 扫全市场落 data/fundamental_flags.json，本清单只消费）。net_assets_min_yi=净资产低于此值（亿元，默认 0.0）算资不抵债，一并禁买。trend_rel250_max / trend_rel500_max=长期下跌判据：近 1 年 / 近 2 年收益相对**全市场中位数**的下限（相对口径——绝对值会把大盘 beta 当个股问题，实测 58% 命中），且现价须在年线下方，三条同时成立才拦。flag_days=基本面缓存的过期窗口（自然日，默认 7；过期整份失效 fail-open）。重新生成：python scripts/fundamental_flags.py build。pledge_warn_ratio=质押比例告警线（只告警不拦买）。",
     "enabled": true,
     "unlock_days": 10,
     "unlock_after_days": 5,
@@ -69,7 +69,14 @@
     "news_max_tickers": 3,
     "grave_days": 60,
     "regulatory_days": 30,
-    "pledge_warn_ratio": 50.0
+    "pledge_warn_ratio": 50.0,
+    "min_price": 2.0,
+    "penny_days": 5,
+    "loss_years": 3,
+    "net_assets_min_yi": 0.0,
+    "trend_rel250_max": -0.25,
+    "trend_rel500_max": -0.35,
+    "flag_days": 7
   },
   "_block_buy_note": "2026-09-11 由 scripts/news_blacklist_scan.py 扫年内 RSS 全量（Huntly 快照 57.8 万篇，--since 2026-01-01）生成：取严重类（立案/造假/交易违规）且标题内公司名与关键词就近共现 ≥10 条的候选，再逐只人工复核证据后 55 只入黑名单。复核剔除 4 只误报：600730 *ST高科（命中全部是「荃银高科」后缀撞名）、600745 *ST闻泰（「立案」是公司起诉他人，罚单开给立讯精密）、601799 星宇股份（校招解约舆情，「处罚」系公司自罚高管）、601236 红塔证券（仅警示函，按监管口径只提醒不入黑名单）。复现：python scripts/news_blacklist_scan.py --since 2026-01-01 [--evidence <代码,代码>]。本清单是历史沉淀、只增不减：新闻过期不影响它；后续新出现的事件风险靠 risk_list 每日刷新（data/risk_block.json）自动拦，两者叠加生效。"
 }

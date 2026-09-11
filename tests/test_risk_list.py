@@ -210,7 +210,7 @@ def test_build_merges_grave_without_shortening_by_unlock():
     line = _grave_line(tickers=("688795.SH",), name="摩尔线程",
                        note="因涉嫌信息披露违法被立案调查")
     items = build(asof=ASOF, unlock_rows=[_unlock_row(days=2)],
-                  news_lines=[line], pledge_rows=[])
+                  news_lines=[line], pledge_rows=[], price_rows=[], fundamental={})
     it = items["688795"]
     assert "解禁" in it["reason"] and "立案" in it["reason"]
     assert it["expire"] == (ASOF + timedelta(days=DEFAULTS["grave_days"])).isoformat()
@@ -247,7 +247,8 @@ def test_regulatory_does_not_enter_hard_block():
     """监管关注**不进**禁买清单——同一行数据只落 watch，不落 items。"""
     from risk_list import regulatory_watch
     line = _reg_line()
-    assert build(asof=ASOF, unlock_rows=[], news_lines=[line], pledge_rows=[]) == {}
+    assert build(asof=ASOF, unlock_rows=[], news_lines=[line], pledge_rows=[],
+                 price_rows=[], fundamental={}) == {}
     assert regulatory_watch([line], ASOF, DEFAULTS)
 
 
@@ -286,7 +287,7 @@ def test_refresh_writes_watch_and_excludes_blocked(tmp_path):
     reg2 = _reg_line(tickers=("600309.SH",), name="万华化学", note="收到监管函")
     out = tmp_path / "risk_block.json"
     stats = refresh(out, asof=ASOF, unlock_rows=[_unlock_row()],
-                    news_lines=[grave, reg, reg2], pledge_rows=[])
+                    news_lines=[grave, reg, reg2], pledge_rows=[], price_rows=[], fundamental={})
     assert stats["items"] == 1 and stats["watch"] == 1
     doc = json.loads(out.read_text(encoding="utf-8"))
     assert "600309" in doc["watch"] and "688795" not in doc["watch"]
@@ -319,6 +320,133 @@ def test_pledge_below_threshold_silent():
     assert pledge_warns([{"股票代码": "600309", "质押比例": 10.0}], DEFAULTS) == {}
 
 
+# ---------------------------------------------------------------- 低价/面值退市
+
+def _price_row(symbol="000909.SZ", close=1.83, dt="20260908"):
+    return {"symbol": symbol, "close": close, "dt": dt}
+
+
+def test_low_price_is_blocked():
+    """面值退市是硬风险：收盘价低于预警线 → 禁买（用户口径「垃圾股……都黑名单」）。"""
+    from risk_list import price_items
+    it = price_items([_price_row()], ASOF, DEFAULTS)["000909"]
+    assert it["kind"] == "penny" and "1.83" in it["reason"]
+    assert it["expire"] == (ASOF + timedelta(days=DEFAULTS["penny_days"])).isoformat()
+
+
+def test_healthy_price_passes():
+    from risk_list import price_items
+    assert price_items([_price_row(close=12.5)], ASOF, DEFAULTS) == {}
+
+
+def test_price_floor_can_be_disabled():
+    from risk_list import price_items
+    assert price_items([_price_row()], ASOF, {**DEFAULTS, "min_price": 0}) == {}
+
+
+def test_zero_and_missing_close_not_blocked():
+    """停牌/脏数据（close 0、缺失、'-'）不能当"低价"拦——那是数据缺口不是风险。"""
+    from risk_list import price_items
+    rows = [_price_row(close=0), _price_row(symbol="000559.SZ", close=None),
+            _price_row(symbol="600519.SH", close="-"), {"close": 1.0}]
+    assert price_items(rows, ASOF, DEFAULTS) == {}
+
+
+def test_stale_price_snapshot_lapses():
+    """数据停更超过 penny_days → 不再拦（fail-open，同解禁/新闻口径）。"""
+    from risk_list import price_items
+    old = (ASOF - timedelta(days=DEFAULTS["penny_days"] + 1)).strftime("%Y%m%d")
+    assert price_items([_price_row(dt=old)], ASOF, DEFAULTS) == {}
+
+
+def test_price_is_sticky_when_merged():
+    """低价是**存续状态**（同 grave）：与短事件合并时取更晚失效日，不被提前解除。"""
+    items = build(asof=ASOF, unlock_rows=[], news_lines=[_news_line()],
+                  pledge_rows=[], price_rows=[_price_row(symbol="688795.SH")], fundamental={})
+    it = items["688795"]
+    assert "股价" in it["reason"] and "解禁跌停" in it["reason"]
+    assert it["expire"] == (ASOF + timedelta(days=DEFAULTS["penny_days"])).isoformat()
+
+
+def test_read_price_rows_picks_latest_partition_not_future(tmp_path):
+    """读取器取 dt ≤ asof 的最新分区（防未来函数）；缺目录 → []（fail-open）。"""
+    import duckdb
+    from risk_list import read_price_rows
+    for dt, close in (("20260907", 2.5), ("20260908", 1.83), ("20260909", 1.5)):
+        d = tmp_path / f"dt={dt}"
+        d.mkdir()
+        duckdb.connect().execute(
+            f"COPY (SELECT '000909.SZ' AS symbol, {close} AS close, {dt} AS dt) "
+            f"TO '{d}/data.parquet' (FORMAT PARQUET)")
+    assert [str(r["dt"]) for r in read_price_rows(ASOF, root=tmp_path)] == ["20260908"]
+    assert read_price_rows(ASOF, root=tmp_path / "nope") == []
+
+
+def test_refresh_writes_price_rule(tmp_path):
+    """落盘 → load_risk 读回：低价条目走同一条闸门（items）。"""
+    out = tmp_path / "risk_block.json"
+    stats = refresh(out, asof=ASOF, unlock_rows=[], news_lines=[], pledge_rows=[],
+                    price_rows=[_price_row()], fundamental={})
+    assert stats["items"] == 1 and "000909" in load_risk(out, asof=ASOF)
+
+
+# ------------------------------------------- 基本面/长期趋势劣化（weak，缓存消费）
+
+def _fund_doc(asof=ASOF, code="000909", reason="连续3年亏损（2023-2025）",
+              flags=("fin",)):
+    return {"asof": asof.isoformat(), "generated_at": asof.isoformat(),
+            "items": {code: {"reason": reason, "flags": list(flags),
+                             "asof": asof.isoformat()}}}
+
+
+def test_fundamental_fresh_cache_blocks():
+    """财务持续差/长期下跌是存续状态 → 进禁买清单（用户口径「也需要排除」）。"""
+    from risk_list import fundamental_items
+    it = fundamental_items(_fund_doc(), ASOF, DEFAULTS)["000909"]
+    assert it["kind"] == "weak" and "连续3年亏损" in it["reason"]
+    assert it["expire"] == (ASOF + timedelta(days=DEFAULTS["flag_days"])).isoformat()
+
+
+def test_fundamental_stale_cache_lapses():
+    """缓存过期（> flag_days）→ 整份失效：陈旧结论比没有结论更危险（fail-open）。"""
+    from risk_list import fundamental_items
+    old = ASOF - timedelta(days=DEFAULTS["flag_days"] + 1)
+    assert fundamental_items(_fund_doc(asof=old), ASOF, DEFAULTS) == {}
+
+
+def test_fundamental_missing_and_dirty_sources_are_empty():
+    from risk_list import fundamental_items
+    assert fundamental_items({}, ASOF, DEFAULTS) == {}
+    assert fundamental_items(None, ASOF, DEFAULTS) == {}
+    assert fundamental_items({"asof": ASOF.isoformat(), "items": {}}, ASOF, DEFAULTS) == {}
+    doc = {"asof": ASOF.isoformat(),
+           "items": {"000909": {"reason": "", "flags": ["fin"]}, "BAD": {"reason": "x"}}}
+    assert fundamental_items(doc, ASOF, DEFAULTS) == {}
+
+
+def test_fundamental_trend_reason_kept():
+    from risk_list import fundamental_items
+    doc = _fund_doc(reason="长期下跌：近1年跑输大盘48%、近2年跑输63%，且现价位于年线下方",
+                    flags=("trend",))
+    assert "跑输大盘" in fundamental_items(doc, ASOF, DEFAULTS)["000909"]["reason"]
+
+
+def test_weak_is_sticky_when_merged():
+    """弱基本面是存续状态（同 grave/penny）：合并时取更晚失效日，不被提前解除。"""
+    items = build(asof=ASOF, unlock_rows=[_unlock_row(code="000909", days=1)],
+                  news_lines=[], pledge_rows=[], price_rows=[], fundamental=_fund_doc())
+    it = items["000909"]
+    assert "解禁" in it["reason"] and "连续3年亏损" in it["reason"]
+    assert it["expire"] == (ASOF + timedelta(days=DEFAULTS["flag_days"])).isoformat()
+
+
+def test_fundamental_only_entry_survives_refresh(tmp_path):
+    out = tmp_path / "risk_block.json"
+    stats = refresh(out, asof=ASOF, unlock_rows=[], news_lines=[], pledge_rows=[],
+                    price_rows=[], fundamental=_fund_doc())
+    assert stats["items"] == 1 and "000909" in load_risk(out, asof=ASOF)
+
+
 # ---------------------------------------------------------------- 读取 / 落盘
 
 def test_load_risk_missing_file_is_empty(tmp_path):
@@ -344,7 +472,7 @@ def test_load_risk_filters_expired_items(tmp_path):
 def test_refresh_writes_and_roundtrips(tmp_path):
     out = tmp_path / "risk_block.json"
     stats = refresh(out, asof=ASOF, unlock_rows=[_unlock_row()],
-                    news_lines=[_news_line()], pledge_rows=[])
+                    news_lines=[_news_line()], pledge_rows=[], price_rows=[], fundamental={})
     assert stats["items"] == 1 and stats["warns"] == 0
     doc = json.loads(out.read_text(encoding="utf-8"))
     assert doc["asof"] == ASOF.isoformat() and "688795" in doc["items"]
@@ -353,7 +481,7 @@ def test_refresh_writes_and_roundtrips(tmp_path):
 def test_build_merges_unlock_and_news_for_same_code():
     """同一只股票既是解禁又是负面新闻 → 只留一条，理由合并，取更早的失效日。"""
     items = build(asof=ASOF, unlock_rows=[_unlock_row(days=2)],
-                  news_lines=[_news_line()], pledge_rows=[])
+                  news_lines=[_news_line()], pledge_rows=[], price_rows=[], fundamental={})
     it = items["688795"]
     assert "解禁" in it["reason"] and "解禁跌停" in it["reason"]
     assert it["expire"] == (ASOF + timedelta(days=2) + timedelta(days=1)).isoformat()
@@ -361,7 +489,8 @@ def test_build_merges_unlock_and_news_for_same_code():
 
 def test_build_survives_missing_sources():
     """三路数据全缺 → 空清单，不抛异常（fail-open）。"""
-    assert build(asof=ASOF, unlock_rows=[], news_lines=[], pledge_rows=[]) == {}
+    assert build(asof=ASOF, unlock_rows=[], news_lines=[], pledge_rows=[],
+                 price_rows=[], fundamental={}) == {}
 
 
 def test_load_conf_defaults_and_override(tmp_path):

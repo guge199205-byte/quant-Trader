@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from risk_list import (DEFAULTS, build, load_conf, load_risk,  # noqa: E402
+from risk_list import (DEFAULTS, build, grave_items, load_conf, load_risk,  # noqa: E402
                        news_items, refresh, unlock_items)
 
 ASOF = date(2026, 9, 8)
@@ -46,7 +46,8 @@ def test_unlock_within_window_and_ratio_is_blocked():
     assert "688795" in items
     it = items["688795"]
     assert it["kind"] == "unlock" and "解禁" in it["reason"]
-    assert it["expire"] == (ASOF + timedelta(days=3) + timedelta(days=1)).isoformat()
+    assert it["expire"] == (ASOF + timedelta(days=3)
+                            + timedelta(days=DEFAULTS["unlock_after_days"])).isoformat()
 
 
 def test_unlock_beyond_horizon_not_blocked():
@@ -58,9 +59,40 @@ def test_unlock_small_ratio_not_blocked():
     assert unlock_items([_unlock_row(ratio=0.003)], ASOF, DEFAULTS) == {}
 
 
-def test_unlock_past_date_not_blocked():
-    """已过解禁日 → 风险已兑现，不再拦买（否则会永久拉黑）。"""
-    assert unlock_items([_unlock_row(days=-1)], ASOF, DEFAULTS) == {}
+def test_unlock_after_day_still_blocked():
+    """解禁日已过 2 天 → 仍拦。抛压是在解禁**当天及之后**实际兑现的
+    （用户口径 2026-09-11「还有个解禁的也是超级利空」）——
+    原来 expire=解禁日+1，等于抛压一落地就解除封锁，方向反了。"""
+    line = _unlock_row(days=-2)
+    items = unlock_items([line], ASOF, DEFAULTS)
+    assert "688795" in items and "解禁" in items["688795"]["reason"]
+
+
+def test_unlock_long_past_released():
+    """解禁已过 unlock_after_days 天 → 释放（抛压窗口走完，不能永久拉黑）。"""
+    line = _unlock_row(days=-(DEFAULTS["unlock_after_days"] + 1))
+    assert unlock_items([line], ASOF, DEFAULTS) == {}
+
+
+def test_unlock_expire_covers_realized_pressure():
+    items = unlock_items([_unlock_row(days=3)], ASOF, DEFAULTS)
+    assert items["688795"]["expire"] == (
+        ASOF + timedelta(days=3 + DEFAULTS["unlock_after_days"])).isoformat()
+
+
+def test_unlock_after_days_configurable():
+    conf = dict(DEFAULTS, unlock_after_days=1)
+    assert unlock_items([_unlock_row(days=-2)], ASOF, conf) == {}
+    assert unlock_items([_unlock_row(days=-1)], ASOF, conf)
+
+
+def test_unlock_past_but_recent_still_blocked():
+    """已过解禁日但在兑现期内 → 仍拦（2026-09-11 口径改为双向窗口）。
+
+    旧口径「解禁日一过风险即兑现」只对**抢跑行情**成立：解禁盘要到解禁日才
+    真的可卖，抛压从那天起才落地。release 由 unlock_after_days 控制。
+    """
+    assert "688795" in unlock_items([_unlock_row(days=-1)], ASOF, DEFAULTS)
 
 
 def test_unlock_bad_rows_do_not_crash():
@@ -96,6 +128,182 @@ def test_old_news_ignored():
 def test_news_expires_after_window():
     items = news_items([_news_line()], ASOF, DEFAULTS)
     assert items["688795"]["expire"] == (ASOF + timedelta(days=3)).isoformat()
+
+
+# ---------------------------------------------------------------- 重大违规（立案/造假）
+# 2026-09-11 用户口径：「垃圾股、财务造假……这些股票，都黑名单」。负面新闻按
+# 事件处理（3 天热度），但立案调查/财务造假是**存续状态**——调查可持续数月，
+# 期间退市风险一直在；同一事件要按 grave_days 长窗口留档，且不依赖 sentiment
+# （关键词本身就是信号，AI 给的 sentiment 可能是 0 或缺省）。
+
+def _grave_line(ts="2026-09-08T09:25:00+08:00", tickers=("002674.SZ",),
+                event_type="问询处罚", name="兴业科技",
+                note="曾7连涨停，遭证监会立案", sentiment=-0.8):
+    return {"ts": ts, "segments": {"news-micro": {"events": [
+        {"tickers": list(tickers), "name": name, "event_type": event_type,
+         "sentiment": sentiment, "note": note}]}}}
+
+
+def test_grave_investigation_blocks_for_long_window():
+    items = grave_items([_grave_line()], ASOF, DEFAULTS)
+    assert "002674" in items
+    it = items["002674"]
+    assert it["kind"] == "grave" and "立案" in it["reason"]
+    assert it["expire"] == (ASOF + timedelta(days=DEFAULTS["grave_days"])).isoformat()
+
+
+def test_grave_event_older_than_news_window_still_blocked():
+    """5 天前的立案公告：news_items 已放过（3 天窗口），grave 仍要拦（60 天窗口）。"""
+    old = (ASOF - timedelta(days=5)).isoformat() + "T10:00:00+08:00"
+    line = _grave_line(ts=old)
+    assert news_items([line], ASOF, DEFAULTS) == {}
+    assert "002674" in grave_items([line], ASOF, DEFAULTS)
+
+
+def test_grave_ignores_sentiment():
+    """情绪值缺失/中性也不放过——关键词（立案/造假）本身就是信号。"""
+    for sent in (0, None, 0.5):
+        items = grave_items([_grave_line(sentiment=sent)], ASOF, DEFAULTS)
+        assert "002674" in items, sent
+
+
+def test_grave_keywords_cover_fraud_and_delisting_risk():
+    for note in ("财务造假被证监会处罚", "年报虚增收入", "信息披露违法违规",
+                 "实施退市风险警示"):
+        items = grave_items([_grave_line(note=note)], ASOF, DEFAULTS)
+        assert "002674" in items, note
+
+
+def test_warning_letter_is_watch_not_grave():
+    """警示函是关注级：只进 watch 提醒，不进 60 天禁买（用户 2026-09-11 口径）。"""
+    from risk_list import regulatory_watch
+    line = _grave_line(note="收到警示函")
+    assert grave_items([line], ASOF, DEFAULTS) == {}
+    assert "002674" in regulatory_watch([line], ASOF, DEFAULTS)
+
+
+def test_grave_normal_news_not_caught():
+    """普通负面（减持/大跌）不是重大违规，仍走 3 天新闻口径，不被 60 天窗口放大。"""
+    line = _grave_line(event_type="减持", name="欧普康视",
+                       note="二股东抛3%减持计划", tickers=("300595.SZ",))
+    assert grave_items([line], ASOF, DEFAULTS) == {}
+    assert "300595" in news_items([line], ASOF, DEFAULTS)
+
+
+def test_grave_sector_wide_event_ignored():
+    """涉多标的的监管类事件（板块级）不按个股拦——同 news_items 口径。"""
+    line = _grave_line(tickers=("002674.SZ", "600076.SH", "605255.SH", "600309.SH"))
+    assert grave_items([line], ASOF, DEFAULTS) == {}
+
+
+def test_grave_days_configurable():
+    conf = dict(DEFAULTS, grave_days=10)
+    items = grave_items([_grave_line()], ASOF, conf)
+    assert items["002674"]["expire"] == (ASOF + timedelta(days=10)).isoformat()
+
+
+def test_build_merges_grave_without_shortening_by_unlock():
+    """同一只票既解禁（2 天后失效）又被立案（60 天）→ 失效日取更晚的 grave。
+
+    取更早会把立案风险提前解除——存续期风险不该被一个两天后到期的解禁条目吞掉。
+    """
+    line = _grave_line(tickers=("688795.SH",), name="摩尔线程",
+                       note="因涉嫌信息披露违法被立案调查")
+    items = build(asof=ASOF, unlock_rows=[_unlock_row(days=2)],
+                  news_lines=[line], pledge_rows=[])
+    it = items["688795"]
+    assert "解禁" in it["reason"] and "立案" in it["reason"]
+    assert it["expire"] == (ASOF + timedelta(days=DEFAULTS["grave_days"])).isoformat()
+
+
+# ------------------------------------------------- 监管关注：只提醒不禁买（watch）
+# 用户口径（2026-09-11）：「监管的可以提醒，里面有因子，不去拿时[再]黑名单」——
+# 问询/警示这类事件的信息含量大于即期风险，进提示词当因子自评，不进买入闸门。
+
+def _reg_line(ts="2026-09-08T09:25:00+08:00", tickers=("002674.SZ",),
+              event_type="监管关注", name="兴业科技",
+              note="收到深交所问询函，要求说明业绩预告修正", sentiment=-0.2):
+    return {"ts": ts, "segments": {"news-micro": {"events": [
+        {"tickers": list(tickers), "name": name, "event_type": event_type,
+         "sentiment": sentiment, "note": note}]}}}
+
+
+def test_regulatory_watch_catches_inquiry_and_warning():
+    from risk_list import regulatory_watch
+    watch = regulatory_watch([_reg_line()], ASOF, DEFAULTS)
+    assert "002674" in watch
+    it = watch["002674"]
+    assert it["kind"] == "regulatory" and "问询" in it["reason"]
+    assert it["until"] == (ASOF + timedelta(days=DEFAULTS["regulatory_days"])).isoformat()
+
+
+def test_regulatory_warning_letter_caught():
+    from risk_list import regulatory_watch
+    line = _reg_line(event_type="警示函", note="收到证监会警示函")
+    assert "002674" in regulatory_watch([line], ASOF, DEFAULTS)
+
+
+def test_regulatory_does_not_enter_hard_block():
+    """监管关注**不进**禁买清单——同一行数据只落 watch，不落 items。"""
+    from risk_list import regulatory_watch
+    line = _reg_line()
+    assert build(asof=ASOF, unlock_rows=[], news_lines=[line], pledge_rows=[]) == {}
+    assert regulatory_watch([line], ASOF, DEFAULTS)
+
+
+def test_regulatory_ignores_sentiment():
+    """情绪值缺省/偏中性也要提醒——判据是关键词，因子在于事件本身。"""
+    from risk_list import regulatory_watch
+    line = _reg_line(sentiment=None, event_type="问询函")
+    assert "002674" in regulatory_watch([line], ASOF, DEFAULTS)
+
+
+def test_regulatory_outside_window_silent():
+    from risk_list import regulatory_watch
+    old = (ASOF - timedelta(days=DEFAULTS["regulatory_days"] + 1)).isoformat()
+    assert regulatory_watch([_reg_line(ts=f"{old}T09:00:00+08:00")], ASOF,
+                            DEFAULTS) == {}
+
+
+def test_regulatory_skips_sector_wide_event():
+    from risk_list import regulatory_watch
+    line = _reg_line(tickers=("002674.SZ", "600076.SH", "605255.SH", "600309.SH"))
+    assert regulatory_watch([line], ASOF, DEFAULTS) == {}
+
+
+def test_regulatory_days_configurable():
+    from risk_list import regulatory_watch
+    conf = dict(DEFAULTS, regulatory_days=5)
+    watch = regulatory_watch([_reg_line()], ASOF, conf)
+    assert watch["002674"]["until"] == (ASOF + timedelta(days=5)).isoformat()
+
+
+def test_refresh_writes_watch_and_excludes_blocked(tmp_path):
+    """watch 落盘；已在禁买清单里的代码不重复提醒（硬拦已覆盖）。"""
+    from risk_list import load_watch, regulatory_watch
+    grave = _grave_line(tickers=("688795.SH",), name="摩尔线程")
+    reg = _reg_line(tickers=("688795.SH",), name="摩尔线程", note="收到问询函")
+    reg2 = _reg_line(tickers=("600309.SH",), name="万华化学", note="收到监管函")
+    out = tmp_path / "risk_block.json"
+    stats = refresh(out, asof=ASOF, unlock_rows=[_unlock_row()],
+                    news_lines=[grave, reg, reg2], pledge_rows=[])
+    assert stats["items"] == 1 and stats["watch"] == 1
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert "600309" in doc["watch"] and "688795" not in doc["watch"]
+    assert load_watch(out, asof=ASOF) == doc["watch"]
+    # regulatory_watch 自身不做去重（去重是 refresh 组装期的事）
+    assert "688795" in regulatory_watch([grave, reg, reg2], ASOF, DEFAULTS)
+
+
+def test_load_watch_filters_expired_and_survives_missing(tmp_path):
+    from risk_list import load_watch
+    assert load_watch(tmp_path / "nope.json") == {}
+    f = tmp_path / "risk_block.json"
+    f.write_text(json.dumps({"watch": {
+        "002674": {"reason": "已过期", "kind": "regulatory", "until": "2026-09-01"},
+        "600309": {"reason": "仍在窗口", "kind": "regulatory", "until": "2026-09-30"},
+    }}), encoding="utf-8")
+    assert list(load_watch(f, asof=ASOF)) == ["600309"]
 
 
 # ---------------------------------------------------------------- 质押：只告警
@@ -207,6 +415,37 @@ def test_prompt_block_matches_without_suffix(tmp_path):
     """池内代码无后缀（6 位）也要能命中——数据源后缀口径不统一。"""
     from live_prompt_context import risk_warning_block
     assert "688795" in risk_warning_block(["688795"], path=_risk_file(tmp_path))
+
+
+# ----------------------------- 监管关注进提示词（软段，不写禁买）
+
+def _risk_file_with_watch(tmp_path):
+    f = tmp_path / "risk_block.json"
+    f.write_text(json.dumps({
+        "items": {"688795": {"reason": "解禁跌停", "kind": "unlock",
+                             "expire": "2099-01-01"}},
+        "watch": {"600309": {"reason": "监管关注（问询）：收到问询函",
+                             "kind": "regulatory", "until": "2099-01-01"}},
+    }), encoding="utf-8")
+    return f
+
+
+def test_prompt_block_has_regulatory_soft_tier(tmp_path):
+    """监管关注要**提醒**模型（当因子），但那一行不写「禁止买入」硬约束。"""
+    from live_prompt_context import risk_warning_block
+    txt = risk_warning_block(["688795.SH"], ["600309.SH"], path=_risk_file_with_watch(tmp_path))
+    assert "【监管关注" in txt and "只提醒不禁买" in txt
+    soft = txt.split("【监管关注")[1]
+    assert "600309.SH" in soft and "问询" in soft
+    assert "禁止" not in soft
+
+
+def test_prompt_block_watch_only_still_renders(tmp_path):
+    """只有监管关注、没有硬拦命中 → 仍要给提示，但不能虚报硬约束段。"""
+    from live_prompt_context import risk_warning_block
+    txt = risk_warning_block([], ["600309.SH"], path=_risk_file_with_watch(tmp_path))
+    assert "【监管关注" in txt
+    assert "事件风险警示" not in txt
 
 
 # ---- 夜间候选池过滤（night_pool_agent.filter_risk_candidates）--------------

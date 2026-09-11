@@ -533,33 +533,56 @@ def risk_warning_block(held_codes=None, pool_codes=None, names=None,
     模型有的话需要毙掉」——持仓命中要评估退出（卖出不受闸门限制），候选命中禁止买入。
     闸门（symbol_policy + risk_list）已硬拦买入，这里让模型**先知道**，
     省一轮"提了买、被毙掉"的无效决策；持仓侧则补上闸门管不到的退出提示。
+
+    2026-09-11 增加【监管关注】软段：问询函/监管函/警示函等只提醒不禁买
+    （用户口径「监管的可以提醒，里面有因子，不去拿时[再]黑名单」）——
+    这类事件的信息含量大于即期风险，模型当因子自评，不进买入闸门。
+
     清单缺失 → 返回 ""（fail-open，不阻塞提示词构建）。
     """
     try:
-        from risk_list import load_risk
+        from risk_list import load_risk, load_watch
 
         risk = load_risk(path)
+        watch = load_watch(path)
     except Exception:  # noqa: BLE001
         return ""
-    if not risk:
+    if not risk and not watch:
         return ""
     nm = names or {}
     lines: list = []
 
-    def _add(codes, tail):
-        for code in codes or []:
-            it = risk.get(str(code).split(".")[0])
-            if not it:
-                continue
-            name = nm.get(code) or nm.get(str(code).split(".")[0]) or ""
-            lines.append(f"- {code} {name}：{it.get('reason')}{tail}")
+    def _code6(c) -> str:
+        return str(c or "").split(".")[0]
 
-    _add(held_codes, " —— 持仓命中：优先评估减仓/退出，禁止加仓")
-    _add(pool_codes, " —— 候选命中：禁止买入（闸门硬拦）")
-    if not lines:
+    def _name(code) -> str:
+        return nm.get(code) or nm.get(_code6(code)) or ""
+
+    for code in held_codes or []:
+        it = risk.get(_code6(code))
+        if it:
+            lines.append(f"- {code} {_name(code)}：{it.get('reason')}"
+                         " —— 持仓命中：优先评估减仓/退出，禁止加仓")
+    for code in pool_codes or []:
+        it = risk.get(_code6(code))
+        if it:
+            lines.append(f"- {code} {_name(code)}：{it.get('reason')}"
+                         " —— 候选命中：禁止买入（闸门硬拦）")
+    wlines: list = []
+    for code in list(held_codes or []) + list(pool_codes or []):
+        it = watch.get(_code6(code))
+        if it:
+            wlines.append(f"- {code} {_name(code)}：{it.get('reason')}")
+    if not lines and not wlines:
         return ""
-    return "\n".join(["", "【事件风险警示（系统风险清单，硬约束）】", *lines[:max_items],
-                      "（持仓可卖、不可加仓；未持仓一律不许买——闸门会直接毙掉。）"])
+    out = [""]
+    if lines:
+        out += ["【事件风险警示（系统风险清单，硬约束）】", *lines[:max_items],
+                "（持仓可卖、不可加仓；未持仓一律不许买——闸门会直接毙掉。）"]
+    if wlines:
+        out += ["【监管关注（只提醒不禁买——当因子自评，不做买入依据）】",
+                *wlines[:max_items]]
+    return "\n".join(out)
 
 
 def load_news_brief(max_age_min: int = 180) -> str:

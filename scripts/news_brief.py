@@ -1389,7 +1389,8 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
         from risk_list import refresh as _risk_refresh
 
         st_risk = _risk_refresh()
-        print(f"✓ 事件风险清单重建：{st_risk['items']} 只禁买 / {st_risk['warns']} 只质押告警")
+        print(f"✓ 事件风险清单重建：{st_risk['items']} 只禁买 / {st_risk['warns']} 只质押告警"
+              f" / {st_risk['watch']} 只监管关注（只提醒）")
     except Exception as exc:  # noqa: BLE001 清单失败不影响新闻产出
         print(f"⚠️ 事件风险清单重建失败：{str(exc)[:100]}")
     save_state(new_st)

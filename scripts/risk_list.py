@@ -12,6 +12,11 @@
   - 负面新闻：data/news_brief/history.jsonl 的 micro 事件（sentiment ≤ 阈值）。
     回溯 `news_days` 天，expire = 事件日 + news_days。涉及标的数 > `news_max_tickers`
     的事件按板块级处理，不拦（否则一条板块负面把整个行业禁掉）。
+  - 重大违规（grave，2026-09-11）：立案调查/财务造假/虚增/行政处罚/退市风险等
+    关键词命中 → **禁买 `grave_days` 天**（60），不看 sentiment。用户口径
+    「垃圾股、财务造假……都黑名单」；立案调查是存续状态，窗口比新闻长得多。
+  - 监管关注（watch，2026-09-11）：问询函/监管函/警示函等 → **只提醒不禁买**，
+    落 `watch` 段进提示词当因子自评。口径「监管的可以提醒，里面有因子」。
   - 质押：**只告警不拦买**（慢性状态而非事件；比例高不等于当期风险）。
 
 设计取舍：
@@ -45,12 +50,26 @@ BJ = timezone(timedelta(hours=8))
 DEFAULTS = {
     "enabled": True,
     "unlock_days": 10,          # 解禁前 N 自然日内禁买
+    "unlock_after_days": 5,     # 解禁后 N 自然日**仍**禁买（抛压兑现期）
     "unlock_ratio_min": 1.0,    # 解禁占流通市值比例阈值（%）
     "news_days": 3,             # 负面新闻回溯窗口（自然日）
     "news_sentiment_max": -0.5,  # 情绪 ≤ 该值算负面
     "news_max_tickers": 3,      # 事件涉及标的数上限（超过视为板块级，不拦）
     "pledge_warn_ratio": 50.0,  # 质押比例告警阈值（%，只告警）
+    "grave_days": 60,           # 重大违规（立案/造假/处罚）存续窗口（自然日）
+    "regulatory_days": 30,      # 监管关注（问询/警示）提醒窗口（自然日，不禁买）
 }
+
+# 重大违规关键词：命中即按 grave_days 长窗口拉黑（不依赖 sentiment）→ **禁买**。
+# 口径（2026-09-11 用户）：「垃圾股、财务造假……这些股票，都黑名单」。
+# 只收硬信号："警示函/问询函"是关注级，归下面的 REGULATORY 提醒层，不进这里。
+GRAVE_KEYWORDS = ("立案", "造假", "虚增", "违法违规", "行政处罚",
+                  "退市风险", "信息披露违法")
+
+# 监管关注关键词 → **只提醒不禁买**（watch 段）。用户口径（2026-09-11）：
+# 「监管的可以提醒，里面有因子，不去拿时[再]黑名单」——问询/警示这类事件
+# 的信息含量（因子）大于即期风险，一刀切禁买会误伤；进提示词让模型自评。
+REGULATORY_KEYWORDS = ("问询", "监管函", "警示", "关注函", "监管关注")
 
 
 # ---------------------------------------------------------------- 配置
@@ -107,25 +126,36 @@ def _as_dt(v) -> datetime | None:
 
 
 def unlock_items(rows: list, asof: date, conf: dict) -> dict:
-    """解禁明细行 → {code6: {reason, kind, expire}}。脏行跳过，绝不抛异常。"""
+    """解禁明细行 → {code6: {reason, kind, expire}}。脏行跳过，绝不抛异常。
+
+    窗口是**解禁日前后双向**的（2026-09-11 用户口径「还有个解禁的也是超级利空」）：
+      - 前 unlock_days 天：市场抢跑，解禁盘还没出来价格就先跌；
+      - 后 unlock_after_days 天：解禁盘**真的可卖了**，抛压在这几天兑现。
+    只拦前不拦后是方向反了——封锁恰好在利空落地那刻解除。上限 unlock_after_days
+    天是为了不把已消化完的票永久拉黑。
+    """
     out: dict = {}
     horizon = int(_num(conf.get("unlock_days"), DEFAULTS["unlock_days"]))
+    after = int(_num(conf.get("unlock_after_days"), DEFAULTS["unlock_after_days"]))
     ratio_min = _num(conf.get("unlock_ratio_min"), DEFAULTS["unlock_ratio_min"])
     for r in rows or []:
         if not isinstance(r, dict):
             continue
         code = _code6(r.get("股票代码") or r.get("证券代码"))
         dday = _as_date(r.get("解禁时间"))
-        if not code or dday is None or not (asof <= dday <= asof + timedelta(days=horizon)):
+        if (not code or dday is None
+                or not (asof - timedelta(days=after) <= dday
+                        <= asof + timedelta(days=horizon))):
             continue
         ratio = _num(r.get("占解禁前流通市值比例"), 0.0) * 100  # 源是小数
         if ratio < ratio_min:
             continue
         kind = str(r.get("限售股类型") or "—")
+        when = f"{dday:%m/%d}解禁" if dday >= asof else f"{dday:%m/%d}已解禁"
         out[code] = {
-            "reason": f"{dday:%m/%d}解禁{ratio:.1f}%流通盘（{kind}）",
+            "reason": f"{when}{ratio:.1f}%流通盘（{kind}）",
             "kind": "unlock",
-            "expire": (dday + timedelta(days=1)).isoformat(),
+            "expire": (dday + timedelta(days=after)).isoformat(),
         }
     return out
 
@@ -161,6 +191,82 @@ def news_items(lines: list, asof: date, conf: dict) -> dict:
     return out
 
 
+def grave_items(lines: list, asof: date, conf: dict) -> dict:
+    """重大违规事件（立案调查/财务造假/行政处罚…）→ {code6: {reason, kind, expire}}。
+
+    与 news_items 的差别是**窗口**与**判据**：负面新闻按事件处理（news_days 天，
+    热度过去就该解除），而立案调查/财务造假是**存续状态**——调查可持续数月，
+    期间退市风险一直在（2026-09-11 用户口径「财务造假……都黑名单」）。判据改为
+    关键词命中，不看 sentiment：AI 给情绪值可能是 0 或缺省，而"立案"两个字本身
+    就是信号（实物：2026-09-10「遭证监会立案」「信披涉嫌重大遗漏」）。
+    涉多标的的事件仍按板块级跳过（同 news_max_tickers 口径，不整行业封杀）。
+    """
+    out: dict = {}
+    days = int(_num(conf.get("grave_days"), DEFAULTS["grave_days"]))
+    max_tk = int(_num(conf.get("news_max_tickers"), DEFAULTS["news_max_tickers"]))
+    floor = asof - timedelta(days=days)
+    for line in lines or []:
+        if not isinstance(line, dict):
+            continue
+        ts = _as_dt(line.get("ts"))
+        if ts is None or ts.date() < floor:
+            continue
+        micro = (line.get("segments") or {}).get("news-micro") or {}
+        for e in micro.get("events") or []:
+            if not isinstance(e, dict):
+                continue
+            text = " ".join(str(e.get(k) or "") for k in ("event_type", "name", "note"))
+            kw = next((k for k in GRAVE_KEYWORDS if k in text), "")
+            if not kw:
+                continue
+            tickers = [t for t in (e.get("tickers") or []) if _code6(t)]
+            if not tickers or len(tickers) > max_tk:
+                continue
+            reason = (f"重大违规（{kw}）：{e.get('name') or ''}"
+                      f"（{str(e.get('note') or '')[:60]}）")
+            expire = (ts.date() + timedelta(days=days)).isoformat()
+            for t in tickers:
+                out[_code6(t)] = {"reason": reason, "kind": "grave", "expire": expire}
+    return out
+
+
+def regulatory_watch(lines: list, asof: date, conf: dict) -> dict:
+    """监管关注事件（问询函/监管函/警示函）→ {code6: {reason, kind, until}}。
+
+    **只提醒不禁买**（与 items 的硬拦分开）：用户口径（2026-09-11）「监管的可以
+    提醒，里面有因子，不去拿时[再]黑名单」——关注级事件进提示词当因子自评，
+    不进买入闸门。窗口 regulatory_days 天（关注事项会持续一段时间）。
+    判据同 grave：关键词命中即可，不看 sentiment；板块级（涉多标的）跳过。
+    """
+    out: dict = {}
+    days = int(_num(conf.get("regulatory_days"), DEFAULTS["regulatory_days"]))
+    max_tk = int(_num(conf.get("news_max_tickers"), DEFAULTS["news_max_tickers"]))
+    floor = asof - timedelta(days=days)
+    for line in lines or []:
+        if not isinstance(line, dict):
+            continue
+        ts = _as_dt(line.get("ts"))
+        if ts is None or ts.date() < floor:
+            continue
+        micro = (line.get("segments") or {}).get("news-micro") or {}
+        for e in micro.get("events") or []:
+            if not isinstance(e, dict):
+                continue
+            text = " ".join(str(e.get(k) or "") for k in ("event_type", "name", "note"))
+            kw = next((k for k in REGULATORY_KEYWORDS if k in text), "")
+            if not kw:
+                continue
+            tickers = [t for t in (e.get("tickers") or []) if _code6(t)]
+            if not tickers or len(tickers) > max_tk:
+                continue
+            reason = (f"监管关注（{kw}）：{e.get('name') or ''}"
+                      f"（{str(e.get('note') or '')[:60]}）")
+            until = (ts.date() + timedelta(days=days)).isoformat()
+            for t in tickers:
+                out[_code6(t)] = {"reason": reason, "kind": "regulatory", "until": until}
+    return out
+
+
 def pledge_warns(rows: list, conf: dict) -> dict:
     """质押比例 ≥ 阈值 → {code6: 告警文本}。只告警，不进买入闸门。"""
     out: dict = {}
@@ -178,7 +284,11 @@ def pledge_warns(rows: list, conf: dict) -> dict:
 # ---------------------------------------------------------------- 组装 / 落盘
 
 def _merge(a: dict, b: dict) -> dict:
-    """同一标的命中多类风险 → 理由合并，失效日取更早（先失效的为准）。"""
+    """同一标的命中多类风险 → 理由合并。
+
+    失效日：一般的解禁/新闻取**更早**（先失效的为准）；含 grave（立案/造假等
+    重大违规）则取**更晚**——存续期风险不该被一个两天后到期的解禁条目提前解除。
+    """
     out = dict(a)
     for code, it in b.items():
         if code not in out:
@@ -186,9 +296,9 @@ def _merge(a: dict, b: dict) -> dict:
             continue
         prev = out[code]
         kinds = "+".join(sorted({prev["kind"], it["kind"]}))
-        out[code] = {"reason": f"{prev['reason']}；{it['reason']}",
-                     "kind": kinds,
-                     "expire": min(prev["expire"], it["expire"])}
+        expires = (prev["expire"], it["expire"])
+        out[code] = {"reason": f"{prev['reason']}；{it['reason']}", "kind": kinds,
+                     "expire": max(expires) if "grave" in kinds else min(expires)}
     return out
 
 
@@ -237,28 +347,33 @@ def build(asof: date | None = None, conf: dict | None = None,
     rows_u = _read_unlock_rows() if unlock_rows is None else unlock_rows
     rows_p = _read_pledge_rows() if pledge_rows is None else pledge_rows
     lines_n = _read_news_lines() if news_lines is None else news_lines
-    return _merge(unlock_items(rows_u, asof, conf),
-                  news_items(lines_n, asof, conf))
+    return _merge(_merge(unlock_items(rows_u, asof, conf),
+                         news_items(lines_n, asof, conf)),
+                  grave_items(lines_n, asof, conf))
 
 
 def refresh(path: Path | None = None, asof: date | None = None,
             unlock_rows: list | None = None, news_lines: list | None = None,
             pledge_rows: list | None = None) -> dict:
-    """重建清单并原子落盘。返回 {"items": n, "warns": m}（供 cron 日志）。"""
+    """重建清单并原子落盘。返回 {"items","warns","watch"}（供 cron 日志）。"""
     asof = asof or datetime.now(BJ).date()
     conf = load_conf()
     items = build(asof, conf, unlock_rows, news_lines, pledge_rows)
     rows_p = _read_pledge_rows() if pledge_rows is None else pledge_rows
-    warns = pledge_warns(rows_p, conf) if conf.get("enabled", True) else {}
+    lines_n = _read_news_lines() if news_lines is None else news_lines
+    on = bool(conf.get("enabled", True))
+    warns = pledge_warns(rows_p, conf) if on else {}
+    watch = regulatory_watch(lines_n, asof, conf) if on else {}
+    watch = {c: v for c, v in watch.items() if c not in items}  # 已硬拦的不重复提醒
     doc = {"asof": asof.isoformat(),
            "generated_at": datetime.now(BJ).isoformat(),
-           "items": items, "warns": warns}
+           "items": items, "warns": warns, "watch": watch}
     p = path or OUT
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(p.name + ".tmp")
     tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(tmp, p)
-    return {"items": len(items), "warns": len(warns)}
+    return {"items": len(items), "warns": len(warns), "watch": len(watch)}
 
 
 def load_risk(path: Path | None = None, asof: date | None = None) -> dict:
@@ -276,6 +391,23 @@ def load_risk(path: Path | None = None, asof: date | None = None) -> dict:
     today = (asof or datetime.now(BJ).date()).isoformat()
     return {str(c): v for c, v in items.items()
             if isinstance(v, dict) and str(v.get("expire") or "") >= today}
+
+
+def load_watch(path: Path | None = None, asof: date | None = None) -> dict:
+    """读监管关注段 {code6: {reason, kind, until}}；缺失/损坏 → {}（fail-open）。
+
+    与 load_risk 的 items（禁买）是两回事：这是**提示词提醒**用的软信号。
+    """
+    try:
+        doc = json.loads((path or OUT).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    watch = doc.get("watch") if isinstance(doc, dict) else None
+    if not isinstance(watch, dict):
+        return {}
+    today = (asof or datetime.now(BJ).date()).isoformat()
+    return {str(c): v for c, v in watch.items()
+            if isinstance(v, dict) and str(v.get("until") or "") >= today}
 
 
 def annotate(codes, path: Path | None = None) -> dict:
@@ -307,7 +439,11 @@ def main() -> int:
         for code, it in sorted(risk.items()):
             print(f"{code} [{it.get('kind')}] {it.get('reason')} (至 {it.get('expire')})")
         if not risk:
-            print("（空清单）")
+            print("（禁买清单为空）")
+        watch = load_watch()
+        for code, it in sorted(watch.items()):
+            print(f"{code} [watch:{it.get('kind')}] {it.get('reason')} "
+                  f"(至 {it.get('until')}，只提醒不禁买)")
         return 0
     if a.cmd == "check":
         hit = annotate([x.strip() for x in a.codes.split(",") if x.strip()])

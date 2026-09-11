@@ -3,13 +3,16 @@
   "block_buy": [],
   "allow_st": false,
   "risk": {
-    "_risk_note": "enabled=false 关闭整条风险清单（只留 ST/黑名单）。unlock_days=解禁前多少自然日内禁买；unlock_ratio_min=解禁占流通市值百分比阈值（源数据是小数，此处填百分数）。news_days=负面新闻回溯天数；news_sentiment_max=情绪阈值（-1..1，≤该值算负面）；news_max_tickers=事件涉及标的数上限，超过视为板块级不拦。pledge_warn_ratio=质押比例告警线（只告警不拦买）。",
+    "_risk_note": "enabled=false 关闭整条风险清单（只留 ST/黑名单）。unlock_days=解禁前多少自然日内禁买；unlock_after_days=解禁后多少自然日内仍禁买（抛压兑现期，用户 2026-09-11：解禁是超级利空，前后双向拦）；unlock_ratio_min=解禁占流通市值百分比阈值（源数据是小数，此处填百分数）。news_days=负面新闻回溯天数；news_sentiment_max=情绪阈值（-1..1，≤该值算负面）；news_max_tickers=事件涉及标的数上限，超过视为板块级不拦。grave_days=重大违规（立案调查/财务造假/行政处罚/退市风险等关键词命中）的禁买存续窗口——比普通新闻长得多，且不看情绪值。regulatory_days=监管关注（问询函/监管函/警示函）提醒窗口，**只提醒不禁买**（当因子看）。pledge_warn_ratio=质押比例告警线（只告警不拦买）。",
     "enabled": true,
     "unlock_days": 10,
+    "unlock_after_days": 5,
     "unlock_ratio_min": 1.0,
     "news_days": 3,
     "news_sentiment_max": -0.5,
     "news_max_tickers": 3,
+    "grave_days": 60,
+    "regulatory_days": 30,
     "pledge_warn_ratio": 50.0
   }
 }

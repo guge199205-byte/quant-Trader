@@ -119,7 +119,8 @@ def collect(day: date | None = None, refresh: bool = False,
         from risk_list import refresh as _risk_refresh
 
         st = _risk_refresh()
-        stats["risk_list"] = f"{st['items']} 只禁买 / {st['warns']} 只质押告警"
+        stats["risk_list"] = (f"{st['items']} 只禁买 / {st['warns']} 只质押告警"
+                              f" / {st['watch']} 只监管关注")
     except Exception as exc:  # noqa: BLE001 清单重建失败不影响采集结果
         stats["risk_list"] = f"fail: {str(exc)[:80]}"
     return stats

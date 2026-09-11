@@ -7,6 +7,8 @@ ledger['deferred']，cron 每个交易分钟跑本脚本，桥健康（行情新
 
 安全网（宁可不动不可乱动）：
   - 只重放 sell（减仓）：buy 的额度/现金闸门是决策时刻算的，重放时空跑更危险
+  - 自动执行总开关（configs/intraday_exec.json {"enabled": true}）关掉时保留延期
+    不重放——总闸关了就不该有自动路径真下单，等开关打开或 24h 过期作废
   - 在途卖单闸门：同代码已有未确认卖单（整点轮 / 分钟哨兵 / 上一轮重放）→ 保留延期，
     不重复下单（2026-09-11 与执行路径统一口径 live_fills.inflight_codes）
   - T+1 可卖量复核，可卖不足按可卖量缩量，0 可卖则保留延期
@@ -26,7 +28,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from live_ledger import (clear_deferred, load_deferred, load_ledger,  # noqa: E402
                          save_ledger)
 from live_hourly_analysis import (in_trading_window,  # noqa: E402
-                                  now_cn)
+                                  intraday_exec_enabled, now_cn)
 from live_fills import add_pending, inflight_codes, round_sell_qty  # noqa: E402
 from ashare_rules import at_limit_down, after_hours_eligible, after_hours_window  # noqa: E402
 
@@ -50,6 +52,8 @@ def main() -> int:
     ah = after_hours_window(now) and _after_hours_enabled()
     if not in_trading_window(now) and not ah:
         return 0  # 非盘中静默（cron 每分钟跑）
+    # 自动执行总开关：关了只保留不重放（哨兵/整点轮同口径；本脚本无 --execute，纯无人值守）
+    exec_on = intraday_exec_enabled()
 
     from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
     from live_hourly_analysis import market_data_stale
@@ -86,6 +90,12 @@ def main() -> int:
             final.append(d)  # 买入延期只留档不重放（资金闸是决策时刻的）
             continue
         agent, code = d["agent"], d["code"]
+        if not exec_on:
+            # 保留延期（不清、不重放）：开关打开后下一分钟继续，或 24h 过期作废
+            print(f"[{now:%F %T}] 🔒 {agent} 卖 {code}: 自动执行开关已关"
+                  f"（intraday_exec.json），延期单保留不重放")
+            final.append(d)
+            continue
         if code in pending_sell:
             # 该代码已有在途卖单（盘中断链重放的常见竞态：整点轮/哨兵也下了同一单）
             # → 保留延期不动，等 reconcile 确认成交/撤单后下一分钟再看

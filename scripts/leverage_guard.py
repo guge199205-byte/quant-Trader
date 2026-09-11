@@ -8,6 +8,8 @@ LLM 超时）杠杆约束就没人管。本守护每分钟独立巡检：
   - 只卖不买；只减到 ≤1.5×权益（不是全清）
   - 优先从市值最大的一腿减起，按整手向上取整
   - T+1 可卖量复核；跌停不接；行情停更不下手（宁可等也不卖飞）
+  - 自动执行总开关（configs/intraday_exec.json {"enabled": true}）关掉时
+    只报不卖——与哨兵同口径：总闸关了就不该有自动路径真下单
   - 成交后挂 pending 由 live_fills.reconcile 按真实成交价记账
 
 cron 计划：* 10-12,14-16 * * 1-5 python scripts/leverage_guard.py（北京盘中分钟）
@@ -23,7 +25,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from live_ledger import (agent_virtual_cash, find_holder,  # noqa: E402
                          load_ledger)
 from live_hourly_analysis import (LEVERAGE_MAX, in_trading_window,  # noqa: E402
-                                  now_cn)
+                                  intraday_exec_enabled, now_cn)
 from live_fills import add_pending, load_pending, round_sell_qty  # noqa: E402
 from ashare_rules import at_limit_down  # noqa: E402
 
@@ -32,6 +34,8 @@ def main() -> int:
     now = now_cn()
     if not in_trading_window(now):  # 日历感知（含法定节假日休市）
         return 0
+    # 自动执行总开关：关了只报不卖（哨兵/整点轮同口径；本脚本无 --execute，纯无人值守）
+    exec_on = intraday_exec_enabled()
 
     from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
     from live_hourly_analysis import market_data_stale
@@ -108,6 +112,12 @@ def main() -> int:
             print(f"[{now:%F %T}] ⏭️ {agent} {code} 跌停（{day_chg:+.2f}%），强平暂缓")
             continue
         limit = round(price * 0.98, 2)
+        if not exec_on:
+            # 只报不卖：本行说明「一切检查都过了、本该强平」，但总闸关着
+            print(f"[{now:%F %T}] 🔒 {agent} 杠杆 {value / equity:.2f}× > {LEVERAGE_MAX}×，"
+                  f"应减 {code} {want}股 限价 {limit}——自动执行开关已关"
+                  f"（intraday_exec.json），强平守护只报不卖")
+            continue
         # 在途去重：账本要等 reconcile 才更新，无去重会每分钟叠加卖单造成超卖
         # （2026-09-04 目标 200 股实际叠加到 400 股）
         inflight = [p for p in load_pending()

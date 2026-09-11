@@ -93,6 +93,9 @@ def replay(monkeypatch, tmp_path, pending_file):
     monkeypatch.setattr(R, "now_cn", lambda: NOW)
     monkeypatch.setattr(R, "in_trading_window", lambda now: True)
     monkeypatch.setattr(R, "after_hours_window", lambda now: False)
+    # 本文件只测在途闸门：总开关显式打开，不依赖本机 configs/intraday_exec.json
+    # 的当前值（总开关本身在 tests/test_exec_switch_gate.py 单测）
+    monkeypatch.setattr(R, "intraday_exec_enabled", lambda: True)
     monkeypatch.setattr(live_hourly_analysis, "market_data_stale", lambda broker: False)
 
     deferred_entry = {"agent": AGENT, "code": CODE, "side": "sell", "volume": 100,

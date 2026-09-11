@@ -6,6 +6,8 @@
   - 理由**按分句去重**（黑名单文案/基本面缓存/risk_block 合并文本三个来源会
     各带一遍全文，不去重整段重复）
   - risk_list 的合并 kind（"penny+weak"）按成分识别，不等值判
+  - 行业列只是补充标签（quantdb rs_hyname），拿不到不影响清单本体；
+    行业风险榜 = 剔除数 / 该行业总数，样本 <3 只不上榜
 
 运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_exclusion_report.py -q
 """
@@ -51,7 +53,7 @@ def test_marks_match_layer_count_and_reasons_deduped(env):
                    "reason": "连续3年亏损（2023-2025）；多年阴跌：近3年跑输大盘45%；"
                              "股价1.80元低于2.0元预警线（逼近面值退市）"}}})
 
-    rows, _transient = er.build({})
+    rows, _transient = er.build({}, {})
     assert len(rows) == 1
     r = rows[0]
     assert set(r["layers"]) == {"永久黑名单", "财务差", "长期下跌", "低价股"}
@@ -61,8 +63,8 @@ def test_marks_match_layer_count_and_reasons_deduped(env):
 
     md, csv_p = er.write(rows, [], {}, "2026-09-11")
     body = md.read_text(encoding="utf-8")
-    # 表格行：| # | 代码 | 名称 | 命中层数 | 层 | 理由 |
-    assert "| 1 | 600001 |  | 4 | 永久黑名单/财务差/长期下跌/低价股 |" in body
+    # 表格行：| # | 代码 | 名称 | 行业 | 命中层数 | 层 | 理由 |
+    assert "| 1 | 600001 |  |  | 4 | 永久黑名单/财务差/长期下跌/低价股 |" in body
 
 
 def test_csv_marks_column_count_matches_layer_count(env):
@@ -72,7 +74,7 @@ def test_csv_marks_column_count_matches_layer_count(env):
     _w(fund, {"asof": "2026-09-11", "items": {
         "600002": {"flags": ["shell", "flat"], "reason": "保壳特征：扣非连亏2年；长期横盘：两年不动"}}})
     _w(risk, {"items": {}})
-    rows, transient = er.build({})
+    rows, transient = er.build({}, {})
     _md, csv_p = er.write(rows, transient, {}, "2026-09-11")
 
     lines = csv_p.read_text(encoding="utf-8-sig").splitlines()
@@ -85,7 +87,7 @@ def test_csv_marks_column_count_matches_layer_count(env):
 
 def test_missing_sources_fail_open(env):
     """三个产物都不在（首启/数据故障）→ 空表，不抛异常。"""
-    rows, transient = er.build({})
+    rows, transient = er.build({}, {})
     assert rows == [] and transient == []
     md, _csv = er.write(rows, transient, {}, "2026-09-11")
     assert "共 0 只" in md.read_text(encoding="utf-8")
@@ -96,6 +98,31 @@ def test_transient_kinds_are_split_by_component(env):
     _w, _s, _f, risk = env
     _w(risk, {"items": {"600003": {"kind": "unlock+news", "reason": "解禁",
                                    "expire": "2026-09-20T00:00:00"}}})
-    _rows, transient = er.build({})
+    _rows, transient = er.build({}, {})
     assert transient and transient[0][0] == "600003"
     assert set(transient[0][1].split("+")) == {"unlock", "news"}
+
+
+def test_industry_column_and_ranking(env):
+    """行业是补充标签：进 CSV/md；风险榜按剔除率降序，样本 <3 只不上榜。"""
+    _w, symbols, fund, risk = env
+    _w(symbols, {"block_buy": []})
+    _w(fund, {"asof": "2026-09-11", "items": {
+        f"60001{i}": {"flags": ["illiquid"], "reason": "流动性枯竭"} for i in range(4)}})
+    _w(risk, {"items": {}})
+    ind = {"600010": "软件服务", "600011": "软件服务", "600012": "软件服务",
+           "600013": "银行"}
+    rows, transient = er.build({}, ind)
+    assert {r["industry"] for r in rows} == {"软件服务", "银行"}
+
+    totals = er.Counter({"软件服务": 10, "银行": 4})
+    rank = er.industry_ranking(rows, totals)
+    assert rank == [("软件服务", 3, 10, 0.3)]  # 银行只剔 1 只 → 不上榜
+    assert er.industry_ranking(rows, er.Counter()) == []  # 无行业总数 → 整榜不出
+
+    md, csv_p = er.write(rows, transient, {}, "2026-09-11", totals)
+    body = md.read_text(encoding="utf-8")
+    assert "行业风险榜" in body and "| 软件服务 | 3 | 10 | 30% |" in body
+    rank_sec = body.split("## 行业风险榜")[1]
+    assert "银行" not in rank_sec          # 榜里不含（个股表里仍有这列标签）
+    assert ",软件服务," in csv_p.read_text(encoding="utf-8-sig")

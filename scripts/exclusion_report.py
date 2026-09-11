@@ -7,8 +7,13 @@
     才出列；
   - **临时事件**（另一节）：解禁 / 负面新闻 / 立案 —— 有明确失效日，过期自动放行。
 
+另附**行业风险榜**（剔除数/该行业总数）：剔除率高的行业整体谨慎（2026-09-11
+用户口径「这些行业也要谨慎点」）——行业级景气下行时个体基本面会集体劣化，
+单看个股名单看不出"整条赛道在沉"。
+
 只读已落盘的产物（configs/live_symbols.json、data/fundamental_flags.json、
 data/risk_block.json），不重算任何判据——保证报表与闸门**同源**。
+行业列是**补充标签**（quantdb 通达信行业 rs_hyname，覆盖 5536 只），不参与判定。
 
 用法：
   python scripts/exclusion_report.py            # 写 data/长期排除清单_<日期>.md|.csv
@@ -17,8 +22,10 @@ data/risk_block.json），不重算任何判据——保证报表与闸门**同�
 import argparse
 import csv
 import json
+import os
 import re
 import sys
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -28,6 +35,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 SYMBOLS = ROOT / "configs" / "live_symbols.json"
 FUND = ROOT / "data" / "fundamental_flags.json"
 RISK = ROOT / "data" / "risk_block.json"
+QUANTDB = Path(os.environ.get("QUANTDB_DIR", "/home/zbox/projects/quantmind/data/quantdb"))
 BJ = timezone(timedelta(hours=8))
 
 # 长期层：fundamental_flags 的 flag → 中文层名（顺序即表格列序）
@@ -115,19 +123,54 @@ def _names() -> dict:
         return {}
 
 
-def build(names: dict) -> tuple:
+def _industries() -> tuple:
+    """({code6: 行业}, Counter(全市场各行业总数))——quantdb 通达信 rs_hyname。
+
+    覆盖 5536/5563 只（98%+）。拿不到 → ({}, {})：只是少一列标签，不影响清单本体。
+    """
+    try:
+        import duckdb
+
+        p = QUANTDB / "2_base_sector" / "instrument_detail" / "*.parquet"
+        df = duckdb.connect().execute(
+            f"SELECT Symbol, rs_hyname FROM read_parquet('{p}') "
+            f"WHERE rs_hyname IS NOT NULL AND rs_hyname <> ''").df()
+        ind = {str(s).split(".")[0]: str(h) for s, h in zip(df.Symbol, df.rs_hyname)}
+        return ind, Counter(ind.values())
+    except Exception:  # noqa: BLE001
+        return {}, Counter()
+
+
+def build(names: dict, industries: dict | None = None) -> tuple:
     layers = load_layers()
+    ind = _industries()[0] if industries is None else industries
     rows = []
     for code, it in layers.items():
         ls = sorted(it["layers"],
                     key=lambda x: LAYER_ORDER.index(x) if x in LAYER_ORDER else 99)
-        rows.append({"code": code, "name": names.get(code, ""), "layers": ls,
+        rows.append({"code": code, "name": names.get(code, ""),
+                     "industry": ind.get(code, ""), "layers": ls,
                      "reason": "；".join(it["reasons"])})
     rows.sort(key=lambda r: (-len(r["layers"]), r["code"]))
     return rows, load_transient()
 
 
-def write(rows: list, transient: list, names: dict, asof: str) -> tuple:
+def industry_ranking(rows: list, totals: Counter) -> list:
+    """行业风险榜：[(行业, 剔除数, 行业总数, 剔除率)]，按剔除率降序（≥3 只才上榜）。
+
+    没有行业总数（quantdb 拿不到）就整榜不出——宁可没有，也不给一个
+    "剔除数/剔除数=100%" 的假榜。
+    """
+    if not totals:
+        return []
+    hit = Counter(r["industry"] for r in rows if r.get("industry"))
+    out = [(h, n, totals.get(h, n), n / max(totals.get(h, n), 1))
+           for h, n in hit.items() if n >= 3]
+    return sorted(out, key=lambda x: (-x[3], -x[1]))
+
+
+def write(rows: list, transient: list, names: dict, asof: str,
+          totals: Counter | None = None) -> tuple:
     out_dir = ROOT / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
     md = out_dir / f"长期排除清单_{asof}.md"
@@ -137,10 +180,19 @@ def write(rows: list, transient: list, names: dict, asof: str) -> tuple:
     lines = [f"# 长期排除清单（买入硬拦，{asof}）", "",
              f"共 {total} 只（全市场 5563 只的 {pct:.1f}%）。卖出不受限；本表随每日闸门刷新",
              "（重跑：python scripts/exclusion_report.py）。", "",
-             "| # | 代码 | 名称 | 命中层数 | 层 | 理由 |", "|---:|---|---|---:|---|---|"]
+             "| # | 代码 | 名称 | 行业 | 命中层数 | 层 | 理由 |",
+             "|---:|---|---|---|---:|---|---|"]
     for i, r in enumerate(rows, 1):
-        lines.append(f"| {i} | {r['code']} | {r['name']} | {len(r['layers'])} | "
-                     f"{'/'.join(r['layers'])} | {r['reason']} |")
+        lines.append(f"| {i} | {r['code']} | {r['name']} | {r.get('industry', '')} | "
+                     f"{len(r['layers'])} | {'/'.join(r['layers'])} | {r['reason']} |")
+    rank = industry_ranking(rows, totals or Counter())
+    if rank:
+        lines += ["", "## 行业风险榜（剔除率 = 被排除数 / 该行业全部股票数）", "",
+                  "> 剔除率高的行业整体谨慎：赛道景气下行时个体会集体劣化，",
+                  "> 单看个股名单看不出「整条赛道在沉」。", "",
+                  "| 行业 | 被排除 | 行业总数 | 剔除率 |", "|---|---:|---:|---:|"]
+        for h, n, t, r in rank[:25]:
+            lines.append(f"| {h} | {n} | {t} | {r:.0%} |")
     lines += ["", f"## 临时事件（{len(transient)} 只，到期自动放行，不计入上表）", "",
               "| 代码 | 名称 | 类型 | 失效日 | 理由 |", "|---|---|---|---|---|"]
     for code, kind, reason, expire in transient:
@@ -150,9 +202,9 @@ def write(rows: list, transient: list, names: dict, asof: str) -> tuple:
     cols = LAYER_ORDER
     with csv_p.open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["代码", "名称", "命中层数", *cols, "理由"])
+        w.writerow(["代码", "名称", "行业", "命中层数", *cols, "理由"])
         for r in rows:
-            w.writerow([r["code"], r["name"], len(r["layers"]),
+            w.writerow([r["code"], r["name"], r.get("industry", ""), len(r["layers"]),
                         *["✓" if o in r["layers"] else "" for o in cols], r["reason"]])
     return md, csv_p
 
@@ -162,16 +214,20 @@ def main() -> int:
     ap.add_argument("--print", dest="print_only", action="store_true", help="只打印摘要")
     a = ap.parse_args()
     names = _names()
-    rows, transient = build(names)
+    ind, totals = _industries()
+    rows, transient = build(names, ind)
     asof = datetime.now(BJ).date().isoformat()
-    from collections import Counter
 
     c = Counter(layer for r in rows for layer in r["layers"])
     print(f"长期排除 {len(rows)} 只（{len(rows) / 5563 * 100:.1f}%）："
           + " / ".join(f"{k} {v}" for k, v in c.most_common())
           + f" | 临时事件 {len(transient)} 只")
+    rank = industry_ranking(rows, totals)
+    if rank:
+        print("行业风险榜 Top10：" + " / ".join(
+            f"{h} {n}/{t}({r:.0%})" for h, n, t, r in rank[:10]))
     if not a.print_only:
-        md, csv_p = write(rows, transient, names, asof)
+        md, csv_p = write(rows, transient, names, asof, totals)
         print(f"→ {md}\n→ {csv_p}")
     return 0
 

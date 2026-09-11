@@ -36,14 +36,16 @@ class _FakeBroker:
 
 
 @pytest.fixture
-def sentinel(monkeypatch):
+def sentinel(monkeypatch, tmp_path):
     """把 run_watch 的外部依赖全换成桩，记录卖出调用与落盘结果。"""
-    calls = {"sell": [], "saved": []}
+    calls = {"sell": [], "saved": [], "events": tmp_path / "events.json"}
 
     import live_fills
     import live_hourly_analysis
 
     monkeypatch.setattr(live_fills, "reconcile", lambda broker: None)
+    # 事件文件必须隔离：跑测试不得往真实 data/ 里写委托事件（alert.sh 会读它）
+    monkeypatch.setattr(live_fills, "EVENTS_FILE", calls["events"])
     monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: True)
     monkeypatch.setattr(W, "POLL_SLEEP_SEC", 0)
     monkeypatch.setattr(W, "load_watch", lambda: {"agentA": [dict(RULE)]})
@@ -91,7 +93,10 @@ def test_run_watch_keeps_rule_when_exec_switch_off(sentinel, monkeypatch):
 
     2026-09-11 实录：600309 的 75.50 止损在开关关闭时于 09:44 触发，dry-run 分支
     照样返回「已消费」→ 规则被吃掉、当天再无人守，持仓裸奔（价格 74.41 → 73.85）。
+    该场景同时必须落一条委托事件（alert.sh 上报）：开关关着的止损=持仓无保护。
     """
+    import json
+
     import live_hourly_analysis
 
     monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: False)
@@ -102,13 +107,16 @@ def test_run_watch_keeps_rule_when_exec_switch_off(sentinel, monkeypatch):
     assert sentinel["sell"] == []
     kept = sentinel["saved"][-1]["agentA"]
     assert [r["code"] for r in kept] == ["600362.SH"]  # 保留 → 下一分钟继续守
+    events = json.loads(sentinel["events"].read_text(encoding="utf-8"))
+    assert any(k.startswith("exec_disabled:600362.SH") for k in events)
 
 
 def test_run_watch_dry_run_flag_keeps_rule(sentinel):
-    """显式 --dry-run（手工试运行）同样不消费条件位——试运行不该改状态。"""
+    """显式 --dry-run（手工试运行）同样不消费条件位——试运行不该改状态，也不告警。"""
     fired = W.run_watch(_FakeBroker(), dry_run=True,
                         now=datetime(2026, 9, 11, 10, 0, 0, tzinfo=CN))
 
     assert fired == 0
     assert sentinel["sell"] == []
     assert [r["code"] for r in sentinel["saved"][-1]["agentA"]] == ["600362.SH"]
+    assert not sentinel["events"].exists()   # 手工试运行不写委托事件（避免误告警）

@@ -60,7 +60,8 @@ from live_ledger import (  # noqa: E402
     sane_fill_price,
     save_ledger,
 )
-from live_fills import add_pending, reconcile, wait_fill, round_sell_qty  # noqa: E402
+from live_fills import (add_pending, inflight_codes, reconcile, wait_fill,  # noqa: E402
+                        round_sell_qty)
 from ashare_rules import at_limit_down, board_of  # noqa: E402
 
 # 杠杆硬约束（与 live_hourly_analysis 同口径）
@@ -525,6 +526,10 @@ def _run(args) -> int:
             continue
         # 决策展示 + 校验
         sells, buys, summary = [], [], [f"（模型自主调仓决策，{now_cn():%F %T}）"]
+        # 在途卖单闸门：LLM 决策耗时以分钟计，期间分钟哨兵可能刚止损卖出同一代码。
+        # 决策校验前重新读盘（口径统一在 live_fills.inflight_codes）；执行前
+        # reconcile 之后还会再刷新一次（见下方 sell 执行段）。
+        pending_sell = inflight_codes("sell")
         new_buys = 0                          # 本轮新开仓计数
         opened_today = daily_buy_codes(agent)  # 当日已开仓代码（09:35 可能晚于整点轮）
         for d in decisions:
@@ -537,6 +542,9 @@ def _run(args) -> int:
                 # 卖出只能动自己名下的持仓（my_holdings 按分账账本裁剪，防跨 agent 卖仓）
                 if not h:
                     print(f"  ⚠️ [{agent}] 卖出 {code}: 非持仓，跳过")
+                    continue
+                if code in pending_sell:
+                    print(f"  ⏭️ [{agent}] 卖出 {code}: 已有在途卖单未确认，跳过")
                     continue
                 avail = h["avail"]
                 if avail <= 0:
@@ -594,6 +602,8 @@ def _run(args) -> int:
             reconcile(broker)
         except Exception as exc:  # noqa: BLE001
             print(f"  ⚠️ 成交回报 reconcile 失败: {exc}")
+        # reconcile 后刷新在途集：上一班超时挂队的卖单 / 分钟哨兵的止损单都在里面
+        pending_sell = inflight_codes("sell")
         from agent_tools.datasources import tdx_aidata
 
         try:
@@ -602,6 +612,9 @@ def _run(args) -> int:
         except Exception:  # noqa: BLE001
             bars_map = {}
         for code, vol, _ in sells:
+            if code in pending_sell:
+                print(f"  ⏭️ [{agent}] 卖出 {code}: 执行前已有在途卖单未确认，本轮不下单")
+                continue
             bars = bars_map.get(code) or broker.get_klines(code, interval="daily")[-5:]
             if len(bars) < 2:
                 print(f"  ⚠️ [{agent}] 卖出 {code}: 行情不足，跳过")
@@ -639,6 +652,7 @@ def _run(args) -> int:
                 else:
                     add_pending(result.get("order_id"), agent, code, "sell", vol,
                                 round(price * 0.99, 2), now_cn().isoformat())
+                    pending_sell.add(code)   # 同轮重复决策同一代码时不再下第二单
                     log_line({"ts": now_cn().isoformat(), "mode": "execute",
                               "agent": agent, "code": code, "side": "sell",
                               "volume": vol, "price": round(price * 0.99, 2),

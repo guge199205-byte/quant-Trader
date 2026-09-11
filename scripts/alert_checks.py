@@ -14,9 +14,12 @@ CLI（alert.sh 调用）：
   /usr/bin/python3 scripts/alert_checks.py rt_down        logs/rt_status.json
   /usr/bin/python3 scripts/alert_checks.py account_down   logs/rt_status.json
   /usr/bin/python3 scripts/alert_checks.py l2_stale        data/l2_factors_live.json
+  /usr/bin/python3 scripts/alert_checks.py pending_stuck   data/live_pending_orders.json
+  /usr/bin/python3 scripts/alert_checks.py order_events    data/live_order_events.json
 
 有告警 → stdout 一行文本；无告警 → 不输出，退出码 0（alert.sh 按空串判定）。
 `rt_down` 例外：固定输出两行（立即报 / 按天报），调用方按行取。
+`pending_stuck` 也固定一行「常规数|挂队数」；`order_events` 每行「事件id|文案」。
 """
 import json
 import os
@@ -61,6 +64,13 @@ L2_MORNING_START = 9 * 60 + 50        # 开盘 20 分钟后才够样本
 L2_MORNING_END = 11 * 60 + 30
 L2_AFTERNOON_START = 13 * 60 + 15     # 午休空档期不判，13:15 起判（13:00 首写需落盘时间）
 L2_AFTERNOON_END = 15 * 60
+
+# 挂单停滞（data/live_pending_orders.json）：盘中在途委托 >10 分钟无回报。
+# protect=True（止损报跌停保护价、跌停封死挂队）是「等买盘」的正常形态 →
+# 只告警、不投重启信号；常规停滞沿用重启桥自愈。
+STUCK_SEC = 600
+STUCK_MORNING = (9 * 60 + 30, 11 * 60 + 30)
+STUCK_AFTERNOON = (13 * 60, 15 * 60)
 
 TRADING_DAYS_JSON = Path(__file__).resolve().parents[1] / "configs" / "trading_days.json"
 
@@ -228,10 +238,66 @@ def _load(path: str) -> dict:
     return d if isinstance(d, dict) else {}
 
 
+def _load_any(path: str):
+    """通用 JSON 读取（列表/字典都可能）；失败返回 None。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def pending_stuck(doc, now: datetime, stuck_sec: int = STUCK_SEC):
+    """盘中在途委托停滞计数 → (常规数, 保护价挂队数)；非盘中/无数据返回 None。
+
+    保护价挂队（止损卖出报跌停价、`protect=True`）本来就是「等买盘」，
+    重启桥没有任何意义（订单在券商端、买盘不在桥上）→ 只告警不重启。
+    常规在途停滞才继续走「重启桥自愈」的老路。
+    """
+    if not isinstance(doc, list) or not is_trading_day(now):
+        return None
+    m = now.hour * 60 + now.minute
+    if not (STUCK_MORNING[0] <= m < STUCK_MORNING[1]
+            or STUCK_AFTERNOON[0] <= m < STUCK_AFTERNOON[1]):
+        return None
+    normal = protect = 0
+    for x in doc:
+        if not isinstance(x, dict):
+            continue
+        try:
+            t = datetime.fromisoformat(str(x.get("ts") or ""))
+        except ValueError:
+            continue
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=BJ)
+        if (now - t.astimezone(BJ)).total_seconds() <= stuck_sec:
+            continue
+        if x.get("protect"):
+            protect += 1
+        else:
+            normal += 1
+    return normal, protect
+
+
+def order_event_lines(doc) -> list[str]:
+    """委托事件 → ["<id>|<msg>", ...]（只取需告警的，按时间升序）。
+
+    事件由 live_fills.record_event 写入 data/live_order_events.json：哨兵止损的
+    跌停挂队 / 终态未成交 / 开关未开 / 下单失败等——2026-09-11 前这些只写 jsonl，
+    止损没卖出去也零告警。调用方（alert.sh）按 id 去重，同一事件只打扰一次。
+    """
+    if not isinstance(doc, dict):
+        return []
+    rows = [(str(e.get("ts") or ""), str(k), str(e.get("msg") or ""))
+            for k, e in doc.items()
+            if isinstance(e, dict) and e.get("alert") and str(e.get("msg") or "").strip()]
+    return [f"{k}|{msg}" for _, k, msg in sorted(rows)]
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
-        print("usage: alert_checks.py <llm_tier|news_stale|folder_failures|rt_down|account_down|l2_stale>"
-              " <path> [running]", file=sys.stderr)
+        print("usage: alert_checks.py <llm_tier|news_stale|folder_failures|rt_down|account_down|"
+              "l2_stale|pending_stuck|order_events> <path> [running]", file=sys.stderr)
         return 2
     check, path = argv[0], argv[1]
     now = datetime.now(BJ)
@@ -259,6 +325,12 @@ def main(argv: list[str]) -> int:
         except OSError:
             mtime = None
         out = l2_stale_line(now, mtime, trading_day=is_trading_day(now))
+    elif check == "pending_stuck":
+        r = pending_stuck(_load_any(path), now)
+        out = f"{r[0]}|{r[1]}" if r else None      # 固定一行「常规数|挂队数」
+    elif check == "order_events":
+        lines = order_event_lines(_load_any(path))
+        out = "\n".join(lines) if lines else None
     else:
         print(f"unknown check: {check}", file=sys.stderr)
         return 2

@@ -7,6 +7,8 @@ ledger['deferred']，cron 每个交易分钟跑本脚本，桥健康（行情新
 
 安全网（宁可不动不可乱动）：
   - 只重放 sell（减仓）：buy 的额度/现金闸门是决策时刻算的，重放时空跑更危险
+  - 在途卖单闸门：同代码已有未确认卖单（整点轮 / 分钟哨兵 / 上一轮重放）→ 保留延期，
+    不重复下单（2026-09-11 与执行路径统一口径 live_fills.inflight_codes）
   - T+1 可卖量复核，可卖不足按可卖量缩量，0 可卖则保留延期
   - 行情新鲜度硬闸：连桥行情都在停更，延期单绝不重放
   - 限价卖（现价 -1%），跌停不接（ashare_rules.at_limit_down 比例法）
@@ -25,7 +27,7 @@ from live_ledger import (clear_deferred, load_deferred, load_ledger,  # noqa: E4
                          save_ledger)
 from live_hourly_analysis import (in_trading_window,  # noqa: E402
                                   now_cn)
-from live_fills import add_pending, round_sell_qty  # noqa: E402
+from live_fills import add_pending, inflight_codes, round_sell_qty  # noqa: E402
 from ashare_rules import at_limit_down, after_hours_eligible, after_hours_window  # noqa: E402
 
 MAX_DEFER_HOURS = 24
@@ -62,6 +64,8 @@ def main() -> int:
     if not deferred:
         return 0
     stale_cut = (now - timedelta(hours=MAX_DEFER_HOURS)).isoformat()
+    # 在途卖单闸门：一次读盘拿全量（每条判定内联读文件会把 1 分钟 cron 放大成 N 次磁盘 IO）
+    pending_sell = inflight_codes("sell")
 
     # T+1 可卖量复核（整单一次拉齐）
     avail = {}
@@ -82,6 +86,12 @@ def main() -> int:
             final.append(d)  # 买入延期只留档不重放（资金闸是决策时刻的）
             continue
         agent, code = d["agent"], d["code"]
+        if code in pending_sell:
+            # 该代码已有在途卖单（盘中断链重放的常见竞态：整点轮/哨兵也下了同一单）
+            # → 保留延期不动，等 reconcile 确认成交/撤单后下一分钟再看
+            print(f"[{now:%F %T}] ⏭️ {agent} 卖 {code}: 已有在途卖单未确认，保留延期")
+            final.append(d)
+            continue
         vol = int(d["volume"])
         av = avail.get(code, 0)
         if av <= 0:

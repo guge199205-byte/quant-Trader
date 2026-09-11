@@ -13,7 +13,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,11 @@ sys.path.insert(0, str(ROOT / "agent_tools"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 PENDING_FILE = ROOT / "data" / "live_pending_orders.json"
+# 需要人工知晓的委托事件（挂队/未成交/废单/收盘未了结）：alert.sh 读取并去重上报。
+# 2026-09-11 之前这些只写 logs/*.jsonl，止损没卖出去也零告警。
+EVENTS_FILE = ROOT / "data" / "live_order_events.json"
+EVENT_KEEP_H = 24              # 事件保留窗口（alert.sh 每 5 分钟扫一遍，足够）
+CLOSE_REMIND_FROM = 14 * 60 + 50   # 收盘前 10 分钟提醒在途单将随日终失效
 
 
 def _load_dotenv() -> None:
@@ -67,16 +72,73 @@ def save_pending(entries: list) -> None:
 
 
 def add_pending(order_id, agent: str, code: str, side: str, volume: int,
-                price: float, ts: str) -> None:
+                price: float, ts: str, protect: bool = False) -> None:
+    """登记在途委托。protect=True 表示这是保护价（跌停价）挂队单：
+    排队等买盘是它的正常形态，停滞告警时不可触发重启桥的自愈动作。"""
     if not order_id:
         return
     pend = load_pending()
-    pend.append({
+    entry = {
         "order_id": str(order_id), "agent": agent, "code": code, "side": side,
         "volume": int(volume), "price": float(price or 0), "volume_recorded": 0,
         "ts": ts,
-    })
+    }
+    if protect:
+        entry["protect"] = True
+    pend.append(entry)
     save_pending(pend)
+
+
+def inflight(code: str, side: str | None = None) -> list:
+    """在途（已下单、尚无终态回报）委托中匹配 code（可选 side）的条目。"""
+    return [p for p in load_pending()
+            if p.get("code") == code and (side is None or p.get("side") == side)]
+
+
+def inflight_codes(side: str | None = None) -> set:
+    """在途委托涉及的代码集合（批量闸门用：一次读盘，逐条判定不重复读文件）。"""
+    return {p.get("code") for p in load_pending()
+            if side is None or p.get("side") == side}
+
+
+# ---------- 委托事件（人工需知晓，alert.sh 上报） ----------
+
+def _parse_ts(s) -> datetime | None:
+    try:
+        t = datetime.fromisoformat(str(s))
+    except (TypeError, ValueError):
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=CN_TZ)
+
+
+def record_event(kind: str, code: str, msg: str, *, side: str = "",
+                 alert: bool = True, key: str | None = None,
+                 now: datetime | None = None) -> str:
+    """记一条委托事件；返回事件 id（= 去重键）。
+
+    同一个 (kind, code, 当日) 只保留一条：重复记录覆盖旧值 → 每分钟跑的执行路径
+    不会刷屏；alert.sh 按 id 去重，只打扰一次。24 小时前的旧事件顺带清掉。
+    """
+    now = now or now_cn()
+    ev_id = key or f"{kind}:{code}:{now:%Y-%m-%d}"
+    try:
+        doc = json.loads(EVENTS_FILE.read_text(encoding="utf-8"))
+        doc = doc if isinstance(doc, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        doc = {}
+    cutoff = now - timedelta(hours=EVENT_KEEP_H)
+    doc = {k: v for k, v in doc.items()
+           if isinstance(v, dict) and (_parse_ts(v.get("ts")) or cutoff) >= cutoff}
+    doc[ev_id] = {"ts": now.isoformat(), "kind": kind, "code": code, "side": side,
+                  "msg": msg, "alert": bool(alert)}
+    try:
+        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = EVENTS_FILE.with_name(EVENTS_FILE.name + ".tmp")
+        tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(EVENTS_FILE)
+    except OSError:
+        pass  # 事件落盘失败不能反过来打断交易路径
+    return ev_id
 
 
 # ---------- 成交查询 ----------
@@ -116,11 +178,12 @@ def wait_fill(broker, order_id, timeout_s: int = 30, interval: int = 3) -> dict 
     return None
 
 
-def reconcile(broker) -> int:
+def reconcile(broker, now: datetime | None = None) -> int:
     """把在途单的成交增量按真实成交价/量记入分账账本。返回补记笔数。
 
     兜底场景：wait_fill 超时 / 脚本中断 / 部分成交后继续成交。
     终态（撤单/废单/满额成交）移除；隔日桥已查不到的单过期清除。
+    未了结的终态（没卖出去）与收盘前仍在途的单会记一条事件 → alert.sh 上报。
     """
     from live_ledger import load_ledger, record_buy, record_sell, save_ledger
     from live_trade_picks import log_line
@@ -132,8 +195,9 @@ def reconcile(broker) -> int:
         orders = {o.get("order_id"): o for o in broker.get_orders()}
     except Exception:  # noqa: BLE001
         return 0
-    now = now_cn()
+    now = now or now_cn()
     today = now.strftime("%Y-%m-%d")
+    hm = now.hour * 60 + now.minute
     fills, kept = 0, []
     for p in pend:
         o = orders.get(p.get("order_id"))
@@ -149,6 +213,8 @@ def reconcile(broker) -> int:
         status = str(o.get("status") or "")
         filled = int(o.get("filled_volume") or 0)
         recorded = int(p.get("volume_recorded") or 0)
+        wanted = int(p.get("volume") or 0)
+        tag = f"[{p.get('agent')}] {p.get('code')} {p.get('side')}"
         delta = filled - recorded
         if delta > 0:
             fprice = float(o.get("filled_price") or p.get("price") or 0)
@@ -172,13 +238,25 @@ def reconcile(broker) -> int:
             p["filled_price"] = fprice
             fills += 1
         if status in ("cancelled", "withdrawn", "rejected", "expired") or (
-                status == "filled" and filled >= int(p.get("volume") or 0)):
-            if status in ("cancelled", "withdrawn", "rejected", "expired") \
-                    and recorded < filled:
-                log_line({"ts": now.isoformat(), "mode": "fill_abort",
-                          "agent": p.get("agent"), "code": p.get("code"),
-                          "order_id": p.get("order_id"), "status": status})
+                status == "filled" and filled >= wanted):
+            if status in ("cancelled", "withdrawn", "rejected", "expired"):
+                if recorded < filled:
+                    log_line({"ts": now.isoformat(), "mode": "fill_abort",
+                              "agent": p.get("agent"), "code": p.get("code"),
+                              "order_id": p.get("order_id"), "status": status})
+                if filled < wanted:
+                    # 止损/减仓单没卖出去（废单/被撤/失效）——持仓仍在裸奔，必须让人知道
+                    record_event("unfilled", p["code"],
+                                 f"委托终态 {status}：{tag} 成交 {filled}/{wanted} 股，"
+                                 f"剩余 {wanted - filled} 股未卖出（限价 ¥{p.get('price')}）",
+                                 side=str(p.get("side") or ""), now=now)
             continue  # 终态移除
+        if CLOSE_REMIND_FROM <= hm < 15 * 60 and filled < wanted:
+            # 收盘前仍在途：A股当日委托日终自动失效 → 提醒当日大概率卖不掉了
+            record_event("close_pending", p["code"],
+                         f"收盘前仍有在途委托未成交：{tag} 成交 {filled}/{wanted} 股，"
+                         f"当日委托将随日终失效（限价 ¥{p.get('price')}）",
+                         side=str(p.get("side") or ""), now=now)
         kept.append(p)
     save_pending(kept)
     return fills

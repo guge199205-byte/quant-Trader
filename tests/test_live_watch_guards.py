@@ -87,6 +87,9 @@ def env(tmp_path, monkeypatch):
     import live_hourly_analysis
 
     monkeypatch.setattr(live_fills, "reconcile", lambda broker: None)
+    # 在途单/委托事件都隔离到 tmp：测试不得读写真实 data/（会污染生产告警面）
+    monkeypatch.setattr(live_fills, "PENDING_FILE", tmp_path / "pending.json")
+    monkeypatch.setattr(live_fills, "EVENTS_FILE", tmp_path / "events.json")
     monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: True)
     return rec, wf
 

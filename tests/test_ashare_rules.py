@@ -110,3 +110,15 @@ def test_rules_brief_mentions_2026_rules():
     assert "ST/*ST 2026-07-06 起同步放宽至±10%" in brief
     assert "扩展至全部A股" in brief
     assert "≤20万股" in brief  # 北交所风警股限额（待实施，提示词先知）
+
+
+def test_protect_sell_price_is_limit_down():
+    """卖出保护价 = 跌停价（quantmind 真账户实测：报跌停价成交在盘口买一，
+    既保证有买盘即成、又不会因报低价而卖在低价）。"""
+    assert R.protect_sell_price("600309.SH", 75.00) == 67.50   # 主板 ±10%
+    assert R.protect_sell_price("688183.SH", 20.00) == 16.00   # 科创板 ±20%
+    assert R.protect_sell_price("300750.SZ", 100.00) == 80.00  # 创业板 ±20%
+    assert R.protect_sell_price("832000.BJ", 10.00) == 7.00    # 北交所 ±30%
+    assert R.protect_sell_price("600309.SH", 10.005) == 9.00   # 四舍五入到分
+    assert R.protect_sell_price("600309.SH", 0) is None        # 无昨收 → None（调用方降级）
+    assert R.protect_sell_price("600309.SH", None) is None

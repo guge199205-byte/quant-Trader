@@ -337,18 +337,25 @@ class QmtBridgeBroker(Broker):
                 "改 bigqmt_signal_trader_local_config.py 后重载策略")
         return status
 
-    def _next_remark(self, signature: str) -> str:
+    def _next_remark(self, signature: str, plan_id: Optional[str] = None) -> str:
         """委托备注 → QMT 的 user_order_id。
 
         桥的委托号由 passorder 异步分配（不返回值），回填是靠 remark 精确匹配的；
         备注不唯一就认不回自己的单，只能把「已提交但暂无委托号」误判成下单失败。
+
+        plan_id（执行路径的幂等键，如哨兵的 watch-<agent>-<code>-<时间戳>）优先取
+        前 16 字符作 tag：对端直连 RPC 无 plan 队列、不做去重，plan_id 只用于让
+        委托在柜台可辨识（哨兵路径 signature 为空，原本只能标成 baymax-x-...）。
+        总长度与既有格式一致（remark 长度上限未知，不动）；毫秒后缀保证唯一。
         """
         import time as _time  # noqa: PLC0415 只在真正下单时才需要
 
-        return f"baymax-{str(signature or 'x')[:16]}-{int(_time.time() * 1000)}"
+        tag = str(plan_id or signature or "x")[:16]
+        return f"baymax-{tag}-{int(_time.time() * 1000)}"
 
     def _place_order(self, signature: str, symbol: str, side: str, amount: int,
-                     price: Optional[float] = None) -> Dict[str, Any]:
+                     price: Optional[float] = None,
+                     plan_id: Optional[str] = None) -> Dict[str, Any]:
         """A 股下单（限价 price 有值 / 市价-LATEST_PRICE 无值），形状对齐 TdxBridgeBroker。
 
         校验先于 RPC：入参不合法就地报错，不把注定被拒的单子发到桥上。
@@ -364,7 +371,7 @@ class QmtBridgeBroker(Broker):
 
         self._order_gate()
         trader, _ = self._ensure()
-        remark = self._next_remark(signature)
+        remark = self._next_remark(signature, plan_id)
         params: Dict[str, Any] = {
             "account_id": self.account_id,
             "action": "BUY" if side == "buy" else "SELL",
@@ -404,12 +411,16 @@ class QmtBridgeBroker(Broker):
         }
 
     def buy(self, signature: str, today_date: str, symbol: str, amount: int,
-            price: Optional[float] = None) -> Dict[str, Any]:
-        return self._place_order(signature, symbol, "buy", amount, price)
+            price: Optional[float] = None,
+            plan_id: Optional[str] = None) -> Dict[str, Any]:
+        # plan_id：执行路径（哨兵/整点轮）的幂等键，接口与 TdxBridgeBroker 对齐；
+        # 对端不做去重（直连 RPC 无 plan 队列），仅进 remark 供人工核对
+        return self._place_order(signature, symbol, "buy", amount, price, plan_id)
 
     def sell(self, signature: str, today_date: str, symbol: str, amount: int,
-             price: Optional[float] = None) -> Dict[str, Any]:
-        return self._place_order(signature, symbol, "sell", amount, price)
+             price: Optional[float] = None,
+             plan_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._place_order(signature, symbol, "sell", amount, price, plan_id)
 
     def cancel_order(self, stock_code: str, order_id: str,
                      user_order_id: str = "") -> Dict[str, Any]:

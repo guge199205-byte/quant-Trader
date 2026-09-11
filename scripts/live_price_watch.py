@@ -8,10 +8,14 @@
     → data/live_watch.json（每 agent 每小时整组刷新，最新分析说了算）
     → 本脚本查桥日K最新价（交易时段日K最后一根=当日实时价）
     → 现价 ≤ stop_loss 减仓 pct 比例 / ≥ take_profit 止盈 pct 比例
-    → 与盘中执行同一套卖出闸门（T+1 可卖量、跌停不接、100 股整数倍）
+    → 与盘中执行同一套卖出闸门（T+1 可卖量、100 股整数倍）
+    → 报**跌停保护价**（成交在盘口买一，跌停封死则挂队+告警；保护价口径见
+      ashare_rules.protect_sell_price，2026-09-11 移植 quantmind 真账户实测）
+    → 在途闸门：同标的有未确认卖单则不下第二笔；幂等委托号防崩溃重试重复下单
     → record_sell 分账记账 + logs/live_watch_YYYYMMDD.jsonl
-    → 触发并执行后该条规则即消费（一次性）；T+1 不可卖 / 跌停卖不出
-      / 下单失败则保留规则，下一分钟或次日继续守
+    → 触发并执行后该条规则即消费（一次性）；T+1 不可卖 / 下单失败则保留规则，
+      下一分钟或次日继续守；未成交/废单/收盘未了结 → data/live_order_events.json
+      由 alert.sh 上报
 
 用法:
   python scripts/live_price_watch.py             # 交易时段才执行（cron 每分钟）
@@ -24,6 +28,7 @@ cron（本机 JST，北京=JST-1）: * 10-12,14-16 * * 1-5
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -37,8 +42,9 @@ sys.path.insert(0, str(ROOT / "agent_tools"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from trading_cal import is_trading_day, why_not  # noqa: E402
-from live_fills import round_sell_qty  # noqa: E402
-from ashare_rules import at_limit_down, after_hours_eligible, board_of, after_hours_window  # noqa: E402
+from live_fills import round_sell_qty, inflight, record_event  # noqa: E402
+from ashare_rules import (at_limit_down, after_hours_eligible, board_of,  # noqa: E402
+                          after_hours_window, protect_sell_price)
 
 WATCH_FILE = ROOT / "data" / "live_watch.json"
 LOG_DIR = ROOT / "logs"
@@ -283,6 +289,44 @@ def _mislabel_reason(kind: str, level: float, price: float, prev: float,
     return ""
 
 
+def _watch_plan_id(agent: str, rule: dict) -> str:
+    """条件位卖出的幂等委托号：同一条件位重试复用同号，桥内按 plan_id 去重。
+
+    崩溃窗口（2026-09-11 移植 quantmind HIGH 2）：下单已被桥受理、本地还没存下
+    （进程被杀/断电/共享盘抖动）→ 下一分钟重试。若每次生成新号，桥会照单再下一笔
+    （重复卖出）；同号则桥回 status=duplicate，本地按「已下过」收尾。
+    条件位被整点分析整组刷新（created_ts 变）时换号——那是新决策，必须能真下单。
+    """
+    stamp = re.sub(r"\D", "", str(rule.get("created_ts") or ""))[:12]
+    if not stamp:
+        stamp = f"{now_cn():%Y%m%d}"
+    return f"watch-{agent}-{rule.get('code')}-{stamp}"
+
+
+def _same_code(a, b) -> bool:
+    """代码同票判定（忽略 .SH/.SZ 后缀差异——两侧来源格式不一致时仍能对上）。"""
+    return str(a or "").split(".")[0] == str(b or "").split(".")[0]
+
+
+def _recover_duplicate(broker, code: str, vol: int, limit: float) -> str:
+    """桥回 duplicate（上次已受理）后回捞当日委托号。
+
+    优选「同代码+同价+同量」的卖单；退化到同代码任一卖单（价格可能被手数合规
+    调整过）。回捞不到返回 ""，由调用方告警。
+    """
+    try:
+        orders = [o for o in broker.get_orders()
+                  if str(o.get("side") or "") == "sell" and _same_code(o.get("stock_code"), code)]
+    except Exception:  # noqa: BLE001  桥查询失败：交给调用方记事件，不阻断
+        return ""
+    if not orders:
+        return ""
+    exact = [o for o in orders
+             if abs(float(o.get("order_price") or 0) - float(limit or 0)) < 0.005
+             and int(o.get("total_volume") or 0) == int(vol)]
+    return str((exact or orders)[0].get("order_id") or "")
+
+
 def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
                   trig: str, avail, dry_run: bool = False,
                   after_hours: bool = False) -> bool:
@@ -301,9 +345,12 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
     if avail <= 0:
         _notify_skip(rule, f"⏭️ [{agent}] {code}: 可卖量 0（T+1 当日买入），条件位保留待明日")
         return False
-    chg = (price - prev) / prev * 100
-    if at_limit_down(code, chg):
-        _notify_skip(rule, f"⏭️ [{agent}] {code}: 跌停（{chg:+.2f}%）卖不出，条件位保留")
+    # 在途闸门（2026-09-11 移植 quantmind）：同标的同方向已有未确认委托 → 不再下第二笔。
+    # 覆盖「下单成功但本地没存下」之外的第二个窗口：add_pending 写了、条件位还没落盘。
+    pend = inflight(code, "sell")
+    if pend:
+        _notify_skip(rule, f"⏭️ [{agent}] {code}: 已有在途卖单 {pend[0].get('order_id')}"
+                           f"（{pend[0].get('volume')} 股）未确认，本轮不再下单")
         return False
     raw_qty = int(avail * min(max(rule.get("pct", 1.0), 0.0), 1.0))
     vol = round_sell_qty(code, raw_qty, avail)
@@ -311,8 +358,23 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
         print(f"  🗑️ [{agent}] {code}: 可卖量 {avail} 股按 {rule.get('pct', 1.0):.0%}"
               f"无合法可卖量（板块手数口径），条件位作废")
         return True
-    # 盘后固定价格交易以收盘价撮合 → 申报价=收盘价；盘中限价卖=现价-1%
-    limit = price if after_hours else round(price * 0.99, 2)
+    chg = (price - prev) / prev * 100 if prev else 0.0
+    at_ld = at_limit_down(code, chg)
+    # 卖出保护价（2026-09-11 移植 quantmind 真账户实测）：报**跌停价**——挂单价只是
+    # 「愿卖的最低」，成交仍按盘口买一（挂 2.21 成交 2.34）。止损语义 = 一定要卖掉：
+    # 只要盘口有买盘就必然成交，且报价一定在合法带内（原「现价×0.99」在近跌停时会
+    # 报出低于跌停价的价，本仓桥容忍、真柜台可能废单）。
+    protect = protect_sell_price(code, prev) if not after_hours else None
+    fallback = False
+    if after_hours:
+        limit = price            # 盘后固定价格交易以收盘价撮合
+    elif protect is not None:
+        limit = protect
+    else:
+        limit = round(price * 0.99, 2)   # 昨收缺失/非法：降级回原口径并留痕，不臆造价格
+        fallback = True
+        print(f"  ⚠️ [{agent}] {code}: 昨收缺失，取不到跌停保护价，"
+              f"降级按现价-1% ¥{limit:.2f} 报单")
     label = "跌破止损" if trig == "stop_loss" else "达到止盈"
     if dry_run:
         # 只报不卖 —— 规则**不消费**（返回 False）。曾返回 True 当"已消费"，
@@ -321,14 +383,47 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
         print(f"  🟡 DRY-RUN 卖出 {code} {vol}/{avail} 股 限价 ¥{limit:.2f}（{label}）——"
               f"条件位保留")
         return False
+    plan_id = _watch_plan_id(agent, rule)
     try:
-        result = broker.sell(None, None, code, vol, price=limit)
+        result = broker.sell(None, None, code, vol, price=limit, plan_id=plan_id)
     except Exception as exc:  # noqa: BLE001
         print(f"  ❌ [{agent}] 卖出 {code} 失败: {exc}")
+        record_event("sell_failed", code,
+                     f"[{agent}] {code} {label}卖出下单失败：{str(exc)[:120]}"
+                     f"（条件位保留，下一分钟重试；持续失败=持仓当日无保护）")
         _log_line({"ts": now_cn().isoformat(), "mode": f"watch_{trig}", "agent": agent,
                    "code": code, "volume": vol, "price": limit,
                    "trigger": rule.get(trig), "error": str(exc)})
         return False  # 下次重试
+    if str(result.get("status") or "") == "duplicate":
+        # 桥判定「这个 plan 已执行过」= 上次崩溃前已受理。规则必须消费（否则每分钟
+        # 重试同一 plan_id 空转），但要回捞委托号补挂 pending，否则这笔成交永远
+        # 进不了分账账本；回捞不到就如实告警。
+        recovered = _recover_duplicate(broker, code, vol, limit)
+        if recovered:
+            print(f"  ♻️ [{agent}] {code}: 桥回 duplicate（上次已受理），回捞委托号 "
+                  f"{recovered} 补挂成交跟踪")
+            from live_fills import add_pending
+
+            add_pending(recovered, agent, code, "sell", vol, limit,
+                        now_cn().isoformat(), protect=at_ld)
+        else:
+            print(f"  ⚠️ [{agent}] {code}: 桥回 duplicate 但回捞不到当日委托号——"
+                  f"这笔成交不会进分账账本，需人工核对")
+            record_event("dup_unresolved", code,
+                         f"[{agent}] {code} 卖出被桥判重复（上次已受理）但当日委托里"
+                         f"找不到对应单，成交未记账，需人工核对")
+        _log_line({"ts": now_cn().isoformat(), "mode": f"watch_{trig}", "agent": agent,
+                   "code": code, "volume": vol, "price": limit, "plan_id": plan_id,
+                   "trigger": rule.get(trig), "duplicate": True,
+                   "recovered_order_id": recovered, "result": result})
+        return True
+    if at_ld:
+        # 跌停封死不是「跳过」而是挂队（2026-09-11 移植）：无买盘本来就卖不掉，
+        # 系统职责是如实告警而非假装能卖；有买盘则按买一价成交。
+        record_event("protect_queue", code,
+                     f"[{agent}] {code} 已跌停（{chg:+.2f}%），{label}卖出已在跌停价 "
+                     f"¥{limit:.2f} 挂队 {vol} 股：有买盘即成交，封死则排队等开板")
     print(f"  ✅ [{agent}] 卖出 {code} {vol} 股 限价 ¥{limit:.2f} 已受理: {result}")
     if vol != raw_qty:
         print(f"  ⚖️ [{agent}] {code}: 意图 {raw_qty} 股 → 手数合规实际 {vol} 股"
@@ -338,9 +433,11 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
     from live_fills import add_pending
 
     add_pending(result.get("order_id"), agent, code, "sell", vol, limit,
-                now_cn().isoformat())
+                now_cn().isoformat(), protect=at_ld)
     _log_line({"ts": now_cn().isoformat(), "mode": f"watch_{trig}", "agent": agent,
                "code": code, "volume": vol, "intent_volume": raw_qty, "price": limit,
+               "plan_id": plan_id, "protect": at_ld or None,
+               "protect_fallback": fallback or None,
                "trigger": rule.get(trig), "pct": rule.get("pct"),
                "reason": rule.get("reason"), "result": result})
     return True
@@ -378,7 +475,8 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
     # 总开关联动：配置关掉自动执行时，哨兵也只打印不真卖（防验证测试误触实盘）
     from live_hourly_analysis import intraday_exec_enabled
 
-    if not dry_run and not intraday_exec_enabled():
+    exec_off = (not dry_run) and (not intraday_exec_enabled())
+    if exec_off:
         print("  🔒 自动执行开关已关（intraday_exec.json），哨兵只打印不真卖")
         dry_run = True
     rules = load_watch()
@@ -449,6 +547,11 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
                 # 持仓裸奔（价格 74.41 → 73.85 无保护）。提醒按规则整点去重防刷屏。
                 _notify_skip(r, f"{notice} —— 执行开关未开/试运行，只报不卖、"
                                 f"条件位保留: {r.get('reason', '')}")
+                if exec_off:
+                    # 开关关着触发的止损 = 持仓当日无保护，必须上告警面（此前只打印）
+                    record_event("exec_disabled", r["code"],
+                                 f"[{agent}] {r['code']} {label} ¥{price:.2f} 已触发，"
+                                 f"但自动执行开关关闭 → 只报不卖（条件位保留）")
                 kept.append(r)
                 time.sleep(POLL_SLEEP_SEC)
                 continue

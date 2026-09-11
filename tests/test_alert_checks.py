@@ -326,3 +326,62 @@ def test_account_down_cli(tmp_path, capsys, monkeypatch):
 
     assert A.main(["account_down", str(p)]) == 0
     assert "连续2次" in capsys.readouterr().out
+
+
+# ---------- 挂单停滞：常规在途 vs 保护价挂队（2026-09-11） ----------
+# 保护价挂队（止损卖出报跌停价）本来就是「等买盘」，重启桥没有任何意义，
+# 只能如实告警；常规在途停滞才继续走重启自愈的老路。
+
+def _pend(code="001312.SZ", ts="2026-09-11T10:00:00", **kw):
+    return dict({"order_id": "T1", "agent": "pro", "code": code, "side": "sell",
+                 "volume": 500, "price": 15.5, "volume_recorded": 0, "ts": ts}, **kw)
+
+
+def test_pending_stuck_splits_protect_from_normal():
+    now = _bj(2026, 9, 11, 10, 20)      # 盘中，两笔都超 10 分钟
+    n, p = A.pending_stuck([_pend(), _pend(code="600309.SH", protect=True)], now)
+
+    assert (n, p) == (1, 1)
+
+
+def test_pending_stuck_ignores_fresh_orders_and_weekend():
+    now = _bj(2026, 9, 11, 10, 5)
+    assert A.pending_stuck([_pend(ts="2026-09-11T10:00:00")], now) == (0, 0)
+    assert A.pending_stuck([_pend()], _bj(2026, 9, 12, 10, 30)) is None   # 周六
+    assert A.pending_stuck([_pend()], _bj(2026, 9, 11, 20, 0)) is None    # 盘后
+
+
+def test_pending_stuck_cli_prints_one_combined_line(tmp_path, capsys, monkeypatch):
+    p = tmp_path / "pending.json"
+    p.write_text(json.dumps([_pend(), _pend(code="600309.SH", protect=True)]),
+                 encoding="utf-8")
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _bj(2026, 9, 11, 10, 20)
+
+    monkeypatch.setattr(A, "datetime", _FrozenDatetime)
+
+    assert A.main(["pending_stuck", str(p)]) == 0
+    assert capsys.readouterr().out.strip() == "1|1"
+
+
+# ---------- 委托事件（哨兵止损的下单/未成交/挂队） ----------
+
+def test_order_event_lines_lists_alert_events_oldest_first():
+    doc = {"b:001312.SZ:2026-09-11": {"ts": "2026-09-11T10:31:00", "kind": "b",
+                                      "msg": "后", "alert": True},
+           "a:600309.SH:2026-09-11": {"ts": "2026-09-11T10:05:00", "kind": "a",
+                                      "msg": "先", "alert": True},
+           "t:600309.SH:2026-09-11": {"ts": "2026-09-11T10:06:00", "kind": "t",
+                                      "msg": "留痕不告警", "alert": False}}
+
+    assert A.order_event_lines(doc) == [
+        "a:600309.SH:2026-09-11|先", "b:001312.SZ:2026-09-11|后"]
+
+
+def test_order_event_lines_tolerates_garbage():
+    assert A.order_event_lines(None) == []
+    assert A.order_event_lines({}) == []
+    assert A.order_event_lines({"x": "不是字典"}) == []

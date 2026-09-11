@@ -160,48 +160,44 @@ if [ -n "$FROZEN_VAL" ]; then
     fi
 fi
 
-# 2c. 挂单停滞检测（下单后长时间无回报：盘中在途 >10 分钟 → 告警并重启桥自愈；
-#      委托保留在券商端，重启后由 reconcile 按真实成交/撤单收尾，不会重复下单）
-STUCK=$(python3 - . <<'PY'
-import json, os, time
-from datetime import datetime, timezone, timedelta
-BJ = timezone(timedelta(hours=8))
-now = datetime.now(BJ)
-if now.weekday() >= 5:
-    raise SystemExit(0)
-m = now.hour * 60 + now.minute
-if not ((9 * 60 + 30 <= m < 11 * 60 + 30) or (13 * 60 <= m < 15 * 60)):
-    raise SystemExit(0)
-p = "data/live_pending_orders.json"
-if not os.path.isfile(p):
-    raise SystemExit(0)
-try:
-    pend = json.load(open(p, encoding="utf-8"))
-except (OSError, ValueError):
-    raise SystemExit(0)
-n = 0
-for x in (pend if isinstance(pend, list) else []):
-    ts = str(x.get("ts") or "")
-    try:
-        t = datetime.fromisoformat(ts)
-        if t.tzinfo is None:
-            t = t.replace(tzinfo=BJ)
-        if (now - t.astimezone(BJ)).total_seconds() > 600:
-            n += 1
-    except Exception:
-        continue
-if n:
-    print(n)
-PY
-)
+# 2c. 挂单停滞检测（下单后长时间无回报：盘中在途 >10 分钟。
+#      常规停滞 → 告警并重启桥自愈（委托保留在券商端，重启后由 reconcile 按真实
+#      成交/撤单收尾，不会重复下单）；
+#      保护价挂队（protect=true，止损报跌停价、跌停封死等买盘）→ 只告警不重启：
+#      买盘不在桥上，重启没有任何意义，只会打乱队列。
+#      判定在 alert_checks.py::pending_stuck（可单测），输出固定一行「常规数|挂队数」）
+STUCK=$(/usr/bin/python3 scripts/alert_checks.py pending_stuck data/live_pending_orders.json 2>/dev/null)
 if [ -n "$STUCK" ]; then
-    ALERTS="$ALERTS
-🔴 $STUCK 笔在途委托停滞 >10 分钟（下单可能卡住）——自动重启桥并保持委托，reconcile 收尾"
-    if [ -d /mnt/tdx-shared/bridge-windows ]; then
-        touch /mnt/tdx-shared/bridge-windows/restart_bridge.flag
+    STUCK_N="${STUCK%%|*}"; STUCK_P="${STUCK##*|}"
+    if [ "$STUCK_N" -gt 0 ] 2>/dev/null; then
         ALERTS="$ALERTS
+🔴 $STUCK_N 笔在途委托停滞 >10 分钟（下单可能卡住）——自动重启桥并保持委托，reconcile 收尾"
+        if [ -d /mnt/tdx-shared/bridge-windows ]; then
+            touch /mnt/tdx-shared/bridge-windows/restart_bridge.flag
+            ALERTS="$ALERTS
 🔧 已投递 restart_bridge.flag → 桥自动重启"
+        fi
     fi
+    if [ "$STUCK_P" -gt 0 ] 2>/dev/null; then
+        ALERTS="$ALERTS
+🔴 $STUCK_P 笔保护价卖单挂队 >10 分钟未成交——大概率跌停封死（无买盘本就卖不掉），请在通达信确认真实盘口；系统不再自动重试同一标的"
+    fi
+fi
+
+# 2c-2. 委托事件（data/live_order_events.json，live_fills.record_event 写）：
+#      止损的跌停挂队 / 终态未成交 / 执行开关关闭时触发 / 下单失败 / 委托号回捞失败。
+#      2026-09-11 之前这些只写 logs/*.jsonl：止损没卖出去也零告警（当日 600309
+#      触发但开关关着，规则被吃掉、持仓裸奔一整天而无人知晓）。按事件 id 去重。
+ORD_EVENTS=$(/usr/bin/python3 scripts/alert_checks.py order_events data/live_order_events.json 2>/dev/null)
+if [ -n "$ORD_EVENTS" ]; then
+    ORD_SEEN="/tmp/.baymax_order_events_seen_$(date +%F)"
+    while IFS='|' read -r ev_id ev_msg; do
+        [ -z "$ev_id" ] && continue
+        grep -qF "$ev_id" "$ORD_SEEN" 2>/dev/null && continue
+        echo "$ev_id" >> "$ORD_SEEN"
+        ALERTS="$ALERTS
+🔴 委托事件：$ev_msg"
+    done <<< "$ORD_EVENTS"
 fi
 
 # 2d. 实时行情源降级检测（rt_probe 每5分钟写 logs/rt_status.json）

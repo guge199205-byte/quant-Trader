@@ -1435,14 +1435,13 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
     """
     import time
 
-    from live_fills import add_pending, load_pending, wait_fill
+    from live_fills import add_pending, inflight_codes, wait_fill
     from live_ledger import (agent_remaining, agent_virtual_cash, load_ledger,
                              record_buy, record_sell, save_ledger)
 
-    # 在途单闸门：有未确认成交的同代码单，不再重复下单
-    pend = load_pending()
-    pending_sell = {p["code"] for p in pend if p.get("side") == "sell"}
-    pending_buy = {p["code"] for p in pend if p.get("side") == "buy"}
+    # 在途单闸门：有未确认成交的同代码单，不再重复下单（口径统一在 live_fills.inflight_codes）
+    pending_sell = inflight_codes("sell")
+    pending_buy = inflight_codes("buy")
 
     executed: list = []
     sells, buys = [], []
@@ -1521,7 +1520,13 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
     # 执行：先卖后买（同 live_llm_trade 顺序）
     from live_trade_picks import compute_order
 
+    # 执行前再刷一次在途集：整点分析时段正是分钟哨兵的活跃窗口，
+    # 校验用快照之后哨兵可能刚对同一代码下了止损单
+    pending_sell = inflight_codes("sell")
     for code, vol, reason, raw_vol in sells:
+        if code in pending_sell:
+            print(f"  ⏭️ [{agent}] 卖出 {code}: 执行前已有在途卖单未确认，本轮不下单")
+            continue
         try:
             klines = broker.get_klines(code, interval="daily")[-5:]
         except Exception:  # noqa: BLE001

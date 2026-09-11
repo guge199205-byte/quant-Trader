@@ -312,6 +312,41 @@ def test_sell_without_price_uses_latest_price(fake_qmt):
     assert params["price_type"] == "LATEST_PRICE"
 
 
+def test_plan_id_goes_into_remark_for_reconciliation(fake_qmt):
+    """执行路径传 plan_id（幂等键）时接口与 TdxBridgeBroker 对齐：
+
+    哨兵/整点轮用 broker.sell(..., plan_id=...) 的调用形状不能在这里 TypeError，
+    且 plan_id 要进 remark/signal_id —— 委托号是异步分配的，remark 是唯一回填线索。
+    哨兵路径 signature 为空，plan_id 让委托从 baymax-x-... 变成可辨识的 watch-... 前缀。
+    """
+    trader = _FakeTrader(rpc=_WIN_OPEN)
+    broker, _, _ = fake_qmt(trader, **_OPEN_CFG)
+
+    broker.sell("glm", "2026-09-10", "600309.SH", 100, 15.5,
+                plan_id="watch-deepseek-v4-pro-001312.SZ-202609111000")
+
+    remark = trader.calls[-1][1]["remark"]
+    assert remark.startswith("baymax-watch-deepseek-v-")     # plan_id 前 16 字符
+    assert trader.calls[-1][1]["signal_id"] == remark
+
+
+def test_plan_id_tag_never_exceeds_16_chars(fake_qmt):
+    """tag 恒 ≤16 字符（remark 长度上限未知，不因 plan_id 变长）；无 plan_id 退回 signature。"""
+    trader = _FakeTrader(rpc=_WIN_OPEN)
+    broker, _, _ = fake_qmt(trader, **_OPEN_CFG)
+    plan_id = "watch-deepseek-v4-pro-001312.SZ-202609111000"   # 46 字符
+
+    broker.sell("glm", "2026-09-10", "600309.SH", 100, 15.5, plan_id=plan_id)
+    with_plan = trader.calls[-1][1]["remark"]
+
+    broker.sell("glm", "2026-09-10", "600309.SH", 100, 15.5)
+    without_plan = trader.calls[-1][1]["remark"]
+
+    assert with_plan.startswith(f"baymax-{plan_id[:16]}-")
+    assert len(with_plan) - len(plan_id[:16]) == len(without_plan) - len("glm")
+    assert without_plan.startswith("baymax-glm-")            # 无 plan_id 时退回 signature
+
+
 @pytest.mark.parametrize("amount", [0, -100])
 def test_non_positive_volume_rejected_without_touching_the_bridge(fake_qmt, amount):
     broker, trader, _ = fake_qmt(_FakeTrader(rpc=_WIN_OPEN), **_OPEN_CFG)

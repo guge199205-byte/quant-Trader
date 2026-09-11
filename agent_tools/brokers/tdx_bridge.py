@@ -32,6 +32,13 @@ from agent_tools.brokers.base import Broker, BrokerError
 # config/ 目录容器与宿主机共用挂载，cron 侧与本模块同源解析
 _OVERRIDE_FILE = Path(__file__).resolve().parents[2] / "config" / "tdx_bridge.json"
 
+# 提交前价格保护带（2026-09-11 移植 quantmind P2-1）：报价必须落在当日涨跌停带内
+# （带外 2% 容差）。柜面对超范围价的容忍 = 当市价单执行，程序/模型 bug 打出离谱
+# 价格就等于撤掉了价格保护。**取不到行情、或市价本身就在带外（新股首日无涨跌幅等，
+# 本模块不追踪上市日）→ 放行**：不能因为自家涨跌停口径过窄把正常单拒掉。
+PRICE_BAND_SLACK = 0.02
+_PRICE_REF_TTL = 60   # (昨收, 最新价) 进程内缓存秒数；桥侧 get_market_data 另有 300s 缓存
+
 
 def bridge_overrides() -> Dict[str, str]:
     """读取 config/tdx_bridge.json 的桥连接覆盖（bridge_url/bridge_token）。"""
@@ -41,6 +48,22 @@ def bridge_overrides() -> Dict[str, str]:
                 if k in ("bridge_url", "bridge_token") and str(v or "").strip()}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _ashare_rules():
+    """按需导入 scripts/ashare_rules（板块/涨跌停口径的唯一出处）。
+
+    本模块会被 backend/agent 侧 import，那里 sys.path 不一定含 scripts/。
+    """
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    for p in (str(root / "scripts"), str(root)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    import ashare_rules
+
+    return ashare_rules
 
 
 class TdxBridgeBroker(Broker):
@@ -59,6 +82,7 @@ class TdxBridgeBroker(Broker):
         self.account = self.config.get("account") or os.getenv("TDX_ACCOUNT", "")
         self.account_type = self.config.get("account_type") or os.getenv("TDX_ACCOUNT_TYPE", "tdx")
         self._disc_tried = False  # 断线自动发现每实例至多一次（防同进程重复扫网）
+        self._price_refs: Dict[Any, Any] = {}   # 价格保护带的 (昨收,现价) 缓存
         if not self.bridge_url:
             raise BrokerError("TDX 桥未配置：请设置 TDX_BRIDGE_URL（.env）")
 
@@ -126,9 +150,64 @@ class TdxBridgeBroker(Broker):
         result = data.get("result") if isinstance(data, dict) else None
         return result if isinstance(result, dict) else {}
 
+    def _price_ref(self, symbol: str):
+        """(昨收, 最新价)：日K 倒数两根（盘中最后一根即当日实时价）。取不到返回 (None, None)。
+
+        进程内缓存 60 秒——一笔委托一次，同一轮里多笔同票不重复拉桥。
+        """
+        import time as _time
+
+        key = (symbol, _time.strftime("%Y-%m-%d"))
+        now = _time.monotonic()
+        hit = self._price_refs.get(key)
+        if hit and now - hit[0] < _PRICE_REF_TTL:
+            return hit[1], hit[2]
+        try:
+            bars = self.get_klines(symbol, interval="daily", count=2)
+        except Exception:  # noqa: BLE001  桥抖动：调用方按"取不到"放行
+            return None, None
+        if not isinstance(bars, list) or len(bars) < 2:
+            return None, None
+        try:
+            prev = float(bars[-2].get("close") or 0)
+            live = float(bars[-1].get("close") or 0)
+        except (TypeError, ValueError):
+            return None, None
+        if prev <= 0:
+            return None, None
+        self._price_refs[key] = (now, prev, live)
+        return prev, live
+
+    def _price_band_reason(self, symbol: str, price: float) -> str:
+        """报价是否明显超出当日涨跌停带 → 原因文案；放行返回 ""。"""
+        if not price or float(price) <= 0:
+            return ""
+        prev, live = self._price_ref(symbol)
+        if not prev:
+            return ""   # 昨收取不到：交易可用性优先（柜台/交易所仍会兜底）
+        rules = _ashare_rules()
+        pct = rules.price_limit_pct(symbol)
+        down = rules.limit_price(prev, pct, "down")
+        up = rules.limit_price(prev, pct, "up")
+        if not down or not up:
+            return ""
+        if live and not (down * (1 - PRICE_BAND_SLACK) <= live <= up * (1 + PRICE_BAND_SLACK)):
+            # 市价本身在带外：本模块的涨跌停口径对这只票不成立（新股首日/复牌等）→ 放行
+            return ""
+        px = float(price)
+        if down * (1 - PRICE_BAND_SLACK) <= px <= up * (1 + PRICE_BAND_SLACK):
+            return ""
+        return (f"报价 ¥{px:.2f} 超出当日涨跌停带 [¥{down:.2f}, ¥{up:.2f}]"
+                f"（昨收 ¥{prev:.2f}，现价 ¥{live:.2f}）")
+
     def _place_order(self, symbol: str, side: str, volume: int,
-                     price: Optional[float] = None) -> Dict[str, Any]:
-        """经桥下单（/api/v1/plans/execute，通达信客户端执行）。"""
+                     price: Optional[float] = None,
+                     plan_id: Optional[str] = None) -> Dict[str, Any]:
+        """经桥下单（/api/v1/plans/execute，通达信客户端执行）。
+
+        plan_id：调用方可传幂等委托号（同号重试被桥去重，见 live_price_watch
+        ``_watch_plan_id``）；缺省生成时间戳+pid 的一次性号。
+        """
         import time
 
         import requests
@@ -145,7 +224,12 @@ class TdxBridgeBroker(Broker):
         except Exception:
             pass
 
-        plan_id = f"baymax_{int(time.time())}_{os.getpid()}"
+        if price:
+            why = self._price_band_reason(symbol, float(price))
+            if why:
+                raise BrokerError(f"本地价格保护带拒单：{symbol} {side} {why}")
+
+        plan_id = plan_id or f"baymax_{int(time.time())}_{os.getpid()}"
         payload = {
             "plan_id": plan_id,
             "account": self.account,
@@ -230,12 +314,14 @@ class TdxBridgeBroker(Broker):
             raise BrokerError(f"TDX 桥撤单失败: {exc}") from exc
 
     def buy(self, signature: str, today_date: str, symbol: str, amount: int,
-            price: Optional[float] = None) -> Dict[str, Any]:
-        return self._place_order(symbol, "buy", amount, price)
+            price: Optional[float] = None,
+            plan_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._place_order(symbol, "buy", amount, price, plan_id)
 
     def sell(self, signature: str, today_date: str, symbol: str, amount: int,
-             price: Optional[float] = None) -> Dict[str, Any]:
-        return self._place_order(symbol, "sell", amount, price)
+             price: Optional[float] = None,
+             plan_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._place_order(symbol, "sell", amount, price, plan_id)
 
     # ---------- 行情（桥协议可直接用） ----------
 
@@ -244,10 +330,12 @@ class TdxBridgeBroker(Broker):
         return klines[-1] if klines else None
 
     def get_klines(self, symbol: str, start: str = "", end: str = "",
-                   interval: str = "daily", market: str = "cn") -> List[Dict[str, Any]]:
+                   interval: str = "daily", market: str = "cn",
+                   count: int = 250) -> List[Dict[str, Any]]:
         """经 8550 桥拉 K 线（POST /api/v1/tdx/call get_market_data）。
         日K(1d)/周K(1w) 支持，分钟线不支持（桥限制）。
         返回 [{"date","open","high","low","close","volume","amount"}]，按日期升序。
+        count：拉取根数（最新 N 根）；价格保护带只要最近两根。
         """
         import requests
 
@@ -257,7 +345,7 @@ class TdxBridgeBroker(Broker):
             "stock_list": [symbol],
             "period": period,
             "dividend_type": "front",  # 前复权，与本地价格数据口径一致
-            "count": 250,
+            "count": int(count),
         }
         try:
             data = self._post("/api/v1/tdx/call",

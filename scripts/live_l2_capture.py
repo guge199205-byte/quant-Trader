@@ -321,10 +321,16 @@ def compute_l2_factors(data: dict, snap: dict, state: dict) -> dict:
     if len(samples) >= 6:
         prices = [s[5] for s in samples]
         rets = [abs((b - a) / a) for a, b in zip(prices, prices[1:]) if a > 0]
-        half = max(len(rets) // 2, 1)
-        cur_rv = sum(rets[-half:]) / half
-        day_rv = sum(rets) / len(rets)
-        factors["micro_zone_rv_ratio_close"] = round(_clip(cur_rv / (day_rv + 1e-9), 0, 10), 6)
+        if rets:
+            half = max(len(rets) // 2, 1)
+            cur_rv = sum(rets[-half:]) / half
+            day_rv = sum(rets) / len(rets)
+            factors["micro_zone_rv_ratio_close"] = round(_clip(cur_rv / (day_rv + 1e-9), 0, 10), 6)
+        else:
+            # 全程无有效价（停牌/无行情，now 缺省记 0）→ rets 空，按样本不足处理。
+            # half 有 max(...,1) 兜底但 day_rv 的除法没有——曾抛 ZeroDivisionError
+            # （quantmind 线上实录同款：整轮采集中止；本仓单只级 try 兜住但该票整分钟被跳过）
+            factors["micro_zone_rv_ratio_close"] = None
     else:
         factors["micro_zone_rv_ratio_close"] = None
 

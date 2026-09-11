@@ -112,6 +112,26 @@ def at_limit_down(code: str, day_chg: float | None, name: str | None = None) -> 
     return day_chg <= -price_limit_pct(code, name) + 0.1
 
 
+def protect_sell_price(code: str, pre_close: float | None,
+                       name: str | None = None) -> float | None:
+    """卖出保护价 = 当日跌停价（昨收 × (1−幅度)，四舍五入到分）。
+
+    quantmind 真账户实测（2026-09-11）：**报跌停价成交在盘口买一**
+    （挂 2.21 成交 2.34）——挂单价只是"愿卖的最低"，成交仍按盘口最优价，
+    所以保护价既保证「有买盘就一定卖得掉」，又不会真按跌停价卖。
+    止损语义下这是当日最激进可报价：跌停封死时排队等待（无买盘本来也卖不掉）。
+
+    昨收缺失/非法返回 None（调用方降级到原限价口径并留痕，不臆造价格）。
+    """
+    try:
+        prev = float(pre_close)
+    except (TypeError, ValueError):
+        return None
+    if prev <= 0:
+        return None
+    return limit_price(prev, price_limit_pct(code, name), "down")
+
+
 def at_limit_up(code: str, day_chg: float | None, name: str | None = None) -> bool:
     if day_chg is None:
         return False

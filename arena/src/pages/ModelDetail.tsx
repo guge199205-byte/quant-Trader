@@ -149,12 +149,14 @@ export default function ModelDetail() {
         color: MODEL_COLOR[name] ?? '#5a5a5a',
         points: livePts.map((p) => ({ t: dayjs(p.ts).valueOf(), v: p.value })),
         notional: 100000,
+        // 成交标记（▲买/▼卖）：与 Live 页同口径，点在净值线上的实际成交时刻
+        fills: myLiveFills.map((f) => ({ t: new Date(f.ts).getTime(), side: f.side })),
       };
     }
     return perf.data
       ? toChartLine(perf.data.agent, perf.data.agent, MODEL_COLOR[name] ?? '#5a5a5a', perf.data.points)
       : null;
-  }, [livePts, perf.data, name]);
+  }, [livePts, perf.data, name, myLiveFills]);
 
   // A股实盘持仓（通达信桥账户）→ Holdings 结构；有实盘则模拟盘持仓/快照不计入
   const tdxHoldings = useMemo<Holdings | null>(() => {

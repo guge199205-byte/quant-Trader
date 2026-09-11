@@ -53,6 +53,22 @@ export function dailyCloses(points: EquityPoint[]): DayClose[] {
   return out;
 }
 
+/** 时间戳 → 序列中就近采样点下标（二分；空序列返回 -1）。
+ *  成交标记吸附用：成交时刻未必落在采样点上，取时间最近的点画标记。 */
+export function nearestIdxOfTime(pts: { t: number }[], t: number): number {
+  const n = pts?.length ?? 0;
+  if (!n) return -1;
+  let lo = 0;
+  let hi = n - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid].t < t) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo > 0 && Math.abs(pts[lo - 1].t - t) <= Math.abs(pts[lo].t - t)) return lo - 1;
+  return lo;
+}
+
 /** 序列回撤（正数）：从峰值回落的百分比 */
 function maxDrawdownOf(values: number[]): number | null {
   if (values.length < 2) return null;

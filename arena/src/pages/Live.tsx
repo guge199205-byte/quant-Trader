@@ -41,6 +41,7 @@ import LiveDetails from '../components/LiveDetails';
 import { MarketSwitcher } from '../components/Navbar';
 import { fmtMoney, fmtPct, fmtPrice, pnlClass } from '../utils/format';
 import { stockLabel, stockName } from '../utils/symbols';
+import { toLiveFill } from '../utils/liveFills';
 import './Live.css';
 
 const BENCH_COLOR = '#10a37f';
@@ -386,6 +387,20 @@ export default function Live() {
           .filter(([, rec]) => !(rec?.positions ?? []).length)
           .map(([a]) => a),
       );
+      // 成交标记（▲买/▼卖）：与空仓段反推同源同筛选（side+volume>0），
+      // 标记点即「虚线↔实线」的界点——全览 900 点里今天的买回只有几像素宽，
+      // 靠标记才能一眼看见（用户 2026-09-11）。
+      const fillsOfAgent = (agent: string) => {
+        const out: { t: number; side: string }[] = [];
+        for (const rec of liveTrades.data ?? []) {
+          if (rec.agent !== agent) continue;
+          const f = toLiveFill(rec);
+          if (!f) continue;
+          const t = new Date(f.ts).getTime();
+          if (Number.isFinite(t)) out.push({ t, side: f.side });
+        }
+        return out.sort((a, b) => a.t - b.t);
+      };
       // 分账线：仅空仓那一段虚线（保留信息量），持仓段一律实线
       const agentLines = Object.entries(eq.agents ?? {})
         .filter(([, pts]) => pts.length >= 2)
@@ -409,6 +424,7 @@ export default function Live() {
             ...line,
             notional: 100000, // 分账名义基准: hover 换算金额盈亏
             dashSegs: tsToDashSegs(line.points, groups),
+            fills: fillsOfAgent(name),
           };
         });
       // 总账户线（¥92.5 万量级）只兜底：没有任何分账线可画时才显示。

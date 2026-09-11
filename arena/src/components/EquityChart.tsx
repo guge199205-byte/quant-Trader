@@ -10,6 +10,7 @@ import { ParentSize } from '@visx/responsive';
 import dayjs from 'dayjs';
 import { EquityPoint } from '../api/client';
 import { fmtMoney } from '../utils/format';
+import { nearestIdxOfTime } from '../utils/equity';
 
 export interface ChartLine {
   id: string;
@@ -28,6 +29,10 @@ export interface ChartLine {
   /** 断口：这些时间点起是"跨非交易日"后的第一个采样点，线在此断开不与前点相连
    *  （周末/法定节假日不画线；数据点仍在，tooltip 可见） */
   gapStarts?: Set<number>;
+  /** 成交标记：时间就近吸附到采样点，画买入 ▲（线下）/ 卖出 ▼（线上）小三角。
+   *  用途：空仓段虚线转回实线的界点在全览（分钟级 900 点）下只有几像素宽，
+   *  标记让「今天买回来了没有、几点买的」不放大也看得见（2026-09-11）。 */
+  fills?: { t: number; side: string }[];
 }
 
 /** 悬停补充信息（可选）：当时持仓 + 附近成交（时序事实，随鼠标滑动查看） */
@@ -282,6 +287,45 @@ const ChartStatic = memo(function ChartStatic({
                     />
                   );
                 })}
+            </Group>
+          );
+        })}
+
+        {/* 成交标记：买入 ▲（点下方，仿通达信 B 位）/ 卖出 ▼（点上方）。
+            只画窗口内的；聚焦/悬停淡化与对应线一致。 */}
+        {display.lines.map((l) => {
+          if (!l.fills?.length || !l.points.length) return null;
+          const focusActive = !focus || l.id === focus;
+          const hl = hoverId === l.id;
+          // 线自身的时间跨度：窗口化（如「近5日」）后，早于窗口的成交不能吸附到
+          // 首点画成假标记（会挤在左边缘 x=0）——直接不画。
+          const t0 = l.points[0].t;
+          const t1 = l.points[l.points.length - 1].t;
+          return (
+            <Group key={`fills-${l.id}`}
+              opacity={hoverId != null ? (hl ? 1 : 0.35) : focusActive ? 1 : 0.45}>
+              {l.fills.map((f, k) => {
+                if (f.t < t0 || f.t > t1) return null;
+                const idx = nearestIdxOfTime(l.points, f.t);
+                if (idx < 0 || idx < winStartIdx || idx > winEndIdx) return null;
+                const x = xScale(idx) ?? 0;
+                const y = yOf(l, l.points[idx].v) ?? 0;
+                const isBuy = String(f.side).toLowerCase() === 'buy';
+                const d = isBuy
+                  ? `M ${x} ${y + 4} L ${x - 4.5} ${y + 11} L ${x + 4.5} ${y + 11} Z`
+                  : `M ${x} ${y - 4} L ${x - 4.5} ${y - 11} L ${x + 4.5} ${y - 11} Z`;
+                return (
+                  <path
+                    key={`${l.id}-fill-${k}`}
+                    className="eq-fill-mark"
+                    data-side={isBuy ? 'buy' : 'sell'}
+                    d={d}
+                    fill={isBuy ? '#e0483e' : '#12b886'}
+                    stroke="#fff"
+                    strokeWidth={1}
+                  />
+                );
+              })}
             </Group>
           );
         })}
@@ -808,6 +852,7 @@ export default function EquityChart({
         }}
       >
         拖拽平移 · 滚轮缩放 · 双击复位
+        {lines.some((l) => l.fills?.length) && ' · ▲买入 ▼卖出'}
       </div>
       {/* svg 区域 flex 吃满剩余高度；图例在下方自然高度，溢出会压住后续内容 */}
       <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>

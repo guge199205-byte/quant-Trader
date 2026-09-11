@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dailyCloses, seriesStats } from './equity';
+import { dailyCloses, nearestIdxOfTime, seriesStats } from './equity';
 
 const pt = (date: string, value: number, ts = `${date}T15:00:00+08:00`) => ({ date, ts, value });
 
@@ -70,5 +70,33 @@ describe('seriesStats', () => {
   it('丢弃非法点后再判断样本量', () => {
     const s = seriesStats([pt('2026-08-31', 100000), { ts: '2026-09-01T10:00:00+08:00', value: NaN }]);
     expect(s).toBeNull();
+  });
+});
+
+describe('nearestIdxOfTime', () => {
+  // 分钟级采样序列（等价净值点：时间升序）
+  const series = [1000, 2000, 3000, 4000, 5000].map((t) => ({ t }));
+
+  it('成交时刻落在采样点上时取该点', () => {
+    expect(nearestIdxOfTime(series, 3000)).toBe(2);
+  });
+
+  it('落在两点之间时取时间更近的一侧', () => {
+    expect(nearestIdxOfTime(series, 2900)).toBe(2); // 距 3000 更近
+    expect(nearestIdxOfTime(series, 2100)).toBe(1); // 距 2000 更近
+    expect(nearestIdxOfTime(series, 2500)).toBe(1); // 正中间取前一点（确定性）
+  });
+
+  it('早于起点/晚于终点时钳到首尾', () => {
+    expect(nearestIdxOfTime(series, 0)).toBe(0);
+    expect(nearestIdxOfTime(series, 999999)).toBe(4);
+  });
+
+  it('空序列返回 -1（调用方跳过标记）', () => {
+    expect(nearestIdxOfTime([], 1000)).toBe(-1);
+  });
+
+  it('单点序列任何时刻都取 0', () => {
+    expect(nearestIdxOfTime([{ t: 500 }], 99999)).toBe(0);
   });
 });

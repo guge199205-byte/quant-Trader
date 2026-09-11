@@ -51,6 +51,9 @@ def sentinel(monkeypatch, tmp_path):
     monkeypatch.setattr(W, "load_watch", lambda: {"agentA": [dict(RULE)]})
     monkeypatch.setattr(W, "save_watch", lambda rules: calls["saved"].append(rules))
     monkeypatch.setattr(W, "_last_price", lambda broker, code: (48.89, 49.00))
+    # 动作日志必须隔离：走真实 _execute_sell 的用例一旦失败/触发，_log_line 会写
+    # 真实 logs/live_watch_*.jsonl（2026-09-11 实录：合成 agentA 记录混进生产日志）
+    monkeypatch.setattr(W, "LOG_DIR", tmp_path)
 
     def _fake_sell(broker, agent, rule, price, prev, trig, avail, **kw):
         calls["sell"].append((agent, rule["code"], trig, price))
@@ -120,3 +123,92 @@ def test_run_watch_dry_run_flag_keeps_rule(sentinel):
     assert sentinel["sell"] == []
     assert [r["code"] for r in sentinel["saved"][-1]["agentA"]] == ["600362.SH"]
     assert not sentinel["events"].exists()   # 手工试运行不写委托事件（避免误告警）
+
+
+# ---------- 回写粒度：只施加本轮差量，不冲掉并发写入 ----------
+# 2026-09-11 移植 quantmind 止损执行器代码审查 LOW 12（状态回写按 dirty 合并）：
+# 哨兵一轮跑十几秒（每条规则 1s 桥限流 + 逐只行情），期间整点分析 / 收盘复盘
+# 可能刚给某个 agent 换上新条件位（live_hourly_analysis / post_review 都调
+# save_watch_rules）。原来 run_watch 结尾整表回写，用的是**轮询开始时的快照**——
+# 并发挂上的新止损被静默冲掉，持仓裸奔到下一次分析（最长一小时，收盘复盘挂的
+# 直接等次日）。回写必须只施加本轮自己的差量。
+
+def _rule(code, stop, created="2026-09-11T13:30:00+08:00"):
+    return {"code": code, "stop_loss": stop, "pct": 1.0, "reason": "测试",
+            "created_ts": created}
+
+
+@pytest.fixture
+def file_watch(monkeypatch, tmp_path):
+    """真实 load_watch/save_watch（落 tmp 文件）；测试用 _last_price 在轮询中途
+    插入一次「另一个进程」的写入，复现哨兵跑动期间的并发窗口。"""
+    import json
+    import types as _t
+
+    import live_fills
+    import live_hourly_analysis
+
+    path = tmp_path / "live_watch.json"
+    monkeypatch.setattr(W, "WATCH_FILE", path)
+    monkeypatch.setattr(W, "POLL_SLEEP_SEC", 0)
+    monkeypatch.setattr(W, "LOG_DIR", tmp_path)      # 同 sentinel：动作日志隔离
+    monkeypatch.setattr(live_fills, "EVENTS_FILE", tmp_path / "events.json")
+    monkeypatch.setattr(live_fills, "reconcile", lambda broker: None)
+    monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: True)
+
+    def write(rules):
+        path.write_text(json.dumps(rules, ensure_ascii=False), encoding="utf-8")
+
+    def read():
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    return _t.SimpleNamespace(write=write, read=read)
+
+
+def test_flush_keeps_rules_armed_by_another_process_mid_tick(file_watch, monkeypatch):
+    """轮询途中整点分析给 agentB 挂上新条件位 → 本轮回写不得把它冲掉。"""
+    file_watch.write({"agentA": [_rule("600362.SH", 50.0)]})
+    done = {"fired": False}
+
+    def mid_tick_write(broker, code):
+        if not done["fired"]:
+            done["fired"] = True
+            file_watch.write({"agentA": [_rule("600362.SH", 50.0)],
+                              "agentB": [_rule("000958.SZ", 5.15)]})
+        # 现价 51.00 在止损 50.0 上方 = 真不触发（此前用 49.00 配 50.0 止损，
+        # 实际每轮都打到触发分支，靠 _execute_sell 在缺方法的假 broker 上抛异常
+        # 才凑出 fired==0 ——假绿，且会往真实 logs/live_watch_*.jsonl 写脏记录）
+        return 51.00, 50.00
+
+    monkeypatch.setattr(W, "_last_price", mid_tick_write)
+
+    assert W.run_watch(_FakeBroker(), now=datetime(2026, 9, 11, 14, 0, 0, tzinfo=CN)) == 0
+
+    got = file_watch.read()
+    assert [r["code"] for r in got["agentB"]] == ["000958.SZ"]   # 并发挂的必须活着
+    assert [r["code"] for r in got["agentA"]] == ["600362.SH"]
+
+
+def test_flush_applies_own_consumption_without_clobbering(file_watch, monkeypatch):
+    """对照：合并 ≠ 不回写。本轮消费掉的规则仍要删；同一 agent 并发新增的保留。"""
+    file_watch.write({"agentA": [_rule("600362.SH", 50.0)]})
+    done = {"fired": False}
+
+    def mid_tick_write(broker, code):
+        if not done["fired"]:
+            done["fired"] = True
+            file_watch.write({"agentA": [_rule("600362.SH", 50.0),
+                                         _rule("000958.SZ", 5.15)]})
+        return 48.89, 49.00            # 跌破 50 → 触发（下方 _execute_sell 桩返回已消费）
+
+    monkeypatch.setattr(W, "_last_price", mid_tick_write)
+
+    def _consume(broker, agent, rule, price, prev, trig, avail, **kw):
+        return True
+
+    monkeypatch.setattr(W, "_execute_sell", _consume)
+
+    assert W.run_watch(_FakeBroker(), now=datetime(2026, 9, 11, 14, 0, 0, tzinfo=CN)) == 1
+
+    codes = [r["code"] for r in file_watch.read()["agentA"]]
+    assert codes == ["000958.SZ"]      # 已消费的 600362 删掉；并发挂的 000958 保留

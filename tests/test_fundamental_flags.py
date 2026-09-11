@@ -63,6 +63,48 @@ def test_loss_streak_empty_is_zero():
     assert ff.loss_streak([]) == 0
 
 
+# ---------------------------------------------------------------- 单季 → 年度
+
+def _y(year, q_np):
+    """{季度: 净利润} → 该年单季度行（扣非=净利润）。"""
+    return [(f"{year}{q}", v, v) for q, v in q_np.items()]
+
+
+def test_to_annual_sums_four_quarters():
+    """quantdb 的 income 是单季值：茅台 2024 四行相加 862.28 亿才是全年。"""
+    rows = _y(2024, {"0331": 240.65e8, "0630": 176.30e8,
+                     "0930": 191.32e8, "1231": 254.01e8})
+    assert ff.to_annual(rows) == [("20241231", 862.28e8, 862.28e8)]
+
+
+def test_to_annual_q4_loss_alone_is_not_an_annual_loss():
+    """Q4 单季亏损 ≠ 全年亏损（南航 2016-2019 就是这么被误判成"连亏10年"的）。"""
+    rows = _y(2019, {"0331": 30e8, "0630": 25e8, "0930": 20e8, "1231": -14e8})
+    ann = ff.to_annual(rows)
+    assert ann == [("20191231", 61e8, 61e8)]
+    assert ff.loss_streak([(t, v) for t, v, _ in ann]) == 0
+
+
+def test_to_annual_skips_year_with_missing_quarter():
+    """缺季不猜：只有 3 个季度就给全年数会算成亏损。"""
+    rows = _y(2024, {"0331": 10e8, "0630": 10e8, "0930": 10e8})
+    assert ff.to_annual(rows) == []
+
+
+def test_to_annual_net_profit_and_deducted_sum_independently():
+    """扣非某季缺值 → 只让扣非该年为 None，净利润不受影响。"""
+    rows = [("20240331", 1e8, 1e8), ("20240630", 1e8, 1e8),
+            ("20240930", 1e8, 1e8), ("20241231", 1e8, None)]
+    assert ff.to_annual(rows) == [("20241231", 4e8, None)]
+
+
+def test_to_annual_ignores_malformed_periods():
+    """非 8 位数字的报告期（脏值/汇总行）直接丢弃，不影响正常年份。"""
+    rows = _y(2024, {"0331": 1e8, "0630": 1e8, "0930": 1e8, "1231": 1e8})
+    rows += [("2024", 5e8, 5e8), ("", 1e8, 1e8), ("20241331", 9e8, 9e8)]
+    assert ff.to_annual(rows) == [("20241231", 4e8, 4e8)]
+
+
 # ---------------------------------------------------------------- 取值 / 区间文案
 
 def test_latest_value_takes_newest_period():
@@ -343,12 +385,13 @@ def test_new_stock_flag_zero_disables():
 
 # ---------------------------------------------------------------- 组装 / 落盘
 
-def _income(code, losses):
-    """{symbol: [(报告期, 净利润, 扣非)]}（income/balance 的三/五元组形态）。
-
-    注意：balance 行是 (报告期, 净资产, 商誉, 总资产, 总负债) 五元组。
-    """
-    return {code: [(f"{y}1231", -1e8, -1e8) for y in losses]}
+def _income(code, losses, annual=-1e8):
+    """{symbol: 单季度行三元组}，一年 4 行 → 年度合计 = annual（income 表是单季值）。"""
+    rows = []
+    for y in losses:
+        rows += [(f"{y}{q}", annual / 4, annual / 4)
+                 for q in ("0331", "0630", "0930", "1231")]
+    return {code: rows}
 
 
 def _day(closes, amount=1e4):
@@ -478,30 +521,33 @@ def _write_income(tmp_path, rows):
     con.close()
 
 
+def _q(code, year, values, anntime=None):
+    """一年四个季度的**单季**行（anntime 缺省 = 次年 3/30）。"""
+    return [(code, f"{year}{q}", anntime or f"{year + 1}0330", v, v)
+            for q, v in zip(("0331", "0630", "0930", "1231"), values)]
+
+
 def test_read_income_dedupes_restatements_by_anntime(tmp_path, monkeypatch):
     """财报重述（同报告期多版本）不能数成两个年度——loss_streak 按行数计数。"""
     monkeypatch.setattr(ff, "QUANTDB", tmp_path)
-    _write_income(tmp_path, [
-        ("600001.SH", "20231231", "20240330", -1e8, -1e8),
-        ("600001.SH", "20241231", "20250330", -1e8, -1e8),
-        ("600001.SH", "20241231", "20260330", -2e8, -2e8),   # 重述版（公告更晚）
-        ("600001.SH", "20251231", "20260330", -1e8, -1e8),
-    ])
+    _write_income(tmp_path,
+                  _q("600001.SH", 2023, [-2.5e7] * 4)
+                  + _q("600001.SH", 2024, [-2.5e7] * 4)
+                  + [("600001.SH", "20241231", "20260601", -1e8, -1e8)]  # Q4 重述
+                  + _q("600001.SH", 2025, [-2.5e7] * 4))
     rows = ff.read_income(ASOF)["600001.SH"]
-    assert len(rows) == 3                              # 只留每个报告期的最新版本
-    assert ("20241231", -2e8, -2e8) in rows            # 取重述后的数字
+    assert len(rows) == 3                              # 三个年度，不是四行
+    assert ("20241231", -1.75e8, -1.75e8) in rows       # 取重述后的 Q4 再合计
     assert ff.loss_streak([(t, v) for t, v, _ in rows]) == 3
 
 
 def test_read_income_excludes_future_announcements(tmp_path, monkeypatch):
     """公告日晚于 asof 的报表不可见（防未来函数）。"""
     monkeypatch.setattr(ff, "QUANTDB", tmp_path)
-    _write_income(tmp_path, [
-        ("600001.SH", "20251231", "20260330", -1e8, -1e8),
-        ("600001.SH", "20261231", "20270330", -9e8, -9e8),   # 未来
-    ])
-    rows = ff.read_income(ASOF)["600001.SH"]
-    assert rows == [("20251231", -1e8, -1e8)]
+    _write_income(tmp_path,
+                  _q("600001.SH", 2025, [-2.5e7] * 4, anntime="20260330")
+                  + _q("600001.SH", 2026, [-9e8] * 4, anntime="20270330"))  # 未来
+    assert ff.read_income(ASOF)["600001.SH"] == [("20251231", -1e8, -1e8)]
 
 
 def test_read_income_missing_source_fails_open(tmp_path, monkeypatch):

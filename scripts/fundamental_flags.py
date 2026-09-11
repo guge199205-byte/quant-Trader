@@ -111,6 +111,40 @@ def load_conf(path: Path | None = None) -> dict:
 
 # ---------------------------------------------------------------- 纯函数（可测）
 
+def to_annual(rows: list) -> list:
+    """单季度报表 → 年度报表：quantdb 的 income **每一行都是单季度值**（1231 那行
+    是 Q4 单季，不是全年——实测茅台 2024 四行相加 862.28 亿 = 真实全年归母净利）。
+
+    直接拿 1231 行当"年度净利润"会把 Q4 单季亏损读成"全年亏损"：南航 2016-2019
+    四年 Q4 都是单季亏损，被误判成"连续 10 年亏损"（实际那四年全年都是盈利的）。
+    **只有 4 个季度齐全的年份才产出**（缺季不猜），净利润与扣非各自独立求和
+    （某一列缺季 → 该列该年 None，另一列不受影响）。
+
+    rows: [(报告期, 净利润, 扣非净利润)] → [(f"{年}1231", 年度净利润, 年度扣非)]。
+    """
+    by_year: dict = {}
+    for t, np_, ded in rows:
+        t = str(t)
+        if len(t) != 8 or not t.isdigit():
+            continue
+        by_year.setdefault(t[:4], {})[t[4:]] = (np_, ded)
+    out = []
+    for year, qs in sorted(by_year.items()):
+        vals = [qs.get(q) for q in ("0331", "0630", "0930", "1231")]
+        if any(v is None for v in vals):
+            continue  # 缺季（未上市/数据断档）→ 这年不出数
+        np_a = _sum_or_none([v[0] for v in vals])
+        ded_a = _sum_or_none([v[1] for v in vals])
+        if np_a is None and ded_a is None:
+            continue
+        out.append((f"{year}1231", np_a, ded_a))
+    return out
+
+
+def _sum_or_none(vals: list):
+    return None if any(v is None for v in vals) else sum(vals)
+
+
 def loss_streak(rows: list) -> int:
     """年报序列 → 最近连续亏损年数。rows: [(报告期 'YYYY1231'|int, 利润)]。
 
@@ -394,12 +428,15 @@ def read_daily(asof: date) -> dict:
 
 
 def read_income(asof: date) -> dict:
-    """{symbol: [(报告期, 归母净利润, 扣非净利润)]}，只用 m_anntime ≤ asof（防未来）。
+    """{symbol: [(年报期, 年度归母净利润, 年度扣非净利润)]}，只用 m_anntime ≤ asof。
 
-    **每个报告期只留最新版本**（同报告期多条 = 财报重述）。当前数据里只有 3 个
-    报告期有重述，不加这道闸的代价现在还看不见；但一旦重述变多，`loss_streak`
-    会按**行数**而不是年数计数，把同一个亏损年度数两遍。选版本用公告日决定，
-    这是 PIT 口径的正确做法。
+    两道口径闸门：
+      1. **每个报告期只留最新版本**（同报告期多条 = 财报重述）。当前数据里只有
+         3 个报告期有重述，不加这道闸的代价现在还看不见；但一旦重述变多，
+         `loss_streak` 会按**行数**而不是年数计数，把同一个亏损年度数两遍。
+      2. **单季度 → 年度合计**（quantdb 存的是单季值，见 `to_annual`）。漏了这道，
+         Q4 单季亏损会被读成全年亏损。
+      选版本用公告日决定，这是 PIT 口径的正确做法。
     """
     try:
         df = _con().execute(
@@ -412,7 +449,8 @@ def read_income(asof: date) -> dict:
     except Exception as exc:  # noqa: BLE001 数据缺失不阻塞（fail-open）
         print(f"⚠️ 读 income 失败：{str(exc)[:120]}", file=sys.stderr)
         return {}
-    return {s: list(zip(g["m_timetag"], g["np"], g["ded"])) for s, g in df.groupby("Symbol")}
+    return {s: to_annual(list(zip(g["m_timetag"], g["np"], g["ded"])))
+            for s, g in df.groupby("Symbol")}
 
 
 def read_balance(asof: date) -> dict:

@@ -253,10 +253,16 @@ class TdxBridgeBroker(Broker):
         status = first.get("status", data.get("status", "unknown"))
         if status in ("rejected", "error"):
             raise BrokerError(first.get("message") or data.get("message") or "TDX 下单被拒")
+        order_id = str(first.get("order_id") or "")
+        # 受理确认以 order_id 为准：桥回 200 但 orders=[] / 缺号时，单可能已在柜台，
+        # 但调用方拿不到号就跟踪不了成交（add_pending 挂不上、reconcile 补记不了）。
+        # 此时 message 绝不能写「已受理」——2026-09-11 之前就是这么默认的，
+        # 哨兵据此打印 ✅ 并消费止损条件位，成交成了账外单。
         return {
-            "order_id": first.get("order_id", ""),
+            "order_id": order_id,
             "status": status,
-            "message": first.get("message", "TDX 已受理"),
+            "message": (first.get("message") or data.get("message")
+                        or ("TDX 已受理" if order_id else "桥未返回委托号（受理状态未知）")),
             "plan_id": plan_id,
         }
 

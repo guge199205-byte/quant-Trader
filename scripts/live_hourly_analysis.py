@@ -2094,6 +2094,17 @@ def main() -> int:
         record_equity(broker, asset, cash)
         if asset > 0:
             print(f"[{now:%F %T}] 净值采样完成 资产 ¥{asset:,.2f}")
+        # 在途单成交补记（2026-09-11）：本段是 cron 每分钟入口，此前从不对账 →
+        # 哨兵/整点轮挂的 pending 最长压到下一整点才补进账本，分账额度/闸门
+        # 建立在滞后账本上。reconcile 内部有跨进程锁，与哨兵/整点轮撞车自动退让。
+        try:
+            from live_fills import reconcile as _reconcile
+
+            n = _reconcile(broker, now)
+            if n:
+                print(f"[{now:%F %T}] ♻️ 在途单成交补记 {n} 笔")
+        except Exception as exc:  # noqa: BLE001 补记失败不能打断采样
+            print(f"[{now:%F %T}] ⚠️ 在途单成交补记失败: {exc}")
         # 断线恢复判据：last_good = 上次桥数据好（asset>0）的采样时刻，每健康分钟
         # 推进；中断期间无写入 → 恢复首分钟 gap≥阈值立即整窗口补跑。硬断线崩溃
         # 不再依赖"上一分钟恰好记到 asset≤0"（崩溃留旧正值 → 恢复后傻等到整点）。

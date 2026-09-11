@@ -134,6 +134,8 @@ data/live_watch.json
 data/live_pending_orders.json
 data/agent_last_decisions.json
 logs/live_analysis.lock
+# reconcile 跨进程互斥锁（live_fills，每进程退出自动释放；文件本身无内容）
+data/live_reconcile.lock
 
 # L2 逐笔因子采集运行时产物
 data/l2_factors_live.json

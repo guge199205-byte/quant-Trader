@@ -418,6 +418,21 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
                    "trigger": rule.get(trig), "duplicate": True,
                    "recovered_order_id": recovered, "result": result})
         return True
+    if not str(result.get("order_id") or ""):
+        # 桥回 200 但没给委托号：单可能已在柜台，系统却跟踪不了（挂不上 pending、
+        # reconcile 补记不了）。**不消费条件位**——下一分钟用同一 plan_id 重试；
+        # 若那笔其实已受理，桥判 duplicate → 上面的 _recover_duplicate 回捞委托号，
+        # 两条路都收敛（不重复卖、也不丢账）。2026-09-11 之前这里会打印「已受理」
+        # 并 return True，成交成了账外单。
+        print(f"  ❌ [{agent}] {code}: 桥未返回委托号，成交无法跟踪——"
+              f"条件位保留，下一分钟同号重试（若已受理将回捞委托号）")
+        record_event("no_order_id", code,
+                     f"[{agent}] {code} {label}卖出桥未返回委托号：单可能已在柜台，"
+                     f"成交未记账，需人工核对当日委托（限价 ¥{limit}）")
+        _log_line({"ts": now_cn().isoformat(), "mode": f"watch_{trig}", "agent": agent,
+                   "code": code, "volume": vol, "price": limit, "plan_id": plan_id,
+                   "trigger": rule.get(trig), "result": result, "no_order_id": True})
+        return False
     if at_ld:
         # 跌停封死不是「跳过」而是挂队（2026-09-11 移植）：无买盘本来就卖不掉，
         # 系统职责是如实告警而非假装能卖；有买盘则按买一价成交。

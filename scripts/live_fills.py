@@ -8,11 +8,15 @@
 - 账本只在真实成交后更新（此前按委托限价记账，成交价更优时账本少算/多算现金）
 
 用法: 执行路径调 wait_fill；调度入口（整点/哨兵/record-only）开头调 reconcile(broker)。
+reconcile 自带跨进程互斥（fcntl.flock，data/live_reconcile.lock）：三处入口都由 cron
+在整分钟边界触发，撞车时后来者直接跳过（读-改-写无锁并发会把同一笔成交补记两次）。
 """
+import fcntl
 import json
 import os
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,6 +28,8 @@ sys.path.insert(0, str(ROOT / "agent_tools"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 PENDING_FILE = ROOT / "data" / "live_pending_orders.json"
+# reconcile 跨进程互斥锁（见模块 docstring）；锁文件本身无内容，只看 flock 状态。
+RECONCILE_LOCK_FILE = ROOT / "data" / "live_reconcile.lock"
 # 需要人工知晓的委托事件（挂队/未成交/废单/收盘未了结）：alert.sh 读取并去重上报。
 # 2026-09-11 之前这些只写 logs/*.jsonl，止损没卖出去也零告警。
 EVENTS_FILE = ROOT / "data" / "live_order_events.json"
@@ -74,8 +80,16 @@ def save_pending(entries: list) -> None:
 def add_pending(order_id, agent: str, code: str, side: str, volume: int,
                 price: float, ts: str, protect: bool = False) -> None:
     """登记在途委托。protect=True 表示这是保护价（跌停价）挂队单：
-    排队等买盘是它的正常形态，停滞告警时不可触发重启桥的自愈动作。"""
+    排队等买盘是它的正常形态，停滞告警时不可触发重启桥的自愈动作。
+
+    没拿到委托号（桥响应缺 order_id）不能静默 return：无号 = 这笔单跟踪不了、
+    成交也不会被 reconcile 补记，必须落事件让人核对当日委托（2026-09-11）。
+    """
     if not order_id:
+        record_event("untracked_order", code,
+                     f"[{agent}] {side} {code} {int(volume)}股 委托未拿到委托号，"
+                     f"成交无法记账（限价 ¥{price}）——需人工核对当日委托",
+                     side=side)
         return
     pend = load_pending()
     entry = {
@@ -178,13 +192,51 @@ def wait_fill(broker, order_id, timeout_s: int = 30, interval: int = 3) -> dict 
     return None
 
 
+@contextmanager
+def _reconcile_lock():
+    """跨进程互斥（非阻塞）。拿不到锁 yield False，调用方直接跳过本轮。
+
+    锁文件建不出来（磁盘/权限）时不阻断对账——退回无锁旧行为，宁可偶发重复
+    也不能让补记彻底停摆。锁随进程退出自动释放（flock 语义），无残留锁死风险。
+    """
+    fh = None
+    try:
+        RECONCILE_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(RECONCILE_LOCK_FILE, "a+")
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        if fh is not None:
+            fh.close()
+            fh = None
+    try:
+        yield fh is not None
+    finally:
+        if fh is not None:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            fh.close()
+
+
 def reconcile(broker, now: datetime | None = None) -> int:
     """把在途单的成交增量按真实成交价/量记入分账账本。返回补记笔数。
 
     兜底场景：wait_fill 超时 / 脚本中断 / 部分成交后继续成交。
     终态（撤单/废单/满额成交）移除；隔日桥已查不到的单过期清除。
     未了结的终态（没卖出去）与收盘前仍在途的单会记一条事件 → alert.sh 上报。
+
+    读-改-写全程持跨进程锁：哨兵（每分钟）/整点轮/record-only 采样会在同一
+    分钟边界撞车，无锁并发下两边都会基于旧 volume_recorded 补记同一笔成交。
     """
+    with _reconcile_lock() as got:
+        if not got:
+            return 0
+        return _reconcile_locked(broker, now)
+
+
+def _reconcile_locked(broker, now: datetime | None = None) -> int:
+    """reconcile 的实际逻辑（调用方需已持有跨进程锁）。"""
     from live_ledger import load_ledger, record_buy, record_sell, save_ledger
     from live_trade_picks import log_line
 

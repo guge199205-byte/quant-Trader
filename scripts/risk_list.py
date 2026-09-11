@@ -22,11 +22,13 @@
     （连续 20 个交易日收盘 < 1 元即终止上市），这里设的是**预警带**而非等到 1 元。
     数据源 quantdb 日线分区（未复权；复权价会把面值判据算错），每夜落盘，
     数据停更超过 `penny_days` 自然失效（fail-open）。
-  - 基本面/长期趋势劣化（weak，2026-09-11）：读 fundamental_flags.py 每日算好的
-    缓存 `data/fundamental_flags.json`（连亏≥3年 / 净资产为负 / 相对全市场长期
-    跑输且跌破年线）→ 禁买。用户口径「财务状况一直不好的也需要排除、长期下跌
-    趋势，不管牛市熊市都不好的」。**不在本模块现算**：全市场 5600 只的一轮扫描
-    ~11s，而本清单每交易日要重建 6 次。缓存超过 `flag_days` 自然日即失效。
+  - 基本面/长期走势劣化（weak，2026-09-11）：读 fundamental_flags.py 每日算好的
+    缓存 `data/fundamental_flags.json` → 禁买。七类判据：连亏≥3年 / 扣非连亏 /
+    净资产为负 / 保壳特征 / 高商誉 / 高负债（金融豁免）/ 长期下跌（多窗口相对
+    全市场跑输且破年线）/ 长期横盘 / 流动性枯竭 / 次新股。用户口径「财务状况
+    一直不好的也需要排除、长期下跌趋势不管牛市熊市都不好的、长期横盘也排除、
+    不要误伤」。**不在本模块现算**：全市场 5600 只的一轮扫描 ~15s，而本清单
+    每交易日要重建 6 次。缓存超过 `flag_days` 自然日即失效。
   - 质押：**只告警不拦买**（慢性状态而非事件；比例高不等于当期风险）。
 
 设计取舍：
@@ -77,10 +79,8 @@ DEFAULTS = {
     "regulatory_days": 30,      # 监管关注（问询/警示）提醒窗口（自然日，不禁买）
     "min_price": 2.0,           # 收盘价低于此值禁买（元；0 = 关闭）
     "penny_days": 5,            # 低价条目的数据新鲜度窗口（自然日）
-    "loss_years": 3,            # 连续亏损年数阈值（年报口径）
-    "net_assets_min_yi": 0.0,   # 净资产低于此值（亿元）算资不抵债
-    "trend_rel250_max": -0.25,  # 近 1 年相对全市场中位收益下限
-    "trend_rel500_max": -0.35,  # 近 2 年相对全市场中位收益下限
+    # 财务/趋势判据的阈值不在这里——它们在 scripts/fundamental_flags.py 现算，
+    # 键名同存于 configs/live_symbols.json 的 risk 段（单一事实来源，避免两处漂移）。
     "flag_days": 7,             # 基本面缓存的过期窗口（自然日）
 }
 
@@ -364,7 +364,9 @@ def fundamental_items(doc: dict, asof: date, conf: dict) -> dict:
         reason = str(it.get("reason") or "").strip()
         if not reason:
             continue
-        out[c6] = {"reason": f"基本面劣化：{reason}", "kind": "weak",
+        # reason 自带类型标签（"长期下跌：…"/"流动性枯竭：…"/"商誉…"），不再加
+        # 统一前缀——"基本面劣化"框不住次新/流动性这类非财务判据。
+        out[c6] = {"reason": reason, "kind": "weak",
                    "expire": (src + timedelta(days=fresh)).isoformat()}
     return out
 

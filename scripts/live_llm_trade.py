@@ -71,6 +71,8 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 PICKS_JSON = ROOT / ".." / "projects" / "quantmind" / "data" / "reports" / "stock_picks"
 PER_STOCK_PCT = 0.2   # 单票买入 ≤ 剩余额度 20%
 MAX_NEW_BUYS = 3      # 新开仓上限：单轮 + 当日累计（风险预算 max_new_buys 覆盖）
+# 取池多拿只数：入口过滤（ST/黑名单/风险）剔除后按原排序补齐，池子不白白变小
+POOL_FILTER_OVERFETCH = 10
 
 # 单实例锁 + 当日执行状态（09:35 主入口与 10:05/11:05 补跑共用）
 LOCK_FILE = ROOT / "logs" / "live_llm_trade.lock"
@@ -119,15 +121,31 @@ def _quote_guarded_price(broker, code: str, fp: float) -> tuple[float, bool]:
 
 def load_pool(top: int = 20) -> tuple[list, dict]:
     """候选池：picks.json → 决策用表格行 + 大盘方向。
-    返回 (rows, market_direction)；无池子返回 ([], {})。"""
+    返回 (rows, market_direction)；无池子返回 ([], {})。
+
+    池子入口即剔除 ST/*ST/退市整理/操作员黑名单/事件风险标的
+    （symbol_policy.filter_pool，2026-09-11 用户口径「agent 选出来的股票、
+    跟踪的股票，不需要 ST 的」）。实盘三条取池路径（09:35 决策 / 整点轮 /
+    L2 采集）共用本函数，单点生效；下单闸门仍独立拦一次兜底。
+    多取 POOL_FILTER_OVERFETCH 只：剔除的名额由后续排名补上，池子不白白变小。
+    """
+    fetch_top = top + POOL_FILTER_OVERFETCH if top > 0 else 0
     sel = subprocess.run(
         [sys.executable, "scripts/select_from_reports.py", "--source", "picks",
-         "--top", str(top), "--min-side", "HOLD", "--json"],
+         "--top", str(fetch_top), "--min-side", "HOLD", "--json"],
         capture_output=True, text=True, check=False, cwd=ROOT)
     try:
         pool = json.loads(sel.stdout or "[]")
     except json.JSONDecodeError:
         pool = []
+    from symbol_policy import filter_pool, load_policy_with_risk
+
+    pool, blocked = filter_pool(pool or [], load_policy_with_risk())
+    if blocked:
+        print(f"  ⛔ 候选池剔除 {len(blocked)} 只（标的边界：ST/退市/黑名单/事件风险）："
+              + "、".join(f"{r.get('code')} {r.get('name') or ''}" for r, _ in blocked))
+    if top > 0:
+        pool = pool[:top]
     # 大盘方向：最新 picks.json 顶层 market_direction
     direction = {}
     files = sorted(PICKS_JSON.glob("*_picks.json"))

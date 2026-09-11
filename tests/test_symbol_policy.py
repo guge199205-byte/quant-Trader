@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from buy_gate import BuyGate, check_buy  # noqa: E402
-from symbol_policy import (SymbolPolicy, check_symbol, is_risky_name,  # noqa: E402
-                           load_policy, load_policy_with_risk)
+from symbol_policy import (SymbolPolicy, check_symbol, filter_pool,  # noqa: E402
+                           is_risky_name, load_policy, load_policy_with_risk)
 
 DEFAULT = SymbolPolicy()
 
@@ -212,3 +212,49 @@ def test_load_policy_with_risk_missing_risk_file_is_operator_policy(tmp_path):
     conf.write_text(json.dumps({"block_buy": ["600666.SH"]}), encoding="utf-8")
     p = load_policy_with_risk(conf, tmp_path / "nope.json")
     assert p.block_buy == frozenset({"600666.SH"}) and p.risk == ()
+
+
+# ---------------------------------------------------------------- 候选池入口过滤
+# 2026-09-11 用户口径：「agent 选出来的股票、跟踪的股票，不需要 ST 的……都黑名单」。
+# 此前边界只在**下单时**拦（buy_gate）：池子仍把 ST/风险股原样推给模型和 L2 采集，
+# 模型看得见就会考虑、白挨一轮"提了买、被毙掉"；采集侧还给这些票浪费时间窗。
+
+def _pool():
+    return [{"code": "600309.SH", "name": "万华化学"},
+            {"code": "600666.SH", "name": "*ST瑞德"},
+            {"code": "001312.SZ", "name": "福恩股份"}]
+
+
+def test_filter_pool_drops_st_row_with_reason():
+    kept, dropped = filter_pool(_pool(), DEFAULT)
+    assert [r["code"] for r in kept] == ["600309.SH", "001312.SZ"]
+    row, reason = dropped[0]
+    assert row["code"] == "600666.SH" and "ST" in reason
+
+
+def test_filter_pool_drops_blacklist_and_risk_rows():
+    p = SymbolPolicy(block_buy=frozenset({"600309.SH"}),
+                     risk=(("001312", "09/12解禁5.0%流通盘"),))
+    kept, dropped = filter_pool(_pool(), p)
+    assert kept == [] and len(dropped) == 3          # 黑名单 + ST + 事件风险各一
+    assert any("黑名单" in r for _, r in dropped)
+    assert any("事件风险" in r for _, r in dropped)
+
+
+def test_filter_pool_missing_name_fails_open():
+    """名称缺失 → 保留（与 check_symbol 同口径 fail-open：不能因名称表拉不到清空池子）。"""
+    kept, dropped = filter_pool([{"code": "600666.SH", "name": ""}], DEFAULT)
+    assert len(kept) == 1 and dropped == []
+
+
+def test_filter_pool_skips_malformed_rows_and_empty_input():
+    kept, dropped = filter_pool([None, "600309.SH", {"name": "无代码"}], DEFAULT)
+    assert len(kept) == 1 and dropped == []          # 非 dict 丢弃；无代码行 fail-open 保留
+    assert filter_pool([], DEFAULT) == ([], [])
+    assert filter_pool(None, DEFAULT) == ([], [])
+
+
+def test_filter_pool_does_not_mutate_input():
+    pool = _pool()
+    filter_pool(pool, DEFAULT)
+    assert len(pool) == 3

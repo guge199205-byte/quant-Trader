@@ -11,6 +11,10 @@
 近期负面新闻个股）。用户口径「解禁这种就是要告警跑的、负面新闻股票也要避坑掉，
 模型有的话需要毙掉」——同一处硬拦，实盘两条买入路径自动生效。
 
+2026-09-11 扩展：`filter_pool` 把边界前置到**候选池入口**（live_llm_trade.load_pool，
+09:35 决策 / 整点轮 / L2 采集共用）。用户口径「agent 选出来的股票、跟踪的股票，
+不需要 ST 的」——下单闸门是最后一道，不是唯一一道。
+
 边界：
 - **只拦买入**。卖出永远放行——否则被套的仓位出不来，这是比"买错"更糟的故障。
 - 名称取不到 → **放行**（fail-open）。宁可漏拦一只，也不能因为名称表拉不到
@@ -69,6 +73,31 @@ def check_symbol(code: str, name, policy: SymbolPolicy) -> str:
     if not policy.allow_st and is_risky_name(name):
         return f"{code} {name} 属 ST/*ST/退市整理股（默认禁买）"
     return ""
+
+
+def filter_pool(pool: list, policy: SymbolPolicy) -> tuple[list, list]:
+    """候选池 × 标的边界 → (保留行, [(剔除行, 原因), ...])。纯函数，不做 IO。
+
+    2026-09-11 用户口径：「agent 选出来的股票、跟踪的股票，不需要 ST 的；
+    垃圾股、财务造假、恶劣新闻……都黑名单」。此前边界只在**下单时**拦
+    （buy_gate）——池子本身仍带着 ST/风险股进提示词，模型看得见就会反复考虑，
+    白挨一轮"提了买、被毙掉"；L2 采集还按池子挂行情，给这些票空烧窗口。
+    这里在池子入口就剔除（实盘三条取池路径共用 load_pool 一个口）。
+    下单闸门照旧独立拦一次：池子构建失败、或别的路径绕过池子时兜底。
+
+    fail-open 同 check_symbol：名称缺失且不在代码清单里 → 保留（不能因为
+    名称表拉不到就把池子清空）。非 dict 的脏行直接丢弃（读不出 code/name）。
+    """
+    kept, dropped = [], []
+    for row in pool or []:
+        if not isinstance(row, dict):
+            continue
+        reason = check_symbol(row.get("code"), row.get("name"), policy)
+        if reason:
+            dropped.append((row, reason))
+        else:
+            kept.append(row)
+    return kept, dropped
 
 
 def load_policy(path: Path | None = None) -> SymbolPolicy:

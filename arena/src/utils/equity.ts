@@ -69,6 +69,23 @@ export function nearestIdxOfTime(pts: { t: number }[], t: number): number {
   return lo;
 }
 
+/** 时间戳两侧的相邻采样点下标：pre = 最后一个 < t 的点，post = 第一个 ≥ t 的点
+ *  （二分；任一侧不存在返回 -1）。
+ *  用途：量「对账台阶」——对账时刻前后两点的净值差，就是这笔校正在本线图上
+ *  跳了多少（2026-09-08 实录：pro 线 13:25 一步 -¥14,026，是归位不是暴跌）。 */
+export function stepAroundTime(pts: { t: number }[], t: number): { pre: number; post: number } {
+  const n = pts?.length ?? 0;
+  if (!n) return { pre: -1, post: -1 };
+  let lo = 0;
+  let hi = n; // 下界：第一个 ≥ t 的下标
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid].t < t) lo = mid + 1;
+    else hi = mid;
+  }
+  return { pre: lo - 1, post: lo < n ? lo : -1 };
+}
+
 /** 序列回撤（正数）：从峰值回落的百分比 */
 function maxDrawdownOf(values: number[]): number | null {
   if (values.length < 2) return null;

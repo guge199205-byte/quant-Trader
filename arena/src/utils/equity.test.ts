@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dailyCloses, nearestIdxOfTime, seriesStats } from './equity';
+import { dailyCloses, nearestIdxOfTime, seriesStats, stepAroundTime } from './equity';
 
 const pt = (date: string, value: number, ts = `${date}T15:00:00+08:00`) => ({ date, ts, value });
 
@@ -98,5 +98,38 @@ describe('nearestIdxOfTime', () => {
 
   it('单点序列任何时刻都取 0', () => {
     expect(nearestIdxOfTime([{ t: 500 }], 99999)).toBe(0);
+  });
+});
+
+describe('stepAroundTime', () => {
+  // 09-08 实录（pro 分账线，分钟级采样）：09:37 误卖款入账 → 13:25 对账归位，
+  // 中间 13:24/13:25 两点之差就是这一步跳了多少
+  const series = [
+    { t: 1000, v: 104631 }, // 09:37 前
+    { t: 2000, v: 118558 }, // 09:38 误卖款入账
+    { t: 3000, v: 118723 }, // 13:24
+    { t: 4000, v: 104697 }, // 13:25 对账归位
+  ];
+
+  it('取 t 前后相邻的两点（对账台阶的两端）', () => {
+    expect(stepAroundTime(series, 3500)).toEqual({ pre: 2, post: 3 });
+  });
+
+  it('恰好落在采样点上：该点算 post（效果自该点起可见）', () => {
+    expect(stepAroundTime(series, 4000)).toEqual({ pre: 2, post: 3 });
+  });
+
+  it('早于首点：pre = -1（没有前值可量，调用方不画台阶）', () => {
+    expect(stepAroundTime(series, 500)).toEqual({ pre: -1, post: 0 });
+  });
+
+  it('晚于末点：post = -1（对账后的采样还没落盘）', () => {
+    expect(stepAroundTime(series, 9999)).toEqual({ pre: 3, post: -1 });
+  });
+
+  it('空序列 / 单点：量不出两端', () => {
+    const one = [{ t: 1000, v: 5 }];
+    expect(stepAroundTime([], 1000)).toEqual({ pre: -1, post: -1 });
+    expect(stepAroundTime(one, 1000)).toEqual({ pre: -1, post: 0 });
   });
 });

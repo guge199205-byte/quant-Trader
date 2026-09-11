@@ -9,8 +9,8 @@ import { AxisBottom, AxisLeft, AxisRight } from '@visx/axis';
 import { ParentSize } from '@visx/responsive';
 import dayjs from 'dayjs';
 import { EquityPoint } from '../api/client';
-import { fmtMoney } from '../utils/format';
-import { nearestIdxOfTime } from '../utils/equity';
+import { fmtMoney, fmtMoneySigned } from '../utils/format';
+import { nearestIdxOfTime, stepAroundTime } from '../utils/equity';
 
 export interface ChartLine {
   id: string;
@@ -315,11 +315,21 @@ const ChartStatic = memo(function ChartStatic({
                   // 记在别人名下（如 09-08 pro 误卖 flash 的 688183），这里画的是
                   // 「几点几分把账归回来」，不是一笔新交易。
                   const r = 5;
-                  return (
+                  // data-*：台阶两端的**图内点位**（pct 模式已归一化到 100 起点，
+                  // 不是人民币）+ 像素高差，供 DOM 探针核对「为什么这条标了/没标」
+                  const { pre, post } = stepAroundTime(l.points, f.t);
+                  const vPre = pre >= 0 ? l.points[pre].v : NaN;
+                  const vPost = post >= 0 ? l.points[post].v : NaN;
+                  const yPre = yOf(l, vPre);
+                  const yPost = yOf(l, vPost);
+                  const diamond = (
                     <path
                       key={`${l.id}-fill-${k}`}
                       className="eq-fill-mark"
                       data-side="adjust"
+                      data-pre={vPre}
+                      data-post={vPost}
+                      data-step-px={yPre != null && yPost != null ? Math.abs(yPre - yPost).toFixed(1) : ''}
                       d={`M ${x} ${y - r} L ${x + r} ${y} L ${x} ${y + r} L ${x - r} ${y} Z`}
                       fill="#f59e0b"
                       stroke="#fff"
@@ -327,6 +337,60 @@ const ChartStatic = memo(function ChartStatic({
                     >
                       <title>{f.note ?? '对账'}</title>
                     </path>
+                  );
+                  // 台阶标注：图是「当时账本」的分钟快照、不回溯重写，所以对账在
+                  // 线上是一步跳跃——量出前后两点之差标上去，免得看着像暴跌。
+                  // 前后任一侧不在可见窗口内就不标（会指向窗外几何）。
+                  if (pre < winStartIdx || post < 0 || post > winEndIdx) return diamond;
+                  const delta = vPost - vPre;
+                  // 台阶太矮（<6px，肉眼与分钟级抖动无异）不标：文字会盖住菱形，
+                  // 噪声大于信息（09-01 300308 清出行净值本就平坦 → 不标）。
+                  if (!Number.isFinite(yPre) || !Number.isFinite(yPost) || Math.abs(yPre - yPost) < 6) {
+                    return diamond;
+                  }
+                  // 金额换算：pct 模式图内点位已归一化到 100 起点（display 里做的），
+                  // 直接用会按「点」报数（实测 ¥14,026 的台阶被写成 ¥14）——沿用 hover
+                  // 的同一口径 Δ/基准 × notional（分账 ¥10 万）。dollar/abs 线本就是金额。
+                  const baseV = l.points[0]?.v || 0;
+                  const stepMoney =
+                    mode === 'dollar' || l.abs
+                      ? delta
+                      : l.notional && baseV
+                        ? (delta / baseV) * l.notional
+                        : null;
+                  // 右侧留白不够就翻到左锚：金额标签（「对账 ≈-¥14,026」两枚全角字 +
+                  // 数字）约 80px，70px 会把它截在 chart-clip 边上（尾部断字）。
+                  const atRight = x + 84 > iw;
+                  return (
+                    <g key={`${l.id}-fill-${k}`}>
+                      {diamond}
+                      <line
+                        className="eq-adjust-link"
+                        x1={x}
+                        x2={x}
+                        y1={yPre}
+                        y2={yPost}
+                        stroke="#f59e0b"
+                        strokeWidth={1}
+                        strokeDasharray="3 3"
+                        opacity={0.85}
+                      />
+                      <text
+                        x={atRight ? x - 8 : x + 8}
+                        y={(yPre + yPost) / 2 + 3}
+                        textAnchor={atRight ? 'end' : 'start'}
+                        fontSize={10}
+                        fill="#b45309"
+                        stroke="#fff"
+                        strokeWidth={3}
+                        paintOrder="stroke"
+                        fontFamily="'Courier New', monospace"
+                      >
+                        {stepMoney != null
+                          ? `对账 ≈${fmtMoneySigned(stepMoney, currency)}`
+                          : `对账 ≈${delta >= 0 ? '+' : ''}${delta.toFixed(2)}%`}
+                      </text>
+                    </g>
                   );
                 }
                 const isBuy = String(f.side).toLowerCase() === 'buy';

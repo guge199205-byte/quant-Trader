@@ -244,6 +244,53 @@ def scan(since: str, until: str, idx: dict, db: str | None = None) -> dict:
     return per_code
 
 
+def collect_evidence(since: str, until: str, idx: dict, want: set,
+                     db: str | None = None) -> dict:
+    """对指定代码收集**全部**命中标题 → {code: [(日, 标题, 类别, 是否就近)]}。
+
+    为什么要这个：榜单只给条数，看不到"是哪几篇稿子把它拉进来的"。实测
+    光看条数会误伤——短名撞词（*ST动力 去掉前缀只剩"动力"，撞上"蛋白质动力学"）、
+    正面稿被别的关键词带进来（业绩预增早报）。进 block_buy 是**永久**禁买，
+    必须逐只核证据。
+
+    类别与就近**都取标题里的关键词**：标题才是当事方陈述。曾经按 CATEGORIES
+    顺序取 raw（标题+描述）里第一个命中的词，再拿它在标题里判就近——描述里
+    先蹦出「退市」时，标题里明明白白的「行政处罚事先告知书」会被标成非就近
+    （*ST数源 实测踩到，真阳性被误当疑点）。
+    """
+    name_of = {c: n for n, codes in idx.items() for c in codes}
+    pattern = build_name_re(idx)
+    out: dict = defaultdict(list)
+    tmp = db or snapshot()
+    try:
+        src_tokens = load_source_tokens(tmp)
+        for raw_title, desc, day in iter_articles(tmp, since, until):
+            raw = f"{raw_title} {desc}"
+            if not any(k in raw for _, kws in CATEGORIES for k in kws):
+                continue
+            title = sanitize(raw_title, src_tokens)
+            for c in match_names(title, pattern, idx):
+                if c not in want:
+                    continue
+                name = name_of.get(c, "")
+                hit = next(((cat, k) for cat, kws in CATEGORIES
+                            for k in kws if k in title), None)
+                if hit:
+                    cat, kw = hit
+                    near = bool(name) and _near(title, name, kw, NEAR_CHARS)
+                else:
+                    # 关键词只在 description（相关报道合集）里：仍记录，但类别
+                    # 不可信，且一律不算就近——这份清单宁可漏，不可误。
+                    cat = next((cat for cat, kws in CATEGORIES
+                                if any(k in raw for k in kws)), "?")
+                    near = False
+                out[c].append((day, raw_title, cat, near))
+    finally:
+        if db is None:
+            Path(tmp).unlink(missing_ok=True)
+    return out
+
+
 def _rank(cats: set) -> int:
     order = [c for c, _ in CATEGORIES]
     return min((order.index(c) for c in cats if c in order), default=len(order))
@@ -257,11 +304,24 @@ def main() -> int:
     ap.add_argument("--out", default="", help="JSON 输出路径（默认只打印）")
     ap.add_argument("--top", type=int, default=0, help="只打印前 N 只")
     ap.add_argument("--db", default="", help="已备好的快照路径（省去重复备份）")
+    ap.add_argument("--evidence", default="",
+                    help="逗号分隔代码：逐条打印命中标题（进 block_buy 前核证据用）")
     args = ap.parse_args()
 
     print(f"📰 扫描 {args.since} → {args.until}（Huntly 快照）…", file=sys.stderr)
     idx, by_code = load_name_index()
     print(f"   名称表 {len(idx)} 条", file=sys.stderr)
+
+    if args.evidence:
+        want = {c.strip().upper() for c in args.evidence.split(",") if c.strip()}
+        ev = collect_evidence(args.since, args.until, idx, want, args.db or None)
+        for c in sorted(want):
+            rows = ev.get(c, [])
+            print(f"\n== {c} {by_code.get(c, '')}：{len(rows)} 条")
+            for day, title, cat, near in sorted(rows)[:25]:
+                print(f"   {day} [{cat}]{'★' if near else ' '} {title[:88]}")
+        return 0
+
     per_code = scan(args.since, args.until, idx, args.db or None)
 
     rows = sorted(per_code.items(),

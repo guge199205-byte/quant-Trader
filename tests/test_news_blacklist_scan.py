@@ -20,8 +20,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from news_blacklist_scan import (_near, build_name_re, load_source_tokens,  # noqa: E402
-                                 match_names, sanitize, scan)
+from news_blacklist_scan import (_near, build_name_re, collect_evidence,  # noqa: E402
+                                 load_source_tokens, match_names, sanitize, scan)
 
 IDX = {"东方财富": ["300059.SZ"], "同花顺": ["300033.SZ"], "萃华珠宝": ["002731.SZ"],
        "神剑股份": ["002361.SZ"], "*ST萃华": ["002731.SZ"]}
@@ -146,3 +146,28 @@ def test_scan_keeps_company_with_distinct_name_from_source(tmp_path):
                          "略", "2026-09-08 09:00:00.000")])
     out = scan("2026-01-01", "2026-09-11", IDX, db=db)
     assert {"立案", "交易违规"} <= out["002361.SZ"]["cats"]
+
+
+# ---------------------------------------------------------------- 证据收集
+
+def test_collect_evidence_reads_category_and_near_from_title(tmp_path):
+    """回归（*ST数源 实测踩到）：描述里先出现「退市」，不等于标题里的处罚不就近。
+
+    旧实现按 CATEGORIES 顺序取 raw（标题+描述）里第一个命中的类别词，再拿它在
+    **标题**里判就近——描述命中「退市」时，标题里明摆着的「行政处罚事先告知书」
+    被标成非就近，真阳性在复核里被当成疑点。
+    """
+    title = "*ST数源：收到行政处罚事先告知书 拟被罚800万元"
+    db = _db(tmp_path, [(title, "公司股票可能被实施退市风险警示",
+                         "2026-09-09 08:00:00.000")])
+    ev = collect_evidence("2026-01-01", "2026-09-11", {"数源": ["000909.SZ"]},
+                          {"000909.SZ"}, db=db)
+    assert ev["000909.SZ"] == [("2026-09-09", title, "处罚", True)]
+
+
+def test_collect_evidence_keyword_only_in_description_is_not_near(tmp_path):
+    """关键词只出现在 description（相关报道合集）→ 记录但不算就近。"""
+    db = _db(tmp_path, [("神剑股份发布年度分红方案", "相关：某公司遭立案调查",
+                         "2026-09-08 09:00:00.000")])
+    ev = collect_evidence("2026-01-01", "2026-09-11", IDX, {"002361.SZ"}, db=db)
+    assert ev["002361.SZ"][0][2] == "立案" and ev["002361.SZ"][0][3] is False

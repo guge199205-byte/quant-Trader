@@ -32,7 +32,7 @@ export interface ChartLine {
   /** 成交标记：时间就近吸附到采样点，画买入 ▲（线下）/ 卖出 ▼（线上）小三角。
    *  用途：空仓段虚线转回实线的界点在全览（分钟级 900 点）下只有几像素宽，
    *  标记让「今天买回来了没有、几点买的」不放大也看得见（2026-09-11）。 */
-  fills?: { t: number; side: string }[];
+  fills?: { t: number; side?: string; kind?: 'adjust'; note?: string }[];
 }
 
 /** 悬停补充信息（可选）：当时持仓 + 附近成交（时序事实，随鼠标滑动查看） */
@@ -310,6 +310,25 @@ const ChartStatic = memo(function ChartStatic({
                 if (idx < 0 || idx < winStartIdx || idx > winEndIdx) return null;
                 const x = xScale(idx) ?? 0;
                 const y = yOf(l, l.points[idx].v) ?? 0;
+                if (f.kind === 'adjust') {
+                  // 对账（fill_adjust）≠ 成交：菱形 + 悬停说明。资产归属在原时刻
+                  // 记在别人名下（如 09-08 pro 误卖 flash 的 688183），这里画的是
+                  // 「几点几分把账归回来」，不是一笔新交易。
+                  const r = 5;
+                  return (
+                    <path
+                      key={`${l.id}-fill-${k}`}
+                      className="eq-fill-mark"
+                      data-side="adjust"
+                      d={`M ${x} ${y - r} L ${x + r} ${y} L ${x} ${y + r} L ${x - r} ${y} Z`}
+                      fill="#f59e0b"
+                      stroke="#fff"
+                      strokeWidth={1}
+                    >
+                      <title>{f.note ?? '对账'}</title>
+                    </path>
+                  );
+                }
                 const isBuy = String(f.side).toLowerCase() === 'buy';
                 const d = isBuy
                   ? `M ${x} ${y + 4} L ${x - 4.5} ${y + 11} L ${x + 4.5} ${y + 11} Z`
@@ -853,6 +872,7 @@ export default function EquityChart({
       >
         拖拽平移 · 滚轮缩放 · 双击复位
         {lines.some((l) => l.fills?.length) && ' · ▲买入 ▼卖出'}
+        {lines.some((l) => l.fills?.some((f) => f.kind === 'adjust')) && ' · ◆对账'}
       </div>
       {/* svg 区域 flex 吃满剩余高度；图例在下方自然高度，溢出会压住后续内容 */}
       <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>

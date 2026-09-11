@@ -1437,9 +1437,10 @@ def live_trades(limit: int = Query(200, ge=1, le=5000)):
             except json.JSONDecodeError:
                 continue
             if rec.get("mode") in ("execute", "execute_intraday", "sell",
-                                   "fill_confirm") and (
+                                   "fill_confirm", "fill_adjust") and (
                 "result" in rec or "error" in rec or "fill" in rec
                 or "pending" in rec or rec.get("mode") == "fill_confirm"
+                or rec.get("note")  # 对账行（fill_adjust）只带 note，无成交/委托字段
             ):
                 # fill_confirm（reconcile 兜底确认的成交）没有嵌套 result/fill，
                 # 平铺 volume/price——补一层 fill 让前端 hasFill 判定放行
@@ -1465,6 +1466,8 @@ def live_trades(limit: int = Query(200, ge=1, le=5000)):
     except Exception:  # noqa: BLE001
         pass
     for rec in records:
+        if rec.get("mode") == "fill_adjust":
+            continue  # 对账行价格是台账口径（当时成交价），不是当日行情，不参与桥价回填
         # 桥 filled_price 是真实成交价；有订单匹配按 order_id 覆盖，否则只有
         # 日志本身没价时才按 code 兜底（08-31 买入行有自己的成交价，不能被
         # 今日同 code 卖出价污染）

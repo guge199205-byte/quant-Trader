@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { attachFillsToRounds, LiveFill, toLiveFill } from './liveFills';
+import { attachFillsToRounds, LiveFill, toLiveAdjust, toLiveFill } from './liveFills';
 import type { LiveTradeLog } from '../api/client';
 
 const log = (over: Partial<LiveTradeLog> = {}): LiveTradeLog => ({
@@ -40,6 +40,54 @@ describe('toLiveFill', () => {
 
   test('无成交价时置 null 而非 0', () => {
     expect(toLiveFill(log({ price: null, fill: null }))?.price).toBeNull();
+  });
+});
+
+describe('toLiveAdjust', () => {
+  // 09-08 实录行：pro 误卖 flash 的 688183 后，人工对账把卖款归回 flash
+  const adjust = (over: Partial<LiveTradeLog> = {}): LiveTradeLog => ({
+    ts: '2026-09-08T13:24:42.211460+08:00',
+    mode: 'fill_adjust',
+    agent: 'deepseek-v4-flash',
+    code: '688183.SH',
+    volume: 200,
+    price: 131.69,
+    note: '对账：09:37 pro 空账本兜底事故误卖本仓，卖款 ¥26,338 归属 flash，幽灵仓清出',
+    ...over,
+  });
+
+  test('对账行归一化（保留 note/归属与数量/价格）', () => {
+    expect(toLiveAdjust(adjust())).toEqual({
+      ts: '2026-09-08T13:24:42.211460+08:00',
+      code: '688183.SH',
+      volume: 200,
+      price: 131.69,
+      note: '对账：09:37 pro 空账本兜底事故误卖本仓，卖款 ¥26,338 归属 flash，幽灵仓清出',
+      agent: 'deepseek-v4-flash',
+      mode: 'fill_adjust',
+    });
+  });
+
+  test('缺 agent 的对账行归属 null（不硬塞给任何人）', () => {
+    expect(toLiveAdjust(adjust({ agent: undefined }))?.agent).toBeNull();
+    expect(toLiveAdjust(adjust({ agent: '  ' }))?.agent).toBeNull();
+  });
+
+  test('成交行不是对账行（两类互斥，避免图上重复画标记）', () => {
+    expect(toLiveAdjust(log())).toBeNull();
+    expect(toLiveFill(adjust())).toBeNull(); // 反向亦然：对账行没有方向
+  });
+
+  test('缺 note 的对账行不成立（无法解释的校正不如不显示）', () => {
+    expect(toLiveAdjust(adjust({ note: undefined }))).toBeNull();
+    expect(toLiveAdjust(adjust({ note: '   ' }))).toBeNull();
+    expect(toLiveAdjust(null)).toBeNull();
+  });
+
+  test('价格缺失置 null、数量缺失置 0，不编造数字', () => {
+    const a = toLiveAdjust(adjust({ price: undefined, volume: undefined as unknown as number }));
+    expect(a?.price).toBeNull();
+    expect(a?.volume).toBe(0);
   });
 });
 

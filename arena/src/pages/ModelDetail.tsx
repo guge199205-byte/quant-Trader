@@ -23,7 +23,7 @@ import EquityChart, { toBenchLine, toChartLine } from '../components/EquityChart
 import { logoOf, modelColor, shortName } from '../components/ModelCard';
 import { HoldingsTable, LastTradesTable, LiveFillsTable, PositionHistory, TradesTable } from '../components/Tables';
 import ModelChat from '../components/ModelChat';
-import { LiveFill, toLiveFill } from '../utils/liveFills';
+import { LiveAdjust, LiveFill, toLiveAdjust, toLiveFill } from '../utils/liveFills';
 import { fmtAgo, fmtDateTime, fmtSpan } from '../utils/datetime';
 import { seriesStats, dailyCloses } from '../utils/equity';
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format';
@@ -115,6 +115,16 @@ export default function ModelDetail() {
         .sort((a, b) => (a.ts < b.ts ? 1 : -1)),
     [liveTrades.data, name],
   );
+  /** 人工对账行（fill_adjust）：09-08 误卖归还这类台账校正，独立成一类 */
+  const myLiveAdjusts = useMemo<LiveAdjust[]>(
+    () =>
+      (liveTrades.data ?? [])
+        .filter((t) => (t.agent ?? null) === name)
+        .map(toLiveAdjust)
+        .filter((a): a is LiveAdjust => a != null)
+        .sort((a, b) => (a.ts < b.ts ? 1 : -1)),
+    [liveTrades.data, name],
+  );
   const bench = usePolling(() => fetchBenchmark(m), [m], 300000);
   // 股票中文名表（上证50/恒指/纳指 + quantdb 全市场），10 分钟缓存
   const stockNames = usePolling(() => fetchStockNames(m), [m], 600000);
@@ -149,14 +159,18 @@ export default function ModelDetail() {
         color: MODEL_COLOR[name] ?? '#5a5a5a',
         points: livePts.map((p) => ({ t: dayjs(p.ts).valueOf(), v: p.value })),
         notional: 100000,
-        // 成交标记（▲买/▼卖）：与 Live 页同口径，点在净值线上的实际成交时刻
-        fills: myLiveFills.map((f) => ({ t: new Date(f.ts).getTime(), side: f.side })),
+        // 成交标记（▲买/▼卖）：与 Live 页同口径，点在净值线上的实际成交时刻；
+        // 对账行（◆）单独一类，画「台账几点归位」而不是成交
+        fills: [
+          ...myLiveFills.map((f) => ({ t: new Date(f.ts).getTime(), side: f.side })),
+          ...myLiveAdjusts.map((a) => ({ t: new Date(a.ts).getTime(), kind: 'adjust' as const, note: a.note })),
+        ],
       };
     }
     return perf.data
       ? toChartLine(perf.data.agent, perf.data.agent, MODEL_COLOR[name] ?? '#5a5a5a', perf.data.points)
       : null;
-  }, [livePts, perf.data, name, myLiveFills]);
+  }, [livePts, perf.data, name, myLiveFills, myLiveAdjusts]);
 
   // A股实盘持仓（通达信桥账户）→ Holdings 结构；有实盘则模拟盘持仓/快照不计入
   const tdxHoldings = useMemo<Holdings | null>(() => {
@@ -451,7 +465,12 @@ export default function ModelDetail() {
               <span><em>累计成交额</em>{fmtMoney(turnover, meta.currency, 0)}</span>
               <span><em>累计费用</em>{fmtMoney(s?.total_fee ?? null, meta.currency, 1)}</span>
               <span><em>已平仓</em>{s?.closed_trades ?? 0} 笔</span>
-              {m === 'cn' && <span><em>实盘成交</em>{myLiveFills.length} 笔（通达信桥）</span>}
+              {m === 'cn' && (
+                <span>
+                  <em>实盘成交</em>{myLiveFills.length} 笔（通达信桥）
+                  {myLiveAdjusts.length > 0 && ` · 对账 ${myLiveAdjusts.length} 笔`}
+                </span>
+              )}
             </div>
             <div className="panel-title">
               LAST {tradeDetail.data?.length ?? 0} TRADES <span className="faint">FIFO 平仓明细 · 收益率 = 卖出价 / 买入价 − 1（未计费用）</span>
@@ -466,7 +485,7 @@ export default function ModelDetail() {
                 <div className="panel-title" style={{ marginTop: 18 }}>
                   实盘成交回报 <span className="faint">通达信桥 · 秒级时间 · 仅本模型</span>
                 </div>
-                <LiveFillsTable fills={myLiveFills} currency={meta.currency} names={names} />
+                <LiveFillsTable fills={myLiveFills} adjusts={myLiveAdjusts} currency={meta.currency} names={names} />
               </>
             )}
           </>

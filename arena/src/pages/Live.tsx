@@ -41,7 +41,7 @@ import LiveDetails from '../components/LiveDetails';
 import { MarketSwitcher } from '../components/Navbar';
 import { fmtMoney, fmtPct, fmtPrice, pnlClass } from '../utils/format';
 import { stockLabel, stockName } from '../utils/symbols';
-import { toLiveFill } from '../utils/liveFills';
+import { toLiveAdjust, toLiveFill } from '../utils/liveFills';
 import './Live.css';
 
 const BENCH_COLOR = '#10a37f';
@@ -278,6 +278,19 @@ const marketStatusOf = (market: MarketId, now: Date): { text: string; open: bool
 const benchLabelOf = (market: MarketId): string =>
   market === 'us' ? 'NDX100' : market === 'cn' ? 'SSE50' : 'HSI';
 
+/** 成交卡一行：真实成交（kind 缺省）或人工对账（kind='adjust'，fill_adjust） */
+type LiveCardRow = {
+  kind?: 'adjust';
+  ts: string;
+  code: string;
+  side?: string | null;
+  volume: number;
+  price: number | null;
+  name: string;
+  agent: string | null;
+  note?: string;
+};
+
 /** Live 终端页 —— 终端风布局：
  *  顶部价格条 + HIGHEST/LOWEST → 左净值图 + 模型横排卡 → 右 540px 七 tab 面板 */
 export default function Live() {
@@ -391,13 +404,22 @@ export default function Live() {
       // 标记点即「虚线↔实线」的界点——全览 900 点里今天的买回只有几像素宽，
       // 靠标记才能一眼看见（用户 2026-09-11）。
       const fillsOfAgent = (agent: string) => {
-        const out: { t: number; side: string }[] = [];
+        const out: { t: number; side?: string; kind?: 'adjust'; note?: string }[] = [];
         for (const rec of liveTrades.data ?? []) {
           if (rec.agent !== agent) continue;
           const f = toLiveFill(rec);
-          if (!f) continue;
-          const t = new Date(f.ts).getTime();
-          if (Number.isFinite(t)) out.push({ t, side: f.side });
+          if (f) {
+            const t = new Date(f.ts).getTime();
+            if (Number.isFinite(t)) out.push({ t, side: f.side });
+            continue;
+          }
+          // 对账行（fill_adjust）：菱形标记 + 说明，让「误卖→归还」在图上可见
+          // （2026-09-08 实录：pro 误卖 flash 的 688183，13:24 对账归回）
+          const adj = toLiveAdjust(rec);
+          if (adj) {
+            const t = new Date(adj.ts).getTime();
+            if (Number.isFinite(t)) out.push({ t, kind: 'adjust', note: adj.note });
+          }
         }
         return out.sort((a, b) => a.t - b.t);
       };
@@ -607,7 +629,7 @@ export default function Live() {
     }
     return map;
   }, [liveLedger.data]);
-  const liveTradeEvents = (liveTrades.data ?? [])
+  const liveTradeEvents: LiveCardRow[] = (liveTrades.data ?? [])
     .filter((t) => {
       // 新格式：wait_fill 成交回报（fill 字段）；旧格式：result.status
       const hasFill = t.fill && Number(t.fill.filled_volume) > 0;
@@ -629,15 +651,41 @@ export default function Live() {
       agent: (t as { agent?: string | null }).agent ?? ledgerHolderOf[t.code] ?? null,
     }))
     .sort((a, b) => (a.ts < b.ts ? 1 : -1));
+  // 对账行（fill_adjust）：与成交同轴排在成交卡里，标「⚖ 对账」+ note，
+  // 但**不计入**成交笔数/成交额（台账校正不是成交）。09-08 实录见 liveFills.ts。
+  const liveAdjustEvents: LiveCardRow[] = (liveTrades.data ?? [])
+    .flatMap((rec) => {
+      const a = toLiveAdjust(rec);
+      return a ? [a] : [];
+    })
+    .map((a) => ({
+      kind: 'adjust' as const,
+      ts: a.ts,
+      code: a.code,
+      side: null,
+      volume: a.volume,
+      price: a.price,
+      name: stockLabel(stockNames.data, a.code),
+      agent: a.agent,
+      note: a.note,
+    }))
+    .sort((a, b) => (a.ts < b.ts ? 1 : -1));
   /** 按选中模型过滤实盘成交（'all' = 全部） */
   const liveTradesFiltered = liveTradeEvents.filter(
     (e) => selectedModel === 'all' || e.agent === selectedModel,
   );
+  const liveAdjustFiltered = liveAdjustEvents.filter(
+    (e) => selectedModel === 'all' || e.agent === selectedModel,
+  );
+  /** 成交卡列表 = 成交 + 对账（按时间倒序合并；笔数统计仍只算成交） */
+  const liveCardRows = [...liveTradesFiltered, ...liveAdjustFiltered].sort((a, b) =>
+    a.ts < b.ts ? 1 : -1,
+  );
   /** 实盘成交按日期分组（今日 → 9/1 …），日期头分组展示历史 */
   const liveGroups = useMemo(() => {
     const today = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
-    const out: { label: string; rows: typeof liveTradesFiltered }[] = [];
-    for (const e of liveTradesFiltered) {
+    const out: { label: string; rows: LiveCardRow[] }[] = [];
+    for (const e of liveCardRows) {
       const d = String(e.ts).slice(0, 10);
       const last = out[out.length - 1];
       if (last && last.rows[0] && String(last.rows[0].ts).slice(0, 10) === d) {
@@ -650,7 +698,7 @@ export default function Live() {
       }
     }
     return out;
-  }, [liveTradesFiltered]);
+  }, [liveCardRows]);
   const heldSymbols = useMemo(() => {
     const set = new Set<string>();
     for (const rec of marketPositions.data ?? []) {
@@ -969,7 +1017,7 @@ export default function Live() {
     }
 
     // TRADES —— 原始成交详细卡片（选中模型的全部成交；A股置顶今日实盘成交）
-    if (!tradeEventsFiltered.length && liveTradesFiltered.length === 0) {
+    if (!tradeEventsFiltered.length && liveTradesFiltered.length === 0 && liveAdjustFiltered.length === 0) {
       return <div className="empty-state">暂无成交</div>;
     }
     return (
@@ -983,6 +1031,32 @@ export default function Live() {
                   {g.rows[0] && (market === 'hk' ? '（富途）' : market === 'us' ? '（IBKR）' : '（通达信桥）')}
                 </div>
                 {g.rows.map((e, i) => {
+                  // 对账行（fill_adjust）：独立样式，不显示买/卖方向，附 note 说明
+                  if (e.kind === 'adjust') {
+                    return (
+                      <div className="trade-card" key={`adj-${e.ts}-${i}`}>
+                        <div className="trade-card-head">
+                          <span className="trade-side info">⚖ 对账</span>
+                          <b className="trade-card-symbol">{e.name}</b>
+                          <span className="trade-card-code">{e.code}</span>
+                          <span className="trade-card-date">{e.ts.slice(5, 16)}</span>
+                        </div>
+                        <div className="trade-card-grid">
+                          <span>归属{' '}
+                            <b style={{ color: e.agent ? modelColor(e.agent) : '#000' }}>
+                              {e.agent ?? '总账户'}
+                            </b>
+                          </span>
+                          <span>数量 <b>{e.volume.toLocaleString('en-US')}</b></span>
+                          <span>价格 <b>{e.price != null ? fmtPrice(e.price, meta.currency) : '—'}</b></span>
+                          <span>金额 <b>{e.price != null ? fmtMoney(e.price * e.volume, meta.currency) : '—'}</b></span>
+                        </div>
+                        {e.note && (
+                          <div className="faint" style={{ marginTop: 6, fontSize: 11 }}>{e.note}</div>
+                        )}
+                      </div>
+                    );
+                  }
                   const isSell = String(e.side ?? '').toUpperCase() === 'SELL';
                   const isBuy = String(e.side ?? '').toUpperCase() === 'BUY';
                   // 卖出口径区分：卖后桥仍持有该股 → 减仓；已不持有 → 清仓

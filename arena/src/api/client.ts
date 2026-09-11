@@ -214,6 +214,8 @@ export interface LiveTradeLog {
   result?: { order_id?: string; status?: string; message?: string } | null;
   fill?: { order_id?: string; filled_price?: number; filled_volume?: number } | null;
   message?: string | null;
+  /** 人工对账说明（mode="fill_adjust" 专用，如 09-08 误卖归还） */
+  note?: string | null;
 }
 
 export const fetchLiveAccount = () => unwrap<LiveAccount>(api.get('/live/account'));

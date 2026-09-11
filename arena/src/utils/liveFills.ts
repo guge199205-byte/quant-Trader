@@ -38,6 +38,41 @@ export function toLiveFill(log: LiveTradeLog | null | undefined): LiveFill | nul
   };
 }
 
+/** 人工对账记录（mode="fill_adjust"）：没有方向也没有成交回报，是台账校正
+ *  （2026-09-08 实录：空账本兜底事故让 pro 误卖 flash 的 688183，当日 13:24
+ *  对账把卖款归回 flash、幽灵仓清出）。单独一类，供图表/成交表以「对账」呈现、
+ *  不与真实成交混画——否则同一笔资产会被画两次。 */
+export interface LiveAdjust {
+  ts: string;
+  code: string;
+  volume: number;
+  price: number | null;
+  /** 对账说明（必填：无法解释的校正不如不显示） */
+  note: string;
+  /** 归属模型（对账行落在谁的账上；跨页筛选要用） */
+  agent: string | null;
+  mode: string;
+}
+
+/** 桥日志 → 对账记录；非 fill_adjust 或缺 note 返回 null。 */
+export function toLiveAdjust(log: LiveTradeLog | null | undefined): LiveAdjust | null {
+  if (!log || log.mode !== 'fill_adjust' || !log.ts || !log.code) return null;
+  const note = String(log.note ?? '').trim();
+  if (!note) return null;
+  const volume = Number(log.volume);
+  const price = Number(log.price);
+  const agent = String(log.agent ?? '').trim();
+  return {
+    ts: log.ts,
+    code: log.code,
+    volume: Number.isFinite(volume) && volume > 0 ? volume : 0,
+    price: Number.isFinite(price) && price > 0 ? price : null,
+    note,
+    agent: agent || null,
+    mode: log.mode,
+  };
+}
+
 export interface RoundRef {
   seq: number;
   ts: string | null;

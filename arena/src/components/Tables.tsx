@@ -3,7 +3,7 @@ import { fmtDate, fmtMoneySigned, fmtNum } from '../utils/format';
 import { fmtDateTime, fmtSpan } from '../utils/datetime';
 import { stockName } from '../utils/symbols';
 import { CHANGE_LABEL, diffSnapshots } from '../utils/positions';
-import type { LiveFill } from '../utils/liveFills';
+import type { LiveAdjust, LiveFill } from '../utils/liveFills';
 
 /** 证券单元格：有中文名 → 名称 + 小字灰代码；无 → 代码加粗（风格对齐 Live 实盘 pos-name/code）。
  *  代码写法跨源不一（SH600519 / 600519.SH），统一走 stockName 多格式匹配。 */
@@ -269,16 +269,23 @@ export function PositionHistory({ records, names }: { records: PositionRecord[];
  *  模拟盘成交只到日，桥的回报精确到秒——复盘对时以这张表为准。 */
 export function LiveFillsTable({
   fills,
+  adjusts = [],
   currency = '¥',
   names,
 }: {
   fills: LiveFill[];
+  /** 人工对账行（fill_adjust）：与成交同一时间轴渲染，但不计入买卖笔数/成交额 */
+  adjusts?: LiveAdjust[];
   currency?: string;
   names?: Record<string, string>;
 }) {
   const buy = fills.filter((f) => f.side === 'buy');
   const sell = fills.filter((f) => f.side === 'sell');
   const turnover = fills.reduce((sum, f) => sum + f.volume * (f.price ?? 0), 0);
+  const rows = [
+    ...fills.map((f) => ({ kind: 'fill' as const, ts: f.ts, fill: f })),
+    ...adjusts.map((a) => ({ kind: 'adjust' as const, ts: a.ts, adjust: a })),
+  ].sort((a, b) => (a.ts < b.ts ? 1 : -1));
   return (
     <div className="table-wrap">
       <table className="data">
@@ -295,28 +302,46 @@ export function LiveFillsTable({
           </tr>
         </thead>
         <tbody>
-          {fills.length === 0 && (
+          {rows.length === 0 && (
             <tr><td colSpan={8} className="faint">暂无实盘成交回报</td></tr>
           )}
-          {fills.map((f, i) => (
-            <tr key={`${f.ts}-${f.code}-${i}`}>
-              <td style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(f.ts)}</td>
-              <td className={f.side === 'buy' ? 'up' : 'down'}>
-                {f.side === 'buy' ? '▲ 买入' : '▼ 卖出'}
+          {rows.map((r, i) => (r.kind === 'adjust' ? (
+            <tr key={`adj-${r.ts}-${i}`}>
+              <td style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(r.adjust.ts)}</td>
+              <td className="faint">⚖ 对账</td>
+              <td><SymCell sym={r.adjust.code} names={names} /></td>
+              <td>{r.adjust.volume ? r.adjust.volume.toLocaleString('en-US') : '—'}</td>
+              <td>{r.adjust.price != null ? fmtNum(r.adjust.price) : '—'}</td>
+              <td>
+                {r.adjust.price != null && r.adjust.volume
+                  ? `${currency}${(r.adjust.volume * r.adjust.price).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+                  : '—'}
               </td>
-              <td><SymCell sym={f.code} names={names} /></td>
-              <td>{f.volume.toLocaleString('en-US')}</td>
-              <td>{f.price != null ? fmtNum(f.price) : '—'}</td>
-              <td>{f.price != null ? `${currency}${(f.volume * f.price).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}</td>
-              <td className="faint">{f.costPrice != null ? fmtNum(f.costPrice) : '—'}</td>
-              <td className="faint">{f.orderId ?? '—'}</td>
+              <td colSpan={2} className="faint" style={{ whiteSpace: 'normal', maxWidth: 380 }}>
+                {r.adjust.note}
+              </td>
             </tr>
-          ))}
+          ) : (
+            <tr key={`${r.fill.ts}-${r.fill.code}-${i}`}>
+              <td style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(r.fill.ts)}</td>
+              <td className={r.fill.side === 'buy' ? 'up' : 'down'}>
+                {r.fill.side === 'buy' ? '▲ 买入' : '▼ 卖出'}
+              </td>
+              <td><SymCell sym={r.fill.code} names={names} /></td>
+              <td>{r.fill.volume.toLocaleString('en-US')}</td>
+              <td>{r.fill.price != null ? fmtNum(r.fill.price) : '—'}</td>
+              <td>{r.fill.price != null ? `${currency}${(r.fill.volume * r.fill.price).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}</td>
+              <td className="faint">{r.fill.costPrice != null ? fmtNum(r.fill.costPrice) : '—'}</td>
+              <td className="faint">{r.fill.orderId ?? '—'}</td>
+            </tr>
+          )))}
         </tbody>
       </table>
       <div className="faint" style={{ marginTop: 6, fontSize: 11 }}>
         合计 {fills.length} 笔（买 {buy.length} / 卖 {sell.length}）· 成交额 {currency}
-        {turnover.toLocaleString('en-US', { maximumFractionDigits: 0 })} · 时间取自通达信桥回报（秒级）
+        {turnover.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+        {adjusts.length > 0 && ` · 另有对账 ${adjusts.length} 笔（不计入成交）`}
+        {' '}· 时间取自通达信桥回报（秒级）
       </div>
     </div>
   );

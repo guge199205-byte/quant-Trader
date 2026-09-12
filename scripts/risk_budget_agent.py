@@ -8,14 +8,14 @@ cron：交易日 北京 09:10。
 """
 import json
 import sys
-from datetime import datetime
+from datetime import date, datetime  # noqa: E402
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from trading_cal import is_trading_day, why_not  # noqa: E402
+from trading_cal import is_trading_day, prev_trading_day, why_not  # noqa: E402
 
 OUT = ROOT / "configs" / "risk_budget.json"
 DETAIL = ROOT / "logs" / "budget"
@@ -234,6 +234,42 @@ LEVELS = {
 LIMIT_KEYS = ("leverage_max", "per_stock_pct", "max_new_buys", "leverage_trim_to")
 
 
+def budget_stale_reason(doc: dict, today: date) -> str:
+    """档位文件是否过期（返回原因，新鲜为 ""）。纯函数可测。
+
+    应定档日 = 今天（交易日）；非交易日（周末/假期）沿用最近一个交易日的档位。
+    只有**早于**应定档日才算过期；缺日期字段 = 不知道用的是哪天的档位，同样算。
+    """
+    want = today if is_trading_day(today) else prev_trading_day(today)
+    raw = str((doc or {}).get("date") or "")
+    try:
+        got = date.fromisoformat(raw)
+    except ValueError:
+        return (f"档位日期缺失/不可解析（{raw or '空'}），应定档日 {want.isoformat()}"
+                "——定档 cron 或写入链路可能故障")
+    if got >= want:
+        return ""
+    return (f"档位日期 {got.isoformat()} 早于应定档日 {want.isoformat()}"
+            "——定档 cron 或数据源可能故障，当天沿用旧档位")
+
+
+def _warn_if_stale(doc: dict, path: Path) -> None:
+    """过期只提醒不改行为（P2，2026-09-12）：fail-open 维持——风控读不到新鲜档位
+    也不阻断交易路径，但必须让人看见「今天用的是旧档位」。定档链路静默故障时，
+    档位偏松 = 风控半失效，此前没有任何暴露面。同日一条事件（record_event 覆盖）。"""
+    reason = budget_stale_reason(doc, _bj_now().date())
+    if not reason:
+        return
+    print(f"⚠️ 风险预算过期：{reason}｜仍按现档位 fail-open（不阻断），请检查 {path}")
+    try:
+        from live_fills import record_event  # 局部导入：本模块也要能脱离实盘栈单跑
+
+        record_event("risk_budget_stale", "",
+                     f"风险预算过期：{reason}（照常 fail-open，不阻断）")
+    except Exception as exc:  # noqa: BLE001 事件面故障不许反过来打断风控读取
+        print(f"  ⚠️ 风险预算过期事件落盘失败（{str(exc)[:80]}）")
+
+
 def load_limits(path: Path | None = None) -> dict:
     """当日风控档位（风险预算输出 → **所有实盘入口共用**的硬约束）。
 
@@ -241,9 +277,12 @@ def load_limits(path: Path | None = None) -> dict:
     （live_llm_trade）硬编码 1.5/20% 且没有新开仓上限——预算定档"防守"时
     主入口仍按宽松档下单，风险预算只兑现了一半。统一从本函数取。
     文件缺失/损坏 → {}（调用方保持各自默认，不阻断）。
+    档位过期（定档链路静默故障）→ 只打印 + 事件提醒，**不改返回行为**（见
+    `_warn_if_stale`，2026-09-12 P2）。
     """
+    p = path or OUT
     try:
-        doc = json.loads((path or OUT).read_text(encoding="utf-8"))
+        doc = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     lv = doc.get("budget") or {}
@@ -256,6 +295,7 @@ def load_limits(path: Path | None = None) -> dict:
             out[k] = int(v) if k == "max_new_buys" else float(v)
         except (TypeError, ValueError):
             continue
+    _warn_if_stale(doc if isinstance(doc, dict) else {}, p)
     return out
 
 

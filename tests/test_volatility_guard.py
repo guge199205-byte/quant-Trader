@@ -122,6 +122,55 @@ def test_news_trigger_impact_and_dedup():
     assert L.news_triggers(brief2, "")[0] == []
 
 
+def test_news_trigger_filters_to_held_codes():
+    """新闻唤醒按持仓过滤（2026-09-12 P1-5）：分子的『盯』/候选个股异动不该
+    唤醒整轮完整分析（09-11 一天 78 轮的成本来源之一；候选池异动另有 L2 轮询
+    通道，不丢信息）。"""
+    brief = {"ts": "t1", "holdings": [
+        {"code": "600309.SH", "name": "万华化学", "verdict": "利空", "impact": -1.0,
+         "event_type": "监管"},
+        {"code": "603019.SH", "name": "中科曙光", "verdict": "利多", "impact": 2.0,
+         "event_type": "订单"}]}
+
+    hits, key = L.news_triggers(brief, "", held_codes={"600309.SH"})
+    assert [h[0] for h in hits] == ["600309.SH"] and key == "t1"
+    # 全是非持仓 → 不触发
+    assert L.news_triggers(brief, "", held_codes={"000001.SZ"})[0] == []
+    # 不传 held_codes → 兼容旧行为（全量，供纯函数级复用）
+    assert len(L.news_triggers(brief, "")[0]) == 2
+
+
+def test_check_volatility_passes_held_codes_to_news():
+    """接线：check_volatility 必须把本轮持仓代码传给新闻触发过滤。"""
+    import inspect
+    src = inspect.getsource(L.check_volatility)
+    assert "held_codes=" in src
+
+
+def test_non_held_news_marks_seen_without_trigger(monkeypatch, tmp_path):
+    """P1-5 接线：只有非持仓命中的新分子 → 不唤醒，但 ts 记账。
+
+    不记账会导致同一 ts 每分钟重扫 + 重打印（news_brief 分子保留到下次再造）；
+    记账语义 = 「这个分子已评估过」，与其后是否买入该票无关（新分子会带新 ts）。"""
+    import json as _json
+    import news_brief
+
+    p = tmp_path / "brief.json"
+    p.write_text(_json.dumps({
+        "ts": "t-nonheld",
+        "holdings": [{"code": "603019.SH", "name": "中科曙光", "verdict": "利多",
+                      "impact": 2.0, "event_type": "订单"}]}), encoding="utf-8")
+    monkeypatch.setattr(news_brief, "BRIEF_FILE", p)
+    monkeypatch.setattr(L, "quote_fallback", lambda code, ref=0.0: 118.1)
+    # 个股盈亏/涨跌都停在原位（不制造个股触发），只留新闻源说话
+    _set_state({"last_pnl": {"688183.SH": -11.5}, "last_day": {"688183.SH": -5.5},
+                "last_ts": "", "last_news_key": ""})
+
+    assert L.check_volatility(FakeBroker(), [{"stock_code": "688183.SH"}]) is None
+    st = _json.loads(Path("/tmp/test_state_guard.json").read_text(encoding="utf-8"))
+    assert st["last_news_key"] == "t-nonheld"
+
+
 def test_check_volatility_v2_sources_wired():
     # 三源函数已接入 check_volatility（源码级确认接线存在）
     import inspect

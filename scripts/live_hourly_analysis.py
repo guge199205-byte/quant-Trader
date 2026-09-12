@@ -1399,9 +1399,15 @@ def l2_triggers(factors: dict, last_inout: dict, codes: list) -> list:
     return out
 
 
-def news_triggers(brief: dict, last_news_key: str) -> tuple:
+def news_triggers(brief: dict, last_news_key: str,
+                  held_codes: set | None = None) -> tuple:
     """新闻持仓信号触发：新分子中出现 |impact|≥TRIGGER_NEWS_IMPACT 的逐票结论。
-    返回 (triggers, new_key)；brief 为空/无新内容返回 ([], last_news_key)。纯函数可测。"""
+    返回 (triggers, new_key)；brief 为空/无新内容返回 ([], last_news_key)。纯函数可测。
+
+    held_codes 非 None 时只保留持仓命中的信号（2026-09-12 P1-5）：分子的『盯』/
+    候选个股异动曾经也唤醒整轮完整分析（09-11 一天 78 轮的成本来源之一），而候选
+    池异动另有 `data/news_brief/intraday_watch.json` 的 L2 轮询通道，不丢信息。
+    """
     ts = str((brief or {}).get("ts") or "")
     if not ts or ts == (last_news_key or ""):
         return [], (last_news_key or "")
@@ -1413,8 +1419,11 @@ def news_triggers(brief: dict, last_news_key: str) -> tuple:
             impact = float(h.get("impact") or 0)
         except (TypeError, ValueError):
             continue
+        code = str(h.get("code") or "")
+        if held_codes is not None and code not in held_codes:
+            continue
         if abs(impact) >= TRIGGER_NEWS_IMPACT:
-            out.append((str(h.get("code") or ""), "up" if impact > 0 else "down",
+            out.append((code, "up" if impact > 0 else "down",
                         f"新闻信号：{h.get('name')}({h.get('code')}) {h.get('verdict')} "
                         f"impact{impact:+.0f} · {h.get('event_type')}"))
     return out, ts
@@ -1472,10 +1481,18 @@ def check_volatility(broker, positions: list) -> str | None:
             brief = json.loads(BRIEF_FILE.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             brief = {}
-        news_hits, new_key = news_triggers(brief, state.get("last_news_key") or "")
-        if news_hits:
-            # 立即记账（防同一分子反复唤醒）；只写自己拥有的键（见 update_state）
+        # 只认持仓命中（P1-5）：分子的『盯』/候选个股异动不再唤醒整轮分析；
+        # 候选池异动另有 intraday_watch.json 的 L2 轮询通道，不丢信息。
+        key_prev = state.get("last_news_key") or ""
+        all_hits, new_key = news_triggers(brief, key_prev)
+        news_hits, _ = news_triggers(brief, key_prev, held_codes=set(codes))
+        if all_hits:
+            # 新分子已评估过就记账（含「只有非持仓、被过滤」的分子）：防同一 ts
+            # 每分钟重复扫描/重复打印；只写自己拥有的键（见 update_state）。
             update_state({"last_news_key": new_key})
+        if len(all_hits) > len(news_hits):
+            print(f"[{now:%F %T}] 📰 新闻信号 {len(all_hits)} 条：持仓命中 {len(news_hits)} 条，"
+                  f"非持仓 {len(all_hits) - len(news_hits)} 条不唤醒")
         triggers += news_hits
     except Exception:  # noqa: BLE001
         pass

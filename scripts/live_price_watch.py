@@ -364,10 +364,13 @@ def _log_line(rec: dict) -> None:
 
 
 def _notify_once(key: str, msg: str) -> None:
-    """账户级提醒的小时级去重。
+    """账户级提醒的小时级去重（并上告警面）。
 
     哨兵每分钟一个进程，模块内变量留不住；规则级去重（_notify_skip）写在规则对象里，
-    而账户快照退化时整轮不动规则文件 → 需要个跨进程的边车文件。"""
+    而账户快照退化时整轮不动规则文件 → 需要个跨进程的边车文件。
+    2026-09-12 P2：小时内首次提醒同时 record_event（alert.sh 上报）——2026-09-10
+    账户通道掉了整日，只有 print，人看日志才发现。事件 key 带小时 tag，
+    与边车文件同频（每小时最多一条），不刷屏。"""
     tag = f"{now_cn():%Y%m%d%H}"
     try:
         state = json.loads(SKIP_STATE_FILE.read_text(encoding="utf-8"))
@@ -383,6 +386,8 @@ def _notify_once(key: str, msg: str) -> None:
     except OSError:
         pass
     print(f"  {msg}")
+    # 告警面：事件落盘失败不许反过来打断哨兵（record_event 内部已吞 OSError）
+    record_event(key, "", msg, key=f"{key}:{tag}")
 
 
 def _degenerate_reason(acct: dict) -> str:

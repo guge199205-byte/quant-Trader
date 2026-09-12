@@ -36,12 +36,12 @@ const MARKET_SPEC: Record<Market, { bench: string; rule: string; venue: string; 
   },
 };
 
-/** 已知智能体的角色说明（未知名字兜底到通用描述） */
+/** 已知交易智能体的角色说明（未知名字兜底到通用描述）。
+ *  研究总控（market-research）不建仓、不计入阵容，见下方 roster——故不在此表。 */
 const AGENT_ROLE: Record<string, string> = {
   'deepseek-v4-flash': '工具型 agent：行情 / QuantDB / 搜索 / 记忆 / 数学 MCP 工具 + 可写代码，配 1–2 分钟时间盒工作法与时段作战手册。',
   'deepseek-v4-pro': '直连 LLM 分析：同数据注入、同决策 schema、同风控闸门，无工具调用。',
   glm: '直连 LLM 分析：同数据注入、同决策 schema、同风控闸门。',
-  'market-research': '研究总控：只做大盘/板块研究与情报汇总，产出供决策 agent 引用，自身不建仓。',
 };
 
 const FALLBACK_ROLE = '直连 LLM 分析：同数据注入、同决策 schema、同风控闸门。';
@@ -108,6 +108,8 @@ export default function LiveDetails({
 }) {
   const spec = MARKET_SPEC[market];
   const dataDate = rows.map((r) => r.latest_date).filter(Boolean).sort().pop() ?? null;
+  // 研究总控（market-research）只做研究/情报、自身不建仓，不计入「智能体阵容」；
+  // 其对话与净值另有入口（Live 页的模型筛选与独立净值线）。
   const roster = rows.filter((r) => r.name !== 'market-research');
   const pipeline = market === 'cn' ? PIPELINE_CN : PIPELINE_SIM(market, spec.exec);
   const gates = market === 'cn' ? GATES_CN : GATES_SIM;

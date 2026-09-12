@@ -42,6 +42,7 @@ import { MarketSwitcher } from '../components/Navbar';
 import { fmtMoney, fmtPct, fmtPrice, pnlClass } from '../utils/format';
 import { stockLabel, stockName } from '../utils/symbols';
 import { toLiveAdjust, toLiveFill } from '../utils/liveFills';
+import { displayAgentName } from '../utils/agents';
 import './Live.css';
 
 const BENCH_COLOR = '#10a37f';
@@ -557,11 +558,19 @@ export default function Live() {
   // 注意用 selectedModel 判断（effectiveModel 会把 all 降级成第一个模型）
   const chatAll = usePolling<{ name: string; lines: LogLine[] }[] | null>(() => {
     if (!chatAllActive || !rows.length) return Promise.resolve(null);
-    const units = rows.map((r) => ({ name: r.name, pull: () => fetchLogs(r.name, market, LOG_LIMIT) }));
+    // 展示名走 displayAgentName（market-research → 市场研究）；取数仍用签名
+    const units = rows.map((r) => ({
+      name: displayAgentName(r.name),
+      pull: () => fetchLogs(r.name, market, LOG_LIMIT),
+    }));
     // cn 的 overview 已把 market-research 计入 rows（研究总控有独立净值线），
     // 这里只在缺失时补一张中文名对话卡——否则同一份日志拉两遍、卡片也重影。
-    if (market === 'cn' && !units.some((u) => u.name === 'market-research')) {
-      units.push({ name: '市场研究', pull: () => fetchLogs('market-research', market, LOG_LIMIT) });
+    // 判据看签名（displayAgentName 之后 name 已是中文，不能再拿来比）。
+    if (market === 'cn' && !rows.some((r) => r.name === 'market-research')) {
+      units.push({
+        name: displayAgentName('market-research'),
+        pull: () => fetchLogs('market-research', market, LOG_LIMIT),
+      });
     }
     return Promise.all(units.map((u) => u.pull().catch(() => [] as LogLine[]))).then(
       (lists) => units.map((u, i) => ({ name: u.name, lines: lists[i] })),
@@ -978,7 +987,7 @@ export default function Live() {
       const agents =
         selectedModel === 'all'
           ? chatAll.data
-          : [{ name: selectedModel === 'market-research' ? '市场研究' : effectiveModel, lines: logs.data ?? [] }];
+          : [{ name: displayAgentName(selectedModel), lines: logs.data ?? [] }];
       if (!agents) return <div className="empty-state">加载对话…</div>;
       return (
         <ChatStream

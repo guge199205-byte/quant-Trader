@@ -1297,5 +1297,59 @@
   "updated": "2026-09-09",
   "status": "proposed",
   "source": "review"
+ },
+ "H_2026-09-11_deepseek-v4-flash_0": {
+  "name": "后复权系数污染账户体检：当持仓标的含高后复权系数个股（>2x）时，用后复权价计算的市值/权益会系统性虚增20-25%",
+  "direction": "数据质量（非交易方向）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-11",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-11_deepseek-v4-flash_1": {
+  "name": "弱市（涨跌比≤0.25）首日建仓、账户杠杆<0.4×、全部T+1锁仓时，\"零主动操作+单义条件位\"的次日期望是否优于首日即降档",
+  "direction": "持仓行为A/B",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-11",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-11_deepseek-v4-flash_2": {
+  "name": "盘口五档强买与L2价量背离<-0.2冲突时，以L2为先做防守的胜率",
+  "direction": "微观结构",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-11",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-11_deepseek-v4-pro_0": {
+  "name": "地量薄盘不主动降档的期望检验",
+  "direction": "破位前不主动降档 优于 抢跌卖出（5日期望）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-11",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-11_deepseek-v4-pro_1": {
+  "name": "贴价兑现位的噪音触发率",
+  "direction": "这类位置次日早盘触发概率显著高于结构性位置，且触发后5日收益不优于持有",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-11",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-11_glm-5.3-flash_0": {
+  "name": "防守位触发后分批市价下追的成交均价系统性低于触发价2%+且低于当日收盘（本例73.45 vs 75.5 vs 收74.5）",
+  "direction": "限价(触发价-0.5%)+最低接受价(-1.0%)的5日实现收益优于市价下追",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-11",
+  "status": "proposed",
+  "source": "review"
  }
 }

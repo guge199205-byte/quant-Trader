@@ -11,7 +11,9 @@ stop_from_move / plan_seq。2026-09-14（周一）09:25 哨兵启动后读到的
   ③ 001312 那条 `stop_loss=17.05` 高于周五收盘（理由自述『距现价+0.6%』→ ≈16.95）、
      理由无方向线索的规则，要被方向自洽护栏**翻成止盈**，而不是现价 17.0x 时按
      `price <= stop_loss` 假触发（旧代码里开盘就白卖 30%）；
-  ④ 真有破位的（603213 收盘无止损的受压腿）照常触发下单并打标（不是"下单即消费"）。
+  ④ 真有破位的（603213 收盘无止损的受压腿）照常触发下单并打标（不是"下单即消费"）；
+  ⑤ 翻转/丢弃是**会落盘的语义改写** → 必须同时落事件面（watch_direction_fix /
+     watch_discard，alert=False），且 dry-run 下与落盘同频地**不写**（批 13）。
 
 规则原文是 2026-09-12 对 `data/live_watch.json` 的逐字生产快照；测试全程用 tmp_path
 里的临时文件（watch 文件/台账/在途表/事件面/日志目录全部隔离），不碰任何生产状态。
@@ -213,6 +215,51 @@ def test_production_watch_file_is_still_parseable():
             assert isinstance(r, dict) and str(r.get("code") or "")
 
 
+def test_direction_flip_records_audit_event(legacy):
+    """③ 翻转是**语义改写且会落盘** → 必须留事件（此前只有 print，事后无从回溯：
+    条件位为什么从止损变成了止盈，只有当时的终端输出记得）。alert=False：不是资金
+    风险，但审计面必须查得到。"""
+    counts = W.run_watch(legacy.broker, now=NOW)
+
+    assert counts == ZERO
+    fix = {k: v for k, v in legacy.events().items() if v.get("kind") == "watch_direction_fix"}
+    assert fix, "方向翻转没有落事件"
+    assert any("001312.SZ" in v["msg"] and "17.05" in v["msg"] for v in fix.values())
+    assert all(v["alert"] is False for v in fix.values())
+    # 两条同款（pct 0.3 / 1.0）翻的是同一个价位 → 合并成一条事件，不重复打扰
+    assert len([k for k in fix if "001312.SZ" in k]) == 1
+
+
+def _with_mislabeled_side(legacy) -> None:
+    """给 glm 补一条 sl 侧标错（理由『涨到』+ 止损 19.5 > 昨收 19.35）且 tp 侧已在的
+    规则 → 护栏会丢弃 sl 侧（走 `_discard_event` 分支，不是翻转分支）。"""
+    doc = {a: [dict(r) for r in rs] for a, rs in LEGACY_RULES.items()}
+    doc["glm-5.3-flash"].append(
+        {"code": "000028.SZ", "stop_loss": 19.5, "take_profit": 21.0, "move_stop": None,
+         "pct": 1.0, "reason": "涨到21.0锁利", "created_ts": "2026-09-11T15:41:00+08:00"})
+    legacy.path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.mark.parametrize("dry", [True, False], ids=["--dry-run", "真跑"])
+def test_discard_event_follows_persist_rule(legacy, dry):
+    """丢弃侧的事件必须与**落盘**同频：真跑时留 watch_discard（可回溯），dry-run 时
+    规则根本没被改（见批 12），事件面也不许写——否则「试运行」在生产事件文件里留下
+    一条从未发生的处置记录。"""
+    _with_mislabeled_side(legacy)
+
+    counts = W.run_watch(legacy.broker, dry_run=dry, now=NOW)
+
+    assert counts == ZERO and legacy.broker.sold == []
+    evs = legacy.events()
+    if dry:
+        assert evs == {}
+        assert len(_by_code(legacy.rules(), "glm-5.3-flash", "000028.SZ")) == 2
+    else:
+        assert any(v.get("kind") == "watch_discard" for v in evs.values())
+        kept = _by_code(legacy.rules(), "glm-5.3-flash", "000028.SZ")
+        assert [r["stop_loss"] for r in kept] == [19.3, None]   # sl 侧已丢，tp 侧留着
+
+
 @pytest.mark.parametrize("switch_on", [True, False], ids=["--dry-run", "执行开关关闭"])
 def test_dry_run_does_not_rewrite_watch_file(legacy, monkeypatch, switch_on):
     """dry-run / 执行开关关闭（自动降级 dry-run）**不得回写条件位文件**。
@@ -233,4 +280,5 @@ def test_dry_run_does_not_rewrite_watch_file(legacy, monkeypatch, switch_on):
 
     assert counts == ZERO and legacy.broker.sold == []
     assert legacy.path.read_bytes() == before          # 逐字节不变（含结尾换行）
+    assert legacy.events() == {}                       # 事件面同样零落盘（方向翻转不写）
     assert sum(len(v) for v in legacy.rules().values()) == 7

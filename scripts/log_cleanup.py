@@ -43,15 +43,30 @@ def main() -> int:
     if jf.is_file():
         import json
 
-        rows = []
-        for l in jf.read_text(encoding="utf-8").splitlines():
+        # 逐行容错 + errors="replace"（含中文的追加写队列，批 10/13）：旧实现里一行坏
+        # JSON 直接抛穿 main()，周日的 cron 每周必崩；撕裂的多字节字符同样致命。
+        try:
+            text = jf.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        rows, bad = [], 0
+        for l in text.splitlines():
             if not l.strip():
                 continue
-            r = json.loads(l)
+            try:
+                r = json.loads(l)
+            except json.JSONDecodeError:
+                r = None
+            if not isinstance(r, dict):
+                bad += 1
+                continue
             if r.get("status") == "pending" or (r.get("done_ts") or "") >= \
                     time.strftime("%Y-%m-%dT%H:%M", time.localtime(time.time() - 3 * 86400)):
                 rows.append(r)
-        if not a.dry and len(rows) != sum(1 for _ in jf.read_text(encoding="utf-8").splitlines() if _.strip()):
+        if bad:
+            print(f"⚠️ analysis_jobs 有 {bad} 行无法解析，已跳过（其余 {len(rows)} 条保留）")
+        # 行数对不上（含坏行）就重写一次 = 顺手把坏行从盘上剔除，不做二次读盘
+        if not a.dry and len(rows) != sum(1 for _ in text.splitlines() if _.strip()):
             jf.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
                           encoding="utf-8")
     print(f"✅ {'dry-run: ' if a.dry else ''}共清理 {removed} 个过期文件（>{a.days} 天）")

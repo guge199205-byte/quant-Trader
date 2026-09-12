@@ -128,24 +128,41 @@ def collect(date: str | None = None) -> dict:
                 # errors="replace"：含中文追加流水可能截断在多字节字符中间，严格解码
                 # 会整文件抛 UnicodeDecodeError（不是 OSError/JSONDecodeError），
                 # 该 agent 当日成交统计整段丢失（2026-09-12 批 10）
-                for l in f.read_text(encoding="utf-8", errors="replace").splitlines():
-                    r = json.loads(l)
-                    if r.get("agent") == a and r.get("ts", "").startswith(today) \
-                            and not r.get("error") and r.get("side"):
-                        fv = int((r.get("fill") or {}).get("filled_volume") or 0)
-                        if fv > 0 or r.get("mode") == "fill_confirm":
-                            fills.append(r)
-            except (OSError, json.JSONDecodeError):
+                _text = f.read_text(encoding="utf-8", errors="replace")
+            except OSError:
                 continue
+            # 逐行 try 必须在 for **里面**（批 13）：放在外面时一行坏 JSON 会让该文件
+            # 坏行之后的剩余成交行全部丢弃，不只是坏行本身。
+            for l in _text.splitlines():
+                if not l.strip():
+                    continue
+                try:
+                    r = json.loads(l)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(r, dict):
+                    continue
+                if r.get("agent") == a and r.get("ts", "").startswith(today) \
+                        and not r.get("error") and r.get("side"):
+                    fv = int((r.get("fill") or {}).get("filled_volume") or 0)
+                    if fv > 0 or r.get("mode") == "fill_confirm":
+                        fills.append(r)
         rec["fills"] = len(fills)
-        # 净值首末
+        # 净值首末（逐行容错：一行坏不许让当日净值整段变 None，批 13）
         vals = []
         try:
             for l in (ROOT / "logs" / "live_equity.jsonl").read_text(encoding="utf-8").splitlines():
-                r = json.loads(l)
+                if not l.strip():
+                    continue
+                try:
+                    r = json.loads(l)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(r, dict):
+                    continue
                 if r.get("agent") == a and r.get("date") == today and r.get("value") is not None:
                     vals.append(r["value"])
-        except (OSError, ValueError):
+        except OSError:
             pass
         rec["nav_first"] = vals[0] if vals else None
         rec["nav_last"] = vals[-1] if vals else None
@@ -156,10 +173,17 @@ def collect(date: str | None = None) -> dict:
     total_vals = []
     try:
         for l in (ROOT / "logs" / "live_equity.jsonl").read_text(encoding="utf-8").splitlines():
-            r = json.loads(l)
+            if not l.strip():
+                continue
+            try:
+                r = json.loads(l)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(r, dict):
+                continue
             if r.get("agent") is None and r.get("date") == today and r.get("value") is not None:
                 total_vals.append(r["value"])
-    except (OSError, ValueError):
+    except OSError:
         pass
     out["system"]["total_nav"] = {"first": total_vals[0] if total_vals else None,
                                   "last": total_vals[-1] if total_vals else None}

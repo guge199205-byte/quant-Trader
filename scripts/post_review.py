@@ -78,9 +78,21 @@ def collect_facts(agent: str, date: str) -> str:
     lf = ROOT / "data" / "agent_data_astock" / agent / "log" / date / "log.jsonl"
     if lf.is_file():
         lines.append("【当日分析轮次摘要】")
+        rows = []
         try:
-            rows = [json.loads(l) for l in lf.read_text(encoding="utf-8").splitlines() if l.strip()]
-        except (OSError, ValueError):
+            # errors="replace"：模型对话流是含中文的追加日志（批 10 同一文件族），
+            # 撕裂的多字节字符会让严格解码整文件抛 UnicodeDecodeError；逐行 try 则
+            # 一行坏 JSON 只丢那一行（旧实现整表推导式 → 摘要整段静默变空，批 13）。
+            for l in lf.read_text(encoding="utf-8", errors="replace").splitlines():
+                if not l.strip():
+                    continue
+                try:
+                    r = json.loads(l)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(r, dict):
+                    rows.append(r)
+        except OSError:
             rows = []
         for r in rows[-12:]:
             for m in (r.get("new_messages") or []):
@@ -91,14 +103,21 @@ def collect_facts(agent: str, date: str) -> str:
     else:
         lines.append("【当日分析轮次摘要】无日志")
 
-    # 3) 当日净值轨迹
+    # 3) 当日净值轨迹（逐行容错：一行坏不许让当日净值整段消失，批 13）
     eq = []
     try:
         for l in (ROOT / "logs" / "live_equity.jsonl").read_text(encoding="utf-8").splitlines():
-            r = json.loads(l)
+            if not l.strip():
+                continue
+            try:
+                r = json.loads(l)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(r, dict):
+                continue
             if r.get("agent") == agent and str(r.get("date")) == date and r.get("value") is not None:
                 eq.append(r["value"])
-    except (OSError, ValueError):
+    except OSError:
         pass
     if eq:
         lines.append(f"【当日净值】开盘后首 {eq[0]} · 末 {eq[-1]} · 高 {max(eq)} · 低 {min(eq)}"

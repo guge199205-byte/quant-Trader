@@ -23,9 +23,25 @@ def run() -> int:
     if not JOBS.is_file():
         return 0
     try:
-        rows = [json.loads(l) for l in JOBS.read_text(encoding="utf-8").splitlines() if l.strip()]
-    except (OSError, ValueError):
+        # errors="replace" + 逐行容错（批 10/13）：本文件含中文的指令说明且由前端追加写，
+        # 一行坏（写一半/撕裂多字节）不许让**所有** ops 指令（含重启桥）集体静默不执行。
+        text = JOBS.read_text(encoding="utf-8", errors="replace")
+    except OSError:
         return 0
+    rows, bad = [], 0
+    for l in text.splitlines():
+        if not l.strip():
+            continue
+        try:
+            r = json.loads(l)
+        except json.JSONDecodeError:
+            r = None
+        if isinstance(r, dict):
+            rows.append(r)
+        else:
+            bad += 1
+    if bad:
+        print(f"⚠️ ops_cmds 有 {bad} 行无法解析，已跳过（其余 {len(rows)} 条照常执行）")
     if not rows:
         return 0
     now = datetime.now().isoformat(timespec="seconds")

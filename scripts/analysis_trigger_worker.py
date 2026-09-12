@@ -29,13 +29,36 @@ def _now() -> str:
 
 
 def load() -> list:
+    """读任务队列。**逐行容错**：一行坏（写一半 / 撕裂多字节）只丢那一行。
+
+    旧实现用整表推导式 + `except ValueError: return []`：任意一行损坏 → 整个队列
+    读成空 →「立即分析」按钮永久静默失效（任务行还在文件里，每分钟 cron 都读不到，
+    人看到的只有「点了没反应」）。坏行必须留痕，否则事后无从查（2026-09-12 批 13）。
+    """
     if not JOBS.is_file():
         return []
     try:
-        return [json.loads(l) for l in JOBS.read_text(encoding="utf-8").splitlines()
-                if l.strip()]
-    except (OSError, ValueError):
+        # errors="replace"：本文件含中文且由 api_server 追加写（非原子），撕裂的多字节
+        # 字符会让严格解码整文件抛 UnicodeDecodeError（批 10 同类）。
+        text = JOBS.read_text(encoding="utf-8", errors="replace")
+    except OSError:
         return []
+    rows, bad = [], 0
+    for l in text.splitlines():
+        if not l.strip():
+            continue
+        try:
+            r = json.loads(l)
+        except json.JSONDecodeError:
+            bad += 1
+            continue
+        if isinstance(r, dict):
+            rows.append(r)
+        else:
+            bad += 1
+    if bad:
+        print(f"⚠️ analysis_jobs 有 {bad} 行无法解析，已跳过（其余 {len(rows)} 条照常）")
+    return rows
 
 
 def save(rows: list) -> None:

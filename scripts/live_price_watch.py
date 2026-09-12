@@ -455,15 +455,37 @@ def classify_watch_direction(txt: str) -> tuple[str | None, str]:
     return (best[1], best[2]) if best else (None, "")
 
 
-def _discard_event(agent: str, rule: dict, why: str) -> None:
+def _discard_event(agent: str, rule: dict, why: str, persist: bool = True) -> None:
     """条件位被作废时留痕（alert=False：规则失效本身不是资金风险，但必须可回溯——
-    此前只有 print，条件位为什么消失事后无从查）。"""
+    此前只有 print，条件位为什么消失事后无从查）。
+
+    persist=False（dry-run / 执行开关关闭）：规则根本没被改（见 run_watch 结尾），
+    事件面也不许写——否则「试运行」在生产事件文件里留下一条从未发生的处置记录。
+    """
+    if not persist:
+        return
     record_event("watch_discard", str(rule.get("code") or ""),
                  f"[{agent}] {rule.get('code')} 条件位作废：{why}",
                  side="sell", alert=False)
 
 
-def _fix_rule_direction(agent: str, rule: dict, price: float, prev: float) -> None:
+def _direction_fix_event(agent: str, rule: dict, level: float, why: str,
+                         persist: bool = True) -> None:
+    """方向翻转留痕（review-p03 LOW）：翻转会**落盘**改写条件位语义，此前只有 print。
+
+    事件 id 带价位不按日合并：同一 code 的两个不同价位各自可查；两条同款规则（同 code
+    同价位）翻的是同一件事，合并成一条。alert=False——不是资金风险，但审计面必须有。
+    """
+    if not persist:
+        return
+    code = str(rule.get("code") or "")
+    record_event("watch_direction_fix", code, f"[{agent}] {code} {why}",
+                 side="sell", alert=False,
+                 key=f"watch_direction_fix:{agent}:{code}:{level:.2f}")
+
+
+def _fix_rule_direction(agent: str, rule: dict, price: float, prev: float,
+                        persist: bool = True) -> None:
     """方向自洽护栏：止损该在下方等下跌打到、止盈该在上方等上涨打到。
 
     2026-09-10 实录：复盘同步把『涨到17.90减50%』写成 stop_loss，现价 17.50 在阈值
@@ -475,7 +497,8 @@ def _fix_rule_direction(agent: str, rule: dict, price: float, prev: float) -> No
       2) 无文字线索时看昨收：止损高于昨收且现价还在昨收上方（涨着却挂了上方止损）
          = 标错；若现价已跌到昨收下方，则可能是隔夜跳空打穿的真止损 → 不动。
     翻转按触发语义做（该涨到位卖的改记止盈、该跌到位卖的改记止损），日志留痕；
-    move_stop 上移而来的止损是浮盈锁利（可高于昨收），豁免。"""
+    move_stop 上移而来的止损是浮盈锁利（可高于昨收），豁免。
+    翻转/丢弃都是**语义改写**，persist=True 时同时落事件面（dry-run 不写）。"""
     sl, tp = rule.get("stop_loss"), rule.get("take_profit")
     try:
         sl_f = float(sl) if sl is not None else None
@@ -489,10 +512,11 @@ def _fix_rule_direction(agent: str, rule: dict, price: float, prev: float) -> No
             if tp_f is None:
                 rule["stop_loss"], rule["take_profit"] = None, sl_f
                 why += " → 按止盈执行"
+                _direction_fix_event(agent, rule, sl_f, why, persist)
             else:
                 rule["stop_loss"] = None
                 why += " → 丢弃该侧"
-                _discard_event(agent, rule, why)
+                _discard_event(agent, rule, why, persist)
             _notify_skip(rule, f"🔧 [{agent}] {rule['code']}: {why}")
     if tp_f is not None:
         why = _mislabel_reason("take_profit", tp_f, price, prev, hint, kw)
@@ -500,10 +524,11 @@ def _fix_rule_direction(agent: str, rule: dict, price: float, prev: float) -> No
             if rule.get("stop_loss") is None:
                 rule["stop_loss"], rule["take_profit"] = tp_f, None
                 why += " → 按止损执行"
+                _direction_fix_event(agent, rule, tp_f, why, persist)
             else:
                 rule["take_profit"] = None
                 why += " → 丢弃该侧"
-                _discard_event(agent, rule, why)
+                _discard_event(agent, rule, why, persist)
             _notify_skip(rule, f"🔧 [{agent}] {rule['code']}: {why}")
 
 
@@ -986,8 +1011,9 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
                 continue
             # 方向自洽：先按文字线索/昨收校正标错的止损止盈，再谈触发
             # （move_stop 上移过的止损可以高于昨收，故豁免）
+            # persist：dry-run 下护栏的改写不落盘（见结尾注释），事件面同样不写
             if not r.get("stop_from_move"):
-                _fix_rule_direction(agent, r, price, prev)
+                _fix_rule_direction(agent, r, price, prev, persist=not dry_run)
             # move_stop：价格触及后止损一次性上移到该价（只上不下，跟踪保护）。
             # 触发判定用**本轮开始时**的止损（stop_at_entry）：price == move_stop 时
             # 旧实现「上移到该价位 → 紧接着 price <= 新止损」成立，同轮立刻反向卖出。

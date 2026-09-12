@@ -15,6 +15,9 @@ quantmind 2026-09-10~11 对真账户压测（40327478）得到的确定性结论
   7. duplicate 的两处（2026-09-11 代码审查 HIGH）：桥的 plan 去重是 HTTP 409
      DUPLICATE_PLAN（不是内联 status），客户端必须认出来才不会每分钟空转；
      回捞时只接管**未记账**的委托——已记过账的再补挂 = 账本双记卖出。
+  8. 下单成功 ≠ 规则消费（2026-09-12 P0-3，001312 实录）：规则保留并打标
+     pending_order_id，由终态台账推进生命周期；回捞到「终态未成交」的废单
+     不接管（挂了也会被 reconcile 立刻移除），换 plan 号重布防。
 
 运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_live_order_guards.py -q
 """
@@ -90,7 +93,7 @@ def _sell(broker, rule, price, prev=PREV, avail=1000, **kw):
 def test_stop_sell_reports_limit_down_protection_price(env):
     """常规盘中止损：报跌停保护价（不是现价-1%）——有买盘必成交，且报价一定合法。"""
     broker, rule, _ = env
-    assert _sell(broker, rule, 17.50) is True
+    assert _sell(broker, rule, 17.50) == "placed"
     assert broker.sold[0]["price"] == LIMIT_DOWN == protect_sell_price("001312.SZ", PREV)
 
 
@@ -98,7 +101,7 @@ def test_limit_down_day_still_places_queued_order(env):
     """跌停封死：不再「跳过保留」，而是挂跌停价排队 + 留一条告警事件。"""
     broker, rule, events = env
     px = 15.49   # 已跌破跌停价（-10.05%）
-    assert _sell(broker, rule, px) is True
+    assert _sell(broker, rule, px) == "placed"
     assert broker.sold[0]["price"] == LIMIT_DOWN
     assert "protect_queue" in json.dumps(events(), ensure_ascii=False)
 
@@ -106,8 +109,20 @@ def test_limit_down_day_still_places_queued_order(env):
 def test_prev_missing_falls_back_to_minus_one_pct(env):
     """昨收缺失（K 线不足/脏数据）：降级回现价-1% 并留痕，不臆造保护价。"""
     broker, rule, _ = env
-    assert _sell(broker, rule, 17.50, prev=0) is True
+    assert _sell(broker, rule, 17.50, prev=0) == "placed"
     assert broker.sold[0]["price"] == round(17.50 * 0.99, 2)
+
+
+def test_placed_order_keeps_rule_tagged_with_pending_order(env):
+    """下单成功 ≠ 卖出完成：规则**保留**并打标 pending_order_id/pending_volume。
+
+    2026-09-12 P0-3（001312 实录）：旧实现下单即消费条件位，那笔单随后被柜台判废
+    （成交 0/300），持仓当日再无保护。打标是「等这笔委托归宿」的锚点。
+    """
+    broker, rule, _ = env
+    assert _sell(broker, rule, 17.50) == "placed"
+    assert rule["pending_order_id"] == "T1001"
+    assert rule["pending_volume"] == 500 and rule["fired_ts"]
 
 
 # ---------- 2. 在途闸门（不重复下单） ----------
@@ -117,7 +132,7 @@ def test_inflight_sell_blocks_second_order(env):
     broker, rule, _ = env
     F.add_pending("T1", AGENT, "001312.SZ", "sell", 100, 15.50,
                   "2026-09-11T10:00:00+08:00")
-    assert _sell(broker, rule, 17.50) is False
+    assert _sell(broker, rule, 17.50) == "keep"
     assert broker.sold == []
     assert F.inflight("001312.SZ", "sell")
 
@@ -127,7 +142,7 @@ def test_inflight_other_side_does_not_block(env):
     broker, rule, _ = env
     F.add_pending("T1", AGENT, "001312.SZ", "buy", 100, 15.50,
                   "2026-09-11T10:00:00+08:00")
-    assert _sell(broker, rule, 17.50) is True
+    assert _sell(broker, rule, 17.50) == "placed"
     assert len(broker.sold) == 1
 
 
@@ -158,9 +173,10 @@ def test_duplicate_plan_recovers_order_id_from_today_orders(env):
     broker._orders = [{"order_id": "W777", "stock_code": "001312.SZ", "side": "sell",
                        "order_price": LIMIT_DOWN, "total_volume": 500,
                        "filled_volume": 500, "status": "filled"}]
-    assert _sell(broker, rule, 17.50) is False  # 条件位保留（见下节：卖出完成前继续守）
+    assert _sell(broker, rule, 17.50) == "keep"  # 条件位保留（见下节：卖出完成前继续守）
     pend = F.load_pending()
     assert [p["order_id"] for p in pend] == ["W777"]
+    assert rule["pending_order_id"] == "W777"    # 打标：等这笔委托的归宿
 
 
 def test_duplicate_without_recovery_records_event(env):
@@ -168,7 +184,7 @@ def test_duplicate_without_recovery_records_event(env):
     条件位**保留**（消费掉等于把没卖出去的持仓从保护里摘出去），但必须留告警。"""
     broker, rule, events = env
     broker._result = {"order_id": "", "status": "duplicate", "message": "plan 已执行过"}
-    assert _sell(broker, rule, 17.50) is False
+    assert _sell(broker, rule, 17.50) == "keep"
     assert "dup_unresolved" in json.dumps(events(), ensure_ascii=False)
 
 
@@ -362,8 +378,27 @@ def test_duplicate_recovers_live_order_and_keeps_rule_armed(env):
         "order_price": LIMIT_DOWN, "total_volume": 500, "filled_volume": 0,
         "status": "submitted"})
 
-    assert _sell(broker, rule, 17.50) is False
+    assert _sell(broker, rule, 17.50) == "keep"
     assert [p["order_id"] for p in F.load_pending()] == ["W778"]
+
+
+def test_duplicate_of_terminal_unfilled_rearms_with_new_plan_id(env):
+    """终态未成交的废单（rejected 0/500）**不接管**：挂它进在途表只会被 reconcile
+    立刻移除、下一轮再触发 → 每分钟空转，且同 plan 号被桥永久判 duplicate。
+
+    正确动作 = 落终态台账 + 换 plan 号重新布防（调用方下一轮用新号真下单）。
+    """
+    broker, rule, _ = _dup_with_order(env, {
+        "order_id": "W781", "stock_code": "001312.SZ", "side": "sell",
+        "order_price": LIMIT_DOWN, "total_volume": 500, "filled_volume": 0,
+        "status": "rejected"})
+
+    assert _sell(broker, rule, 17.50) == "keep"
+    assert F.load_pending() == []                       # 废单不进在途表
+    assert rule["plan_seq"] == 1                        # 换号 → 重布防
+    assert "pending_order_id" not in rule
+    oc = F.load_order_outcome("W781")                   # 归宿落机器可读台账
+    assert oc["status"] == "rejected" and oc["filled"] == 0 and oc["wanted"] == 500
 
 
 def test_duplicate_does_not_rebook_an_already_recorded_fill(env, tmp_path):
@@ -374,7 +409,7 @@ def test_duplicate_does_not_rebook_an_already_recorded_fill(env, tmp_path):
         "status": "filled"})
     _log_fill(tmp_path, "W777")
 
-    assert _sell(broker, rule, 17.50) is False
+    assert _sell(broker, rule, 17.50) == "keep"
     assert F.load_pending() == []                       # 一笔都没补挂
     assert "dup_unresolved" in json.dumps(events(), ensure_ascii=False)
 
@@ -406,5 +441,5 @@ def test_duplicate_recovers_untracked_fill_once(env, tmp_path):
         fh.write(json.dumps({"ts": "x", "mode": "execute",
                              "fill": {"order_id": "OTHER9"}}) + "\n")
 
-    assert _sell(broker, rule, 17.50) is False
+    assert _sell(broker, rule, 17.50) == "keep"
     assert [p["order_id"] for p in F.load_pending()] == ["W780"]

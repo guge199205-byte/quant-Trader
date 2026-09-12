@@ -174,24 +174,29 @@ def _rule():
 
 
 def test_sentinel_keeps_rule_when_no_order_id(sentinel, files, capsys):
-    """桥没回委托号 → 不消费条件位（False）、不挂 pending、落 untracked 事件。"""
+    """桥没回委托号 → 不消费条件位（"keep"）、不挂 pending、落 untracked 事件。"""
     ok = sentinel._execute_sell(_NoIdBroker(), AGENT, _rule(), 48.89, 49.0,
                                 "stop_loss", 100)
 
-    assert ok is False                              # 条件位保留 → 下一分钟同号重试
+    assert ok == "keep"                             # 条件位保留 → 下一分钟同号重试
     assert live_fills.load_pending() == []
     assert "未返回委托号" in capsys.readouterr().out
     (ev,) = json.loads((files / "events.json").read_text(encoding="utf-8")).values()
     assert ev["kind"] == "no_order_id" and ev["alert"] is True
 
 
-def test_sentinel_consumes_rule_with_order_id(sentinel, files):
-    """对照组：有委托号 → 照常消费条件位并挂 pending 跟踪成交。"""
-    ok = sentinel._execute_sell(_OkBroker(), AGENT, _rule(), 48.89, 49.0,
+def test_sentinel_places_and_tags_rule_with_order_id(sentinel, files):
+    """对照组：有委托号 → 下单并挂 pending 跟踪成交；规则保留并打标（不再消费）。
+
+    2026-09-12 P0-3：旧实现这里 return True = 下单即消费，001312 那笔单随后被
+    柜台判废（成交 0/300），条件位已消失 → 持仓当日裸奔。"""
+    rule = _rule()
+    ok = sentinel._execute_sell(_OkBroker(), AGENT, rule, 48.89, 49.0,
                                 "stop_loss", 100)
 
-    assert ok is True
+    assert ok == "placed"
     assert live_fills.load_pending()[0]["order_id"] == "T9"
+    assert rule["pending_order_id"] == "T9" and rule["pending_volume"] == 100
 
 
 # ---------- 回捞不猜：候选不唯一 → 人工（2026-09-11 审查 MEDIUM）----------
@@ -252,3 +257,30 @@ def test_recover_multiple_none_exact_refuses(recover):
                    CODE, 300, 15.5)
 
     assert cand == {}
+
+
+def test_recover_terminal_unfilled_flagged_not_adopted(recover):
+    """唯一候选是**终态未成交**的废单（001312 实录 rejected 0/300）→ 不接管，
+    标记 _terminal_unfilled 交给调用方换 plan 号重新布防。
+
+    接管的后果：reconcile 下一轮立刻移除它 → 条件位再次触发 → 桥判重复 →
+    回捞同一笔废单……每分钟空转，且同号被桥永久判 duplicate，永远拿不到真单。"""
+    o = dict(_order("T9", 15.5, 300, "13:35:09"), status="rejected", filled_volume=0)
+
+    cand = recover(_OrdersBroker([o]), CODE, 300, 15.5)
+
+    assert cand["_terminal_unfilled"] is True
+    assert cand["order_id"] == "T9" and cand["wanted"] == 300
+
+
+def test_recover_terminal_candidate_already_recorded_is_not_flagged(recover, monkeypatch):
+    """对照：那笔「终态未成交」其实**已记账**（回捞候选不按 agent/plan 过滤，
+    可能是别的规则的单）→ 不许标成废单：调用方会照 0 成交重布防、再卖一笔。
+
+    2026-09-12 审查 LOW：终态早退原先排在 fill_recorded 检查之前。"""
+    import live_fills
+
+    monkeypatch.setattr(live_fills, "fill_recorded", lambda oid: True)
+    o = dict(_order("T9", 15.5, 300, "13:35:09"), status="rejected", filled_volume=0)
+
+    assert recover(_OrdersBroker([o]), CODE, 300, 15.5) == {}

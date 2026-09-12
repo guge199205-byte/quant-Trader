@@ -41,6 +41,17 @@ EVENTS_FILE = ROOT / "data" / "live_order_events.json"
 EVENT_KEEP_H = 24              # 事件保留窗口（alert.sh 每 5 分钟扫一遍，足够）
 CLOSE_REMIND_FROM = 14 * 60 + 50   # 收盘前 10 分钟提醒在途单将随日终失效
 
+# 委托终态台账（机器可读）：{order_id: {status, filled, wanted, ts}}。
+# 2026-09-12（哨兵不变量 P0-3）：条件位卖出下单后要等这笔单的**归宿**——桥判废单
+# （001312 实录 成交 0/300）就得重新布防。归宿原先只有日志和中文事件文案（给人看的），
+# 哨兵没有任何机器可读判据；本台账补上这一层，取价/取状态不许解析中文。
+OUTCOMES_FILE = ROOT / "data" / "live_order_outcomes.json"
+OUTCOME_KEEP_H = 24            # 与事件同窗口；委托号每日重排，隔日同号不串门
+# 撤单/废单/过期/部分成交后被撤 = 不再变动的负向终态（filled 可能 >0：部分成交后被撤）
+CANCEL_STATUSES = ("cancelled", "withdrawn", "rejected", "expired", "partial_cancelled")
+# 含满额成交的终态全集（wait_fill 用；reconcile 的 filled 还要额外判 filled>=wanted）
+TERMINAL_STATUSES = CANCEL_STATUSES + ("filled",)
+
 
 def _load_dotenv() -> None:
     env_path = ROOT / ".env"
@@ -196,6 +207,77 @@ def fill_recorded(order_id: str, now: datetime | None = None) -> bool:
     return False
 
 
+# ---------- 委托终态台账（机器可读的「这笔单最后怎么了」） ----------
+
+def _int(v, default: int = 0) -> int:
+    """台账/回报里的数字字段容错解析：台账文件可能被并发写坏或人工改过，
+    解析失败按缺省处理——绝不能因为台账脏值把对账整轮打断。"""
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return default
+
+
+def load_outcomes() -> dict:
+    """{order_id: {status, filled, wanted, ts}}；读不到返回 {}。"""
+    try:
+        doc = json.loads(OUTCOMES_FILE.read_text(encoding="utf-8"))
+        return doc if isinstance(doc, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def load_order_outcome(order_id: str) -> dict | None:
+    """该委托号的终态记录；还没了结 / 已被 24h 滚动清掉 → None（= 状态未知）。"""
+    entry = load_outcomes().get(str(order_id or ""))
+    return entry if isinstance(entry, dict) else None
+
+
+def _save_outcome(order_id: str, status: str, filled: int, wanted: int,
+                  now: datetime) -> None:
+    """落一条终态（调用方须已持跨进程锁；见 save_outcome）。
+
+    filled 取历次最大值：终态可能被多轮观察到（部分成交后落终态，下一轮桥才报
+    cancelled），单调不减，避免后一轮的 0 覆盖前一轮的真实成交量。
+
+    合并只在**同一自然日**内做（2026-09-12 审查 HIGH）：委托号每日重排，台账 24h
+    滚动，隔日同号不是同一笔委托。若不判日，昨日已成交 300/300 的 T1001 会把今天
+    同号废单（0/300）的 filled 顶成 300、ts 又改写成今天 →
+    哨兵 `_stale_outcome` 判不出残留（它比日期）→ `filled >= wanted` 判成「这一笔
+    卖完了」→ **静默消费条件位**（只 print、无事件），而账本仍持有持仓：正是 P0-3
+    要根治的「条件位消失、持仓当日裸奔」，只是换了条触发路径。
+    """
+    oid = str(order_id or "")
+    if not oid:
+        return
+    cutoff = now - timedelta(hours=OUTCOME_KEEP_H)
+    doc = {k: v for k, v in load_outcomes().items()
+           if isinstance(v, dict) and (_parse_ts(v.get("ts")) or cutoff) >= cutoff}
+    prev = doc.get(oid) if isinstance(doc.get(oid), dict) else {}
+    prev_ts = _parse_ts(prev.get("ts"))
+    if prev_ts is None or prev_ts.date() != now.date():
+        prev = {}  # 隔日同号 / 时间戳不可解析：当没有前值，绝不跨日合并
+    doc[oid] = {"status": str(status or ""),
+                "filled": max(_int(prev.get("filled")), _int(filled)),
+                "wanted": _int(wanted) or _int(prev.get("wanted")),
+                "ts": now.isoformat()}
+    try:
+        OUTCOMES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = OUTCOMES_FILE.with_name(OUTCOMES_FILE.name + ".tmp")
+        tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(OUTCOMES_FILE)
+    except OSError:
+        pass  # 台账落盘失败不能反过来打断对账；缺失时哨兵按「状态未知」保守处理
+
+
+def save_outcome(order_id: str, status: str, filled: int, wanted: int,
+                 now: datetime | None = None) -> None:
+    """外部写入口（自行加锁）：桥已明确报出终态、但这笔单没进过在途表时用
+    （哨兵 duplicate 回捞到已判废的委托——进程崩在 add_pending 之前）。"""
+    with _file_lock():
+        _save_outcome(order_id, status, filled, wanted, now or now_cn())
+
+
 def ack_line(head: str, result: dict | None) -> str:
     """下单回执的统一文案：受理以**委托号**为准（2026-09-11 审查 MEDIUM）。
 
@@ -232,8 +314,6 @@ def wait_fill(broker, order_id, timeout_s: int = 30, interval: int = 3) -> dict 
         return None
     # partial_cancelled（桥 TDX 状态 4：部分成交后被撤/失效）也是终态：
     # 不复投回等，已成交部分立刻按增量补记，未成交部分落未卖出事件
-    terminal = ("cancelled", "withdrawn", "rejected", "expired",
-                "partial_cancelled", "filled")
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
@@ -241,7 +321,7 @@ def wait_fill(broker, order_id, timeout_s: int = 30, interval: int = 3) -> dict 
                 if o.get("order_id") != str(order_id):
                     continue
                 if int(o.get("filled_volume") or 0) > 0 \
-                        or str(o.get("status") or "") in terminal:
+                        or str(o.get("status") or "") in TERMINAL_STATUSES:
                     return o
                 break
         except Exception:  # noqa: BLE001
@@ -376,10 +456,15 @@ def _reconcile_locked(broker, now: datetime | None = None) -> int:
                 log_line({"ts": now.isoformat(), "mode": "fill_expire",
                           "agent": p.get("agent"), "code": p.get("code"),
                           "order_id": p.get("order_id"), "side": p.get("side")})
+                # 隔夜过期 = 这笔单的负向终态（A 股当日委托日终自动失效）。落台账：
+                # 否则打过标的哨兵规则永远卡在「已离开在途表 + 台账查不到」→ 只告警
+                # 不重布防，持仓当天再无保护（P0-3 把 expired 与废单同列重布防分支）。
+                wanted = int(p.get("volume") or 0)
+                _save_outcome(str(p.get("order_id") or ""), "expired",
+                              int(p.get("volume_recorded") or 0), wanted, now)
                 # 隔夜过期 = 这笔单的归宿没被任何一轮对账观察到。若还有未记账的量，
                 # 它可能昨天已成交（进程收盘前掉线、没人看到终态）→ 账外单，账本与
                 # 账户永久不一致（2026-09-11：老实现只写日志，成交静默消失）。
-                wanted = int(p.get("volume") or 0)
                 unrecorded = wanted - int(p.get("volume_recorded") or 0)
                 msg = (f"昨日委托 {p.get('order_id')}（{tag}）今日已查不到，"
                        f"{unrecorded}/{wanted} 股未记账——可能昨日已成交，需核对账户与账本"
@@ -422,11 +507,12 @@ def _reconcile_locked(broker, now: datetime | None = None) -> int:
             p["volume_recorded"] = filled
             p["filled_price"] = fprice
             fills += 1
-        if status in ("cancelled", "withdrawn", "rejected", "expired",
-                      "partial_cancelled") or (
+        if status in CANCEL_STATUSES or (
                 status == "filled" and filled >= wanted):
-            if status in ("cancelled", "withdrawn", "rejected", "expired",
-                          "partial_cancelled"):
+            # 终态台账（机器可读）：哨兵据此推进条件位生命周期（消费/重布防），
+            # 不再解析中文事件文案。与 pending 移除同处一个临界区，最坏重复写。
+            _save_outcome(str(p.get("order_id") or ""), status, filled, wanted, now)
+            if status in CANCEL_STATUSES:
                 if recorded < filled:
                     log_line({"ts": now.isoformat(), "mode": "fill_abort",
                               "agent": p.get("agent"), "code": p.get("code"),

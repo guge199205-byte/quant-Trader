@@ -129,6 +129,13 @@ config/qmt_bridge.json
 
 # 盘中 watch 条件位（live_hourly_analysis 写入，哨兵消费）
 data/live_watch.json
+# 条件位文件的跨进程锁 + 各运行时文件的原子写临时文件（*.tmp 先写后 rename，
+# 平时不存在，但一次重叠的 git add -A 就会捞到半写快照）
+data/live_watch.json.lock
+data/live_watch.json.tmp
+data/live_pending_orders.json.tmp
+data/live_order_events.json.tmp
+data/live_order_outcomes.json.tmp
 
 # 盘中在途单/上一轮决策记忆（运行时状态）
 data/live_pending_orders.json
@@ -139,6 +146,8 @@ data/live_reconcile.lock
 # 委托事件（live_fills，含委托号/代码/告警文案；alert.sh 消费）——曾漏忽略，
 # 一次 git add -A 就会把实盘委托事件提交进库
 data/live_order_events.json
+# 委托终态台账（live_fills，哨兵据它推进条件位生命周期；含委托号/成交量）
+data/live_order_outcomes.json
 
 # L2 逐笔因子采集运行时产物
 data/l2_factors_live.json

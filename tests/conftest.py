@@ -107,10 +107,11 @@ def _isolate_production_state(monkeypatch, tmp_path):
     logs = tmp_path / "logs"      # 不预建：写日志的模块自己 mkdir，预建会让
                                   # 「自己建 logs 目录」的用例 FileExistsError
 
-    # 账本 / 委托 / 事件 / 跨进程锁
+    # 账本 / 委托 / 事件 / 终态台账 / 跨进程锁
     monkeypatch.setattr(live_ledger, "LEDGER_FILE", tmp_path / "live_ledger.json")
     monkeypatch.setattr(live_fills, "PENDING_FILE", tmp_path / "live_pending_orders.json")
     monkeypatch.setattr(live_fills, "EVENTS_FILE", tmp_path / "live_order_events.json")
+    monkeypatch.setattr(live_fills, "OUTCOMES_FILE", tmp_path / "live_order_outcomes.json")
     monkeypatch.setattr(live_fills, "RECONCILE_LOCK_FILE", tmp_path / "live_reconcile.lock")
     # 成交流水（live_trade_picks.log_line）与哨兵动作日志
     monkeypatch.setattr(live_trade_picks, "LOG_DIR", logs)

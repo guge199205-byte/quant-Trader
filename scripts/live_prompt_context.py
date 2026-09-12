@@ -109,7 +109,7 @@ def parse_intraday_decision(text: str) -> list | None:
     """LLM 输出 → 盘中决策列表（与 live_llm_trade.parse_decision 同构）。
     依次尝试：整段 JSON → ```json 围栏 → 括号平衡块；
     只解析 decisions 数组；未知 action 忽略。
-    返回 [{"action","code","pct","stop_loss","take_profit","reason"}]
+    返回 [{"action","code","pct","pct_given","stop_loss","take_profit","reason"}]
     （stop_loss/take_profit 仅 watch 有，其余 None），解析失败返回 None。"""
     import re
 
@@ -141,6 +141,10 @@ def parse_intraday_decision(text: str) -> list | None:
                 "code": str(x.get("code") or "").strip(),
                 "name": str(x.get("name") or "").strip(),
                 "pct": float(x.get("pct") or 0),
+                # 「模型没给 pct」与「明说 pct=0」必须可区分（2026-09-12 审查 HIGH-1）：
+                # 上面的 `or 0` 把两者压成同一个 0.0，watch 规则据此判「0 = 不表达卖出量」
+                # 时会把**漏给比例**的条件位也静默丢掉——该挂的止损不挂、零痕迹。
+                "pct_given": x.get("pct") is not None,
                 "stop_loss": _num(x.get("stop_loss")),
                 "take_profit": _num(x.get("take_profit")),
                 "move_stop": _num(x.get("move_stop")),

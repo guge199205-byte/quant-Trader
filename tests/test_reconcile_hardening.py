@@ -14,7 +14,7 @@
 import fcntl
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -274,6 +274,28 @@ def test_expired_pending_with_unrecorded_volume_raises_alerting_event(monkeypatc
     assert "未记账" in ev["msg"] and "核对" in ev["msg"]
 
 
+def test_expired_pending_writes_outcome_so_sentinel_can_rearm(monkeypatch, tmp_path):
+    """隔夜过期也落台账（expired）：否则打过标的哨兵规则永远卡在「去向未知」，
+    当天再不下单——持仓无保护（P0-3：expired 与废单同列「重新布防」）。"""
+    out = _outcomes(tmp_path, monkeypatch)
+    pending = tmp_path / "pending.json"
+    entry = _pending_entry()
+    entry["ts"] = "2026-09-10T14:30:00+08:00"          # 昨天的单
+    pending.write_text(json.dumps([entry]), encoding="utf-8")
+    monkeypatch.setattr(live_fills, "PENDING_FILE", pending)
+    monkeypatch.setattr(live_fills, "RECONCILE_LOCK_FILE", tmp_path / "reconcile.lock")
+
+    class Broker:
+        def get_orders(self):
+            return []
+
+    live_fills.reconcile(Broker(), now=NOW)
+
+    oc = live_fills.load_order_outcome("T1001")
+    assert oc["status"] == "expired" and oc["filled"] == 0 and oc["wanted"] == 100
+    assert json.loads(out.read_text(encoding="utf-8"))["T1001"]["status"] == "expired"
+
+
 def test_expired_pending_fully_recorded_stays_silent(monkeypatch, tmp_path):
     """成交已全部记账的过期单只是清理：留痕但不告警（防天天误报训练麻木）。"""
     pending = tmp_path / "pending.json"
@@ -386,3 +408,138 @@ def test_ledger_without_marker_still_books(monkeypatch, tmp_path):
     assert live_fills.reconcile(_FilledBroker(), now=NOW) == 1
     assert json.loads(ledger_file.read_text(encoding="utf-8"))[
         "agents"][AGENT]["positions"][CODE]["volume"] == 400
+
+
+# ---------- 7) 委托终态台账：机器可读的「这笔单最后怎么了」（2026-09-12 P0-3）----------
+# 条件位卖出下单后，哨兵要等这笔委托的归宿才能决定「消费 / 重布防 / 转人工」。
+# 归宿原先只存在于日志与中文事件文案（给人看的），哨兵没有任何机器可读判据——
+# 001312 实录：桥受理下单、规则随即被消费，但该单被柜台判废（成交 0/300），
+# 条件位已消失 → 持仓当日再无保护。台账与 pending 移除在同一临界区落地。
+
+def _outcomes(tmp_path, monkeypatch):
+    path = tmp_path / "outcomes.json"
+    monkeypatch.setattr(live_fills, "OUTCOMES_FILE", path)
+    return path
+
+
+def _one_order_broker(order, tmp_path, monkeypatch):
+    pending = tmp_path / "pending.json"
+    pending.write_text(json.dumps([_pending_entry()]), encoding="utf-8")
+    monkeypatch.setattr(live_fills, "PENDING_FILE", pending)
+    monkeypatch.setattr(live_fills, "RECONCILE_LOCK_FILE", tmp_path / "reconcile.lock")
+
+    class Broker:
+        def get_orders(self):
+            return [order]
+
+    return Broker()
+
+
+def test_terminal_cancel_writes_outcome_ledger(monkeypatch, tmp_path):
+    """废单终态 → 台账记 {status, filled=0, wanted}（哨兵据此换号重布防）。"""
+    out = _outcomes(tmp_path, monkeypatch)
+    broker = _one_order_broker(
+        {"order_id": "T1001", "status": "rejected", "filled_volume": 0,
+         "total_volume": 100, "stock_code": CODE}, tmp_path, monkeypatch)
+
+    live_fills.reconcile(broker, now=NOW)
+
+    oc = live_fills.load_order_outcome("T1001")
+    assert oc["status"] == "rejected" and oc["filled"] == 0 and oc["wanted"] == 100
+    assert json.loads(out.read_text(encoding="utf-8"))["T1001"]["status"] == "rejected"
+
+
+def test_full_fill_writes_outcome_ledger(monkeypatch, tmp_path):
+    """满额成交终态同样落台账（filled >= wanted = 这一笔真的卖完了 → 消费）。"""
+    _outcomes(tmp_path, monkeypatch)
+    broker = _one_order_broker(
+        {"order_id": "T1001", "status": "filled", "filled_volume": 100,
+         "filled_price": 17.5, "total_volume": 100, "stock_code": CODE},
+        tmp_path, monkeypatch)
+
+    live_fills.reconcile(broker, now=NOW)
+
+    oc = live_fills.load_order_outcome("T1001")
+    assert oc["status"] == "filled" and oc["filled"] == 100 and oc["wanted"] == 100
+
+
+def test_inflight_order_not_in_outcome_ledger(monkeypatch, tmp_path):
+    """对照：未了结的在途单不落台账——「不在台账」本身是哨兵的告警判据。"""
+    _outcomes(tmp_path, monkeypatch)
+    broker = _one_order_broker(
+        {"order_id": "T1001", "status": "submitted", "filled_volume": 0,
+         "total_volume": 100, "stock_code": CODE}, tmp_path, monkeypatch)
+
+    live_fills.reconcile(broker, now=NOW)
+
+    assert live_fills.load_order_outcome("T1001") is None
+    assert [p["order_id"] for p in live_fills.load_pending()] == ["T1001"]
+
+
+def test_outcome_filled_never_decreases_and_wanted_kept(monkeypatch, tmp_path):
+    """终态可能被多轮观察到（先 partial_cancelled 100/300，下一轮才 cancelled）：
+    filled 单调不减（后一轮的 0 不许覆盖真实成交量），wanted 缺省沿用旧值。"""
+    _outcomes(tmp_path, monkeypatch)
+
+    live_fills.save_outcome("T9", "partial_cancelled", 100, 300, now=NOW)
+    live_fills.save_outcome("T9", "cancelled", 0, 0, now=NOW)
+
+    oc = live_fills.load_order_outcome("T9")
+    assert oc["filled"] == 100 and oc["wanted"] == 300
+
+
+def test_outcome_is_not_merged_across_days(monkeypatch, tmp_path):
+    """隔日同号不是同一笔委托（委托号每日重排，台账 24h 滚动）：昨日成交 300/300
+    不许并进今天的同号废单（2026-09-12 审查 HIGH）。
+
+    合并的后果：filled 取隔日残值 300、ts 又被改写成今天 → 哨兵 `_stale_outcome`
+    判不出残留（它比的是日期）→ `filled >= wanted` 判成「这一笔卖完了」→ 条件位被
+    静默消费（只 print、无事件），而账本仍持有持仓——正是 P0-3 要根治的
+    「条件位消失、持仓当日裸奔」，只是换了条触发路径。"""
+    _outcomes(tmp_path, monkeypatch)
+
+    live_fills.save_outcome("T1001", "filled", 300, 300, now=NOW - timedelta(hours=20))
+    live_fills.save_outcome("T1001", "rejected", 0, 300, now=NOW)
+
+    oc = live_fills.load_order_outcome("T1001")
+    assert oc["status"] == "rejected" and oc["filled"] == 0 and oc["wanted"] == 300
+    assert oc["ts"][:10] == NOW.date().isoformat()
+
+
+def test_outcome_same_day_merge_still_works(monkeypatch, tmp_path):
+    """对照：**同一天**内的多轮观察仍合并（判日只挡跨日，不是把合并整个关掉）。"""
+    _outcomes(tmp_path, monkeypatch)
+
+    live_fills.save_outcome("T9", "partial_cancelled", 100, 300, now=NOW)
+    live_fills.save_outcome("T9", "cancelled", 0, 300, now=NOW)
+
+    assert live_fills.load_order_outcome("T9")["filled"] == 100
+
+
+def test_reconcile_does_not_inherit_previous_day_same_id_outcome(monkeypatch, tmp_path):
+    """生产路径（reconcile → _save_outcome）：昨日同号已成交 100/100 在台账里，
+    今天同号废单落的是 filled=0——哨兵据此才会换号重布防，而不是当成「卖完了」
+    静默消费掉条件位（2026-09-12 审查 HIGH 的完整失效链）。"""
+    out = _outcomes(tmp_path, monkeypatch)
+    out.write_text(json.dumps(
+        {"T1001": {"status": "filled", "filled": 100, "wanted": 100,
+                   "ts": (NOW - timedelta(hours=20)).isoformat()}}), encoding="utf-8")
+    broker = _one_order_broker(
+        {"order_id": "T1001", "status": "rejected", "filled_volume": 0,
+         "total_volume": 100, "stock_code": CODE}, tmp_path, monkeypatch)
+
+    live_fills.reconcile(broker, now=NOW)
+
+    oc = live_fills.load_order_outcome("T1001")
+    assert oc["status"] == "rejected" and oc["filled"] == 0 and oc["wanted"] == 100
+    assert oc["ts"][:10] == NOW.date().isoformat()
+
+
+def test_outcome_ledger_rolls_off_after_a_day(monkeypatch, tmp_path):
+    """24h 滚动清理：A 股委托号每日重排，隔日同号不许串门。"""
+    out = _outcomes(tmp_path, monkeypatch)
+
+    live_fills.save_outcome("T1", "rejected", 0, 100, now=NOW.replace(day=9))
+    live_fills.save_outcome("T2", "rejected", 0, 100, now=NOW)
+
+    assert set(json.loads(out.read_text(encoding="utf-8"))) == {"T2"}

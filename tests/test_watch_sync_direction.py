@@ -53,9 +53,20 @@ def _sync(sync, payload, held=None):
     ("减50％（全角）", 0.5),
     ("涨到80.0止盈减50%，不加仓", 0.5),
     ("没有任何比例", 1.0),
+    # 0% 是文字噪声 → 回退默认全减（2026-09-12 审查 MEDIUM）：返回 0.0 会被
+    # live_price_watch 读成「明说 0 = 不表达卖出量」→ 该防守位整条不挂
+    ("跌破17.90减0%观察", 1.0),
+    ("回撤到0%再说", 1.0),
 ])
 def test_pct_from_text(txt, expect):
     assert P._pct_from_text(txt) == expect
+
+
+def test_pct_from_text_never_returns_zero():
+    """契约钉子：上游文字怎么歪，_pct_from_text 都不得返回 0——
+    哨兵侧 0 = 「不表达卖出量」= 不挂条件位，预案里的保护价会静默消失。"""
+    for txt in ("减0%", "0%", "减 0 ％", "减000%", "0%缓冲", ""):
+        assert P._pct_from_text(txt) > 0
 
 
 # ---------- 方向判定 ----------

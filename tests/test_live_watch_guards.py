@@ -79,7 +79,9 @@ def env(tmp_path, monkeypatch):
 
     def _sell(broker, agent, rule, price, prev, trig, avail, **kw):
         rec["sell"].append((agent, rule["code"], trig, price, avail))
-        return True
+        # "placed" = 已下单、规则保留打标等委托归宿（2026-09-12 P0-3：此前下单即消费，
+        # 001312 那笔废单让条件位提前消失、持仓当日裸奔）
+        return "placed"
 
     monkeypatch.setattr(W, "_execute_sell", _sell)
 
@@ -92,6 +94,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(live_fills, "EVENTS_FILE", tmp_path / "events.json")
     monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: True)
     return rec, wf
+
+
+ZERO = {"placed": 0, "consumed": 0, "discarded": 0}
 
 
 def _saved(wf) -> list:
@@ -111,7 +116,7 @@ def test_fake_alive_snapshot_skips_round_and_keeps_rules(env):
 
     fired = W.run_watch(_FakeBroker(FAKE_ALIVE), now=NOW)
 
-    assert fired == 0
+    assert fired == ZERO
     assert rec["sell"] == []
     assert _saved(wf) == [HELD]
 
@@ -123,7 +128,7 @@ def test_healthy_snapshot_still_triggers(env):
 
     fired = W.run_watch(_FakeBroker(HEALTHY), now=NOW)
 
-    assert fired == 1
+    assert fired["placed"] == 1
     assert rec["sell"] == [(AGENT, "001312.SZ", "stop_loss", 16.50, 100)]
 
 
@@ -138,7 +143,7 @@ def test_missing_position_kept_when_ledger_still_holds(env, monkeypatch):
 
     fired = W.run_watch(_FakeBroker(MISSING), now=NOW)
 
-    assert fired == 0
+    assert fired == ZERO
     assert rec["sell"] == []
     saved = _saved(wf)
     assert len(saved) == 1 and saved[0]["stop_loss"] == 16.6
@@ -153,7 +158,7 @@ def test_missing_position_discarded_when_ledger_agrees(env, monkeypatch):
 
     fired = W.run_watch(_FakeBroker(MISSING), now=NOW)
 
-    assert fired == 1
+    assert fired["discarded"] == 1
     assert rec["sell"] == []
     assert _saved(wf) == []
 
@@ -187,7 +192,7 @@ def test_stop_above_prev_flipped_to_take_profit(env):
 
     fired = W.run_watch(_FakeBroker(HEALTHY), now=NOW)
 
-    assert fired == 0                       # 修复前：17.50 <= 17.90 → 假触发卖出
+    assert fired == ZERO                    # 修复前：17.50 <= 17.90 → 假触发卖出
     assert rec["sell"] == []
     r = _saved(wf)[0]
     assert r["take_profit"] == 17.9 and r["stop_loss"] is None
@@ -203,9 +208,11 @@ def test_take_profit_below_prev_flipped_to_stop_loss(env):
 
     fired = W.run_watch(_FakeBroker(HEALTHY), now=NOW)
 
-    assert fired == 1
+    assert fired["placed"] == 1
     assert rec["sell"] == [(AGENT, "001312.SZ", "stop_loss", 15.90, 100)]
-    assert _saved(wf) == []                 # 触发后消费
+    # 2026-09-12 起触发不再消费规则：保留（本用例桩不打标）等这笔委托的归宿
+    r = _saved(wf)[0]
+    assert r["stop_loss"] == 16.0 and r["take_profit"] is None
 
 
 def test_move_stop_above_prev_not_flipped(env):
@@ -222,8 +229,27 @@ def test_move_stop_above_prev_not_flipped(env):
     assert r["stop_loss"] == 17.5 and r["take_profit"] is None
 
     fired = W.run_watch(_FakeBroker(HEALTHY), now=NOW)  # 第 2 轮：回落到 17.45 触发
-    assert fired == 1
+    assert fired["placed"] == 1
     assert rec["sell"] == [(AGENT, "001312.SZ", "stop_loss", 17.45, 100)]
+
+
+def test_move_stop_exact_hit_does_not_trigger_same_round(env):
+    """现价恰等于 move_stop：只上移止损，**同轮不得反向卖出**。
+
+    旧实现先上移再用新止损判「跌破」——price == move_stop 时 `price <= stop_loss`
+    当场成立，价格一步都没跌就卖出（A 股 0.01 价位网格下并不罕见）。
+    """
+    rec, wf = env
+    rec["rules"] = [{"code": "001312.SZ", "stop_loss": 16.6, "take_profit": None,
+                     "move_stop": 17.5, "pct": 0.5, "reason": "测试"}]
+    rec["write"]()
+    rec["prices"] = [(17.50, PREV)]                    # == move_stop
+
+    fired = W.run_watch(_FakeBroker(HEALTHY), now=NOW)
+
+    assert fired == ZERO
+    assert rec["sell"] == []
+    assert _saved(wf)[0]["stop_loss"] == 17.5          # 上移生效，下一轮起才算跌破
 
 
 def test_two_sided_rule_drops_wrong_side(env):

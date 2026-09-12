@@ -184,14 +184,22 @@ def _pct_from_text(txt: str) -> float:
 
     2026-09-10 实录：『今日区间…距该位仅0.8%缓冲』被旧正则取到 "8" → pct 8%——
     缓冲比例不是减仓比例，小数里的整数位也不能当比例。故裸百分号前不允许再出现
-    数字/小数点/正负号，并兼容全角 ％。"""
+    数字/小数点/正负号，并兼容全角 ％。
+
+    契约：**永远返回 (0,1] 内的有效比例**——『减0%』/裸『0%』是文字噪声，按「未表达」
+    回退全减（2026-09-12 审查 MEDIUM）。返回 0.0 会被 live_price_watch 读成
+    「明说 0 = 不表达卖出量」→ 该防守位整条不挂（只留一条 alert=False 的事件），
+    预案里的保护价就此消失。"""
+    def _clamp(n: int) -> float:
+        return min(n / 100, 1.0) or 1.0
+
     m_cut = _re.search(r"减\s*(\d{1,3})\s*[%％]", txt)
     if m_cut:
-        return min(max(int(m_cut.group(1)) / 100, 0.0), 1.0)
+        return _clamp(int(m_cut.group(1)))
     if "半" in txt:
         return 0.5
     m_bare = _re.search(r"(?<![\d.+\-])(\d{1,3})\s*[%％]", txt)
-    return min(max(int(m_bare.group(1)) / 100, 0.0), 1.0) if m_bare else 1.0
+    return _clamp(int(m_bare.group(1))) if m_bare else 1.0
 
 
 _PREV_CLOSE_CACHE: dict = {}

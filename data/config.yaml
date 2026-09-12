@@ -88,7 +88,7 @@ markets:
         color: "#4d6bfe"
 
 # Data paths configuration (legacy support - will use market-specific paths when available)
-api_token: "h_SZns9-nxIdUZ66_lHqZAwAixKt-OwP"
+api_token: ""   # 2026-09-12 清理：原值曾随仓库推到远端（已提示轮换）；真值见 .env 的 API_TOKEN
 api_base: "http://192.168.31.68:8091"
   hk:
     name: "港股市场（恒生指数）"

@@ -8,7 +8,13 @@
 #   async /api/ping    （事件循环，async 路由，见 api_server.ping 的注释）
 # 判据：两者都 200 才算 OK。sync 掉+async 活=线程池饿死；两者同时掉=事件循环被锁死。
 API=http://127.0.0.1:8091
-TOKEN="h_SZns9-nxIdUZ66_lHqZAwAixKt-OwP"
+# 令牌不再硬编码入库（2026-09-12 清理：原值曾随仓库推到远端，已提示轮换 API_TOKEN）
+ENV_FILE="$(dirname "$0")/../.env"
+TOKEN="$(sed -n 's/^API_TOKEN=//p' "$ENV_FILE" 2>/dev/null | head -1 | sed 's/^"//; s/"$//')"
+if [ -z "$TOKEN" ]; then
+  echo "hang_probe: 读不到 API_TOKEN（$ENV_FILE）" >&2
+  exit 2
+fi
 LOG=/home/zbox/backups/baymax/hang_probe.log
 mkdir -p "$(dirname "$LOG")"
 FAIL=0

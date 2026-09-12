@@ -779,11 +779,20 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
                         now_cn().isoformat(), protect=at_ld)
             _tag_pending(rule, oid, rvol)
         else:
+            # 桥的**两处**去重都回 status=duplicate，但含义完全不同，必须让桥的原话
+            # 露出来（2026-09-12）：409 plan 级去重（这个 plan 号已执行过）才是
+            # 「单可能已在柜台、成交未记账」；而 `plan_executor._execute_one` 的
+            # 当日同向去重（当日已有同代码同方向**成交** →「当日已有同方向成交, 跳过」）
+            # 是**这笔根本没进柜台**——条件位留着要等下一个交易日（当日再触发多少次
+            # 都一样会被跳过），把它读成「已在柜台」会去查一笔不存在的委托。
+            why = str(result.get("message") or "").strip()
             print(f"  ⚠️ [{agent}] {code}: 桥判重复但回捞不到可接管的委托——"
-                  f"状态未知（可能已在柜台、也可能没进去），条件位保留，需人工核对")
+                  f"状态未知（可能已在柜台、也可能没进去），条件位保留，需人工核对"
+                  + (f"；桥回执：{why}" if why else ""))
             record_event("dup_unresolved", code,
                          f"[{agent}] {code} 卖出被桥判重复（上次已受理）但当日委托里"
-                         f"找不到可接管的单：若已在柜台则成交未记账，需人工核对")
+                         f"找不到可接管的单：若已在柜台则成交未记账，需人工核对"
+                         + (f"（桥回执：{why}）" if why else ""))
         _log_line({"ts": now_cn().isoformat(), "mode": f"watch_{trig}", "agent": agent,
                    "code": code, "volume": vol, "price": limit, "plan_id": plan_id,
                    "trigger": trig_value, "duplicate": True,

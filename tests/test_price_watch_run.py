@@ -590,6 +590,41 @@ def test_deeper_stop_can_fire_after_shallow_order_filled(life, monkeypatch):
     assert [s["volume"] for s in life.broker.sold] == [500, 1000]   # 桩账户可卖量恒 1000
 
 
+class _SameDayGuardBroker(_LifeBroker):
+    """模拟桥的**第二层**去重（plan_executor._execute_one：当日已有同代码同方向
+    「成交」（Status=3）→ 这笔不进柜台，回 200 + status=duplicate + 中文原因）。
+
+    与 plan 级去重（上面 _DedupBroker）是两回事：那个是「号已用过」，这个是
+    「今天这个方向已经卖过一笔了」——号是新的、单却依然进不了柜台。"""
+
+    def sell(self, sig, date, code, vol, price=None, plan_id=None):
+        self.sold.append({"code": code, "volume": vol, "price": price, "plan_id": plan_id})
+        return {"order_id": "", "status": "duplicate",
+                "message": "当日已有同方向成交, 跳过"}
+
+
+def test_same_day_filled_skip_keeps_rule_and_says_why(life, monkeypatch):
+    """桥的「当日已有同方向成交，跳过」落到哨兵侧：条件位保留 + 事件带桥的原话。
+
+    001312 的第二段退出（17.05/pct 1.0）与更深的 16.60 在周一都不会兑现：第一笔
+    300 股成交后，桥的这一层会把当天该代码所有同向卖单都跳过（无论哪个 agent、
+    号是不是新的）——第二段要等到下一个交易日才有真单。桥在 Windows 侧、本侧
+    修不了；能做的是**别让日志说错话**：与 409 plan 去重的「单可能已在柜台、
+    成交未记账」不同，这笔根本没进柜台，读错方向会去查一笔不存在的委托。
+    """
+    monkeypatch.setattr(life, "broker", _SameDayGuardBroker())
+    life.write([_life_rule()])
+
+    counts = W.run_watch(life.broker, now=LIFE_NOW)
+
+    assert counts["placed"] == 0 and counts["consumed"] == 0 and counts["discarded"] == 0
+    assert [s["volume"] for s in life.broker.sold] == [500]      # 试过，被桥跳过
+    r = life.rules()[0]
+    assert r["stop_loss"] == 17.10 and not r.get("pending_order_id")
+    ev = json.dumps(life.events(), ensure_ascii=False)
+    assert "dup_unresolved" in ev and "当日已有同方向成交" in ev   # 桥的原话必须带出来
+
+
 def test_illegal_volume_discard_records_event(life, monkeypatch):
     """可卖量按板块手数合规后为 0 → 规则作废，且留 watch_discard 事件（此前只有 print）。"""
     monkeypatch.setattr(W, "round_sell_qty", lambda code, raw, avail: 0)

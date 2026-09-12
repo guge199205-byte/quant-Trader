@@ -18,6 +18,9 @@ quantmind 2026-09-10~11 对真账户压测（40327478）得到的确定性结论
   8. 下单成功 ≠ 规则消费（2026-09-12 P0-3，001312 实录）：规则保留并打标
      pending_order_id，由终态台账推进生命周期；回捞到「终态未成交」的废单
      不接管（挂了也会被 reconcile 立刻移除），换 plan 号重布防。
+  9. 缺省委托号**每次调用唯一**（2026-09-12）：桥按 plan 号做入口去重，秒级时间戳
+     让同秒的第二笔单被当成「已执行过」而**不进柜台**——与哨兵批 13d 同一类问题
+     （那边是委托号只取到分钟）。显式传入的 plan_id 不受影响，那是规则级幂等键。
 
 运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_live_order_guards.py -q
 """
@@ -284,6 +287,33 @@ def test_custom_plan_id_used_in_payload(monkeypatch):
     b, sent = _bridge(monkeypatch, _BARS)
     b.sell(None, None, "600000.SH", 100, price=10.00, plan_id="watch-x-1")
     assert sent["payload"]["plan_id"] == "watch-x-1"
+
+
+def test_auto_plan_id_is_unique_within_same_second(monkeypatch):
+    """缺省委托号必须**每次调用唯一**（2026-09-12，与批 13d 同一类问题）。
+
+    旧实现 `baymax_{int(time.time())}_{os.getpid()}` 只到秒：同一进程同一秒内下的
+    第二笔单拿到**同一个 plan 号** → 桥的入口去重（plan_executor.execute_plan:49-52）
+    判「这个 plan 已执行过」→ 第二笔**根本不会送到柜台**，调用方只看到
+    status=duplicate、order_id 空（09:35 调仓/整点轮一轮连下多笔，前一笔成交回报快
+    时两笔就落在同一秒内；`_execute_one` 的「当日已有同方向成交」只拦同代码，
+    拦不住这种**不同代码**的撞号）。与之相对：显式传入的 plan_id 仍须原样透传
+    （下面是既有用例），那是规则级幂等键、同号重试必须被桥去重。
+
+    冻结 wall clock 是稳定复现的唯一方式——不冻结时两次调用天然不在同一秒，
+    旧实现也能过，那这条断言就钉不住任何东西。`time_ns()` 不受此冻结影响。
+    """
+    monkeypatch.setattr("time.time", lambda: 1_700_000_000)      # 固定在「同一秒」
+    b, sent = _bridge(monkeypatch, _BARS)
+
+    b.sell(None, None, "600000.SH", 100, price=10.00)
+    first = sent["payload"]["plan_id"]
+    b.sell(None, None, "600001.SH", 100, price=10.00)
+    second = sent["payload"]["plan_id"]
+
+    assert first != second
+    # 仍是可辨识的 baymax 号（进桥日志/去重集，形状不该变）
+    assert first.startswith("baymax_") and second.startswith("baymax_")
 
 
 # ---------- 6. 桥 409 DUPLICATE_PLAN：是「已执行过」，不是失败（审查 HIGH A）----------

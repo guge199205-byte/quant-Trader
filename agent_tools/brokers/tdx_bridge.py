@@ -206,7 +206,7 @@ class TdxBridgeBroker(Broker):
         """经桥下单（/api/v1/plans/execute，通达信客户端执行）。
 
         plan_id：调用方可传幂等委托号（同号重试被桥去重，见 live_price_watch
-        ``_watch_plan_id``）；缺省生成时间戳+pid 的一次性号。
+        ``_watch_plan_id``）；缺省生成纳秒时间戳+pid 的一次性号（每次调用唯一）。
         """
         import time
 
@@ -229,7 +229,14 @@ class TdxBridgeBroker(Broker):
             if why:
                 raise BrokerError(f"本地价格保护带拒单：{symbol} {side} {why}")
 
-        plan_id = plan_id or f"baymax_{int(time.time())}_{os.getpid()}"
+        # 缺省委托号必须**每次调用唯一**（与 QMT 侧 remark 的毫秒后缀同口径）：
+        # 旧实现只到秒（baymax_{int(time.time())}_{pid}），同一进程同一秒内下的第二笔
+        # 单拿到**同一个 plan 号** → 桥的入口去重（plan_executor.execute_plan:49-52）
+        # 判「这个 plan 已执行过」→ 第二笔单根本不会送到柜台，调用方只看到
+        # status=duplicate、order_id 空（09:35 调仓/整点轮一轮连下多笔，前一笔成交
+        # 回报快时两笔就落在同一秒内）。显式传入的 plan_id 不受影响——那是规则级
+        # 幂等键（哨兵 _watch_plan_id），同号重试仍须被桥去重。
+        plan_id = plan_id or f"baymax_{time.time_ns()}_{os.getpid()}"
         payload = {
             "plan_id": plan_id,
             "account": self.account,

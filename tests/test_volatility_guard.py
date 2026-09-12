@@ -53,19 +53,19 @@ def _base():
 
 
 def test_bad_tick_dropped(monkeypatch):
-    monkeypatch.setattr(L, "quote_fallback", lambda code: 131.5)  # 偏差 11%
+    monkeypatch.setattr(L, "quote_fallback", lambda code, ref=0.0: 131.5)  # 偏差 11%
     _base()
     assert L.check_volatility(FakeBroker(), [{"stock_code": "688183.SH"}]) is None
 
 
 def test_good_tick_kept(monkeypatch):
-    monkeypatch.setattr(L, "quote_fallback", lambda code: 118.1)  # 偏差 0.17%
+    monkeypatch.setattr(L, "quote_fallback", lambda code, ref=0.0: 118.1)  # 偏差 0.17%
     _base()
     assert L.check_volatility(FakeBroker(), [{"stock_code": "688183.SH"}])
 
 
 def test_same_direction_cooldown(monkeypatch):
-    monkeypatch.setattr(L, "quote_fallback", lambda code: 118.1)
+    monkeypatch.setattr(L, "quote_fallback", lambda code, ref=0.0: 118.1)
     _base()
     assert L.check_volatility(FakeBroker(), [{"stock_code": "688183.SH"}])
     # 60 分钟内同向再触发 → 冷却丢弃
@@ -73,7 +73,7 @@ def test_same_direction_cooldown(monkeypatch):
 
 
 def test_reverse_direction_not_cooled(monkeypatch):
-    monkeypatch.setattr(L, "quote_fallback", lambda code: 118.1)
+    monkeypatch.setattr(L, "quote_fallback", lambda code, ref=0.0: 118.1)
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
     _set_state({"last_pnl": {"688183.SH": -20.0}, "last_day": {}, "last_ts": "",
                 "last_trigger": {"688183.SH": {"dir": "down", "ts": now.isoformat()}}})
@@ -127,3 +127,31 @@ def test_check_volatility_v2_sources_wired():
     import inspect
     src = inspect.getsource(L.check_volatility)
     assert "sector_triggers(" in src and "l2_triggers(" in src and "news_triggers(" in src
+
+
+# ---------- 取价备胎反杀修复（2026-09-12 P0-2）----------
+# 09-11 实录：备胎 Fuyao 恒取 items[0]（000001.SZ 平安银行 11.74）→ 与桥价偏差
+# 必然 >2% → 坏 tick 校验把**真触发**整行丢掉（当日 156 条）。修法在 live_quote
+# 客户端匹配；这里钉住调用侧口径：备胎价先与桥价做 40% 闸，越界按"备胎坏值"
+# 丢弃（fb=0，不杀触发），±2% 交叉校验只对可信备胎价生效。
+
+def test_quote_fallback_gets_bridge_price_as_ref(monkeypatch):
+    seen = {}
+
+    def _fb(code, ref=None):
+        seen["ref"] = ref
+        return (118.1, "fuyao")
+
+    monkeypatch.setattr(L.live_quote, "fallback_quote", _fb)
+    _base()
+
+    assert L.check_volatility(FakeBroker(), [{"stock_code": "688183.SH"}])
+    assert seen["ref"] == 118.3                       # 桥价进了备胎坏值闸
+
+
+def test_bad_fallback_source_does_not_kill_real_trigger(monkeypatch):
+    """备胎源坏（匹配不到目标 → None）→ fb=0 → 触发保留，不许反向误杀。"""
+    monkeypatch.setattr(L.live_quote, "fallback_quote", lambda code, ref=None: (None, ""))
+    _base()
+
+    assert L.check_volatility(FakeBroker(), [{"stock_code": "688183.SH"}])

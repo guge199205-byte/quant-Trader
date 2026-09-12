@@ -34,6 +34,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from trading_cal import is_trading_day, why_not  # noqa: E402
 from ashare_rules import at_limit_down, at_limit_up, board_of  # noqa: E402
 from live_fills import round_sell_qty  # noqa: E402
+import live_quote  # noqa: E402 取价备胎唯一入口（Fuyao/腾讯），quote_fallback 委托它
 
 # ---- 方案 C: 波动触发参数 ----
 STATE_PATH = ROOT / "logs" / "live_analysis_state.json"  # 上次分析的持仓基线
@@ -334,35 +335,17 @@ def load_l2_factors(codes: list[str]) -> dict:
     return {c: out[c] for c in codes if c in out}
 
 
-def quote_fallback(code: str) -> float:
-    """取价备胎链：通达信桥 → 同花顺 Fuyao 快照 → 腾讯行情。任一路拿到>0 即用。
-    用于桥单点瞬时不可用时让 agent 仍拿到实时价（交易闸门不受影响：桥未通不下单）。"""
-    try:
-        sys.path.insert(0, str(ROOT / "dsh/skills/ths-fuyao/scripts"))
-        from ths_fuyao import get
-
-        d = get("/api/a-share/prices/snapshot", {"thscode": code})
-        items = (d.get("data") or {}).get("item") or []
-        if items:
-            px = float(items[0].get("last_price") or 0)
-            if px > 0:
-                return px
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        import urllib.request
-
-        q = ("sh" if code.endswith((".SH", ".SS")) else "sz") + code.split(".")[0]
-        with urllib.request.urlopen(f"http://qt.gtimg.cn/q={q}", timeout=4) as r:
-            raw = r.read().decode("gbk", "ignore")
-        f = raw.split("=", 1)[1].split("~") if "=" in raw else []
-        if len(f) > 3:
-            px = float(f[3])
-            if px > 0:
-                return px
-    except Exception:  # noqa: BLE001
-        pass
-    return 0.0
+def quote_fallback(code: str, ref: float = 0.0) -> float:
+    """取价备胎：Fuyao 快照 → 腾讯行情（唯一实现在 live_quote，客户端按代码匹配）。
+    用于桥单点瞬时不可用时让 agent 仍拿到实时价（交易闸门不受影响：桥未通不下单）。
+    ref>0（通常传桥价）= 交叉参照：备胎与参照偏离 >40% 视为坏值丢弃。
+    全源失败返回 0.0（沿用旧契约：调用方按 >0 判有效）。"""
+    px, src = live_quote.fallback_quote(code, ref=ref or None)
+    if px is None:
+        return 0.0
+    if src != "fuyao":      # 主源的备胎也降级了 → 留痕（来源可见性）
+        print(f"[{now_cn():%F %T}] ⚠️ {code} 现价来源={src} 备胎（Fuyao 不可用）")
+    return px
 
 
 def load_orderbook(broker, codes: list) -> dict:
@@ -1445,8 +1428,12 @@ def check_volatility(broker, positions: list) -> str | None:
     # 生产级防护①：坏 tick 校验——触发行的桥价与备胎源（Fuyao→腾讯）偏差 >2% 视为坏数据
     validated = []
     for code, dr, msg in triggers:
+        px = next((r["price"] for r in rows if r["code"] == code and r.get("price")), 0)
         try:
-            fb = quote_fallback(code)
+            # ref=桥价：备胎与桥价差 >40% 时按"备胎坏值"丢弃（fb=0 → 不放行也不误杀，
+            # 真伪由下面 ±2% 交叉校验继续判）。09-11 实录：备胎恒取 items[0]（平安银行）
+            # 时这里反向把真触发整行丢掉（当日 156 条），修在 live_quote 的客户端匹配。
+            fb = quote_fallback(code, px)
         except Exception:  # noqa: BLE001
             fb = 0.0
         px = next((r["price"] for r in rows if r["code"] == code and r.get("price")), 0)

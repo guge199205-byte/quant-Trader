@@ -12,6 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "logs" / "rt_status.json"
+if str(ROOT / "scripts") not in sys.path:     # 直接 import live_quote（同目录）
+    sys.path.insert(0, str(ROOT / "scripts"))
 
 
 def _env_kv(prefix: str = "") -> dict:
@@ -76,14 +78,15 @@ def probe_bridge() -> dict:
 
 
 def probe_fuyao() -> dict:
-    try:
-        sys.path.insert(0, str(ROOT / "dsh/skills/ths-fuyao/scripts"))
-        from ths_fuyao import get
+    """Fuyao 探活 = live_quote 的同一函数：**目标行真的匹配到有效价**才算 OK。
 
-        d = get("/api/a-share/prices/snapshot", {"thscode": "600519.SH"})
-        items = (d.get("data") or {}).get("item") or []
-        return {"ok": d.get("code") == 0 and len(items) > 0,
-                "count_hint": len(items), "error": d.get("message") if d.get("code") else None}
+    2026-09-11 前只看 `len(items)>0`：上游忽略 thscode、返回全市场别家行情也判健康
+    （day 里桥断时备胎恒给平安银行价，看板却全绿）。条数降级为 count_hint 提示。
+    """
+    try:
+        import live_quote
+
+        return live_quote.fuyao_check("600519.SH")
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:120]}
 

@@ -27,7 +27,6 @@
 """
 import argparse
 import json
-import re
 import subprocess
 import sys
 import time
@@ -55,14 +54,16 @@ from live_ledger import (  # noqa: E402
     agent_virtual_cash,
     find_holder,
     load_ledger,
-    record_buy,
     record_sell,
     sane_fill_price,
     save_ledger,
 )
-from live_fills import (add_pending, inflight_codes, reconcile, wait_fill,  # noqa: E402
-                        round_sell_qty)
+from live_fills import (inflight_codes, note_pct_unparsed, reconcile,  # noqa: E402
+                        round_sell_qty, settle_place_fill, wait_fill)
 from ashare_rules import at_limit_down, board_of  # noqa: E402
+from llm_json import extract_json  # noqa: E402
+from live_prompt_context import (PCT_DIRTY, PCT_GIVEN, parse_pct,  # noqa: E402
+                                 sell_fraction)
 
 # 杠杆硬约束（与 live_hourly_analysis 同口径）
 LEVERAGE_MAX = 1.5
@@ -295,39 +296,141 @@ def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
 
 
 def parse_decision(text: str) -> list | None:
-    """LLM 输出 → 决策列表。容忍 ```json 围栏；解析失败返回 None。"""
-    if not text:
-        return None
-    m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
-    payload = m.group(1) if m else text
+    """LLM 输出 → 调仓决策列表（容忍散文夹 JSON / 围栏；解析失败返回 None）。
+
+    2026-09-12 P0-5：抽取统一到 `llm_json.extract_json`。旧实现只认「整段 / ```json
+    围栏」，09-11 09:35 的散文输出直接「解析失败，跳过」→ 当天该 agent 0 买 0 卖；
+    同一份文本喂盘中的 parse_intraday_decision 就能取出来。pct 解析统一到
+    `live_prompt_context.parse_pct`（三态 given/missing/dirty，与盘中同口径）：
+    `"30%"` 规范化成 0.3；脏值（`"0.3股"`）不再是「未表达」，带 `pct_bad_raw`
+    标记交给执行段跳过留痕（2026-09-12 审查 HIGH-2）。
+    """
+
+    def _rows(d: dict) -> list:
+        out = []
+        for x in (d.get("decisions") if isinstance(d, dict) else None) or []:
+            if not isinstance(x, dict):
+                continue
+            action = str(x.get("action") or "").lower()
+            if action not in ("hold", "sell", "buy"):
+                continue
+            pct, state = parse_pct(x.get("pct"))
+            row = {
+                "action": action,
+                "code": str(x.get("code") or "").strip(),
+                "pct": pct,
+                "pct_given": state == PCT_GIVEN,
+                "reason": str(x.get("reason") or ""),
+            }
+            if state == PCT_DIRTY:
+                row["pct_bad_raw"] = repr(x.get("pct"))[:40]
+            out.append(row)
+        return out
+
+    obj = extract_json(text, want=lambda d: bool(_rows(d)))
+    return _rows(obj) if obj is not None else None
+
+
+JSON_ONLY_HINT = ("\n\n【纠正】上一次输出无法解析为决策 JSON（没有 JSON / decisions 为空 / "
+                  "格式不符）。请**只输出 JSON 对象本身**（不要 markdown 代码块、不要任何"
+                  "解释文字），且 decisions 数组必须逐只列出现有持仓的判断，格式同上面的 schema。")
+
+
+def _merge_usage(a: dict | None, b: dict | None) -> dict | None:
+    """两次 LLM 调用的 token 用量合并（解析重试也是真实开销，必须计入）。"""
+    if not a:
+        return b
+    if not b:
+        return a
+    out = {}
+    for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        try:
+            out[k] = int(a.get(k) or 0) + int(b.get(k) or 0)
+        except (TypeError, ValueError):
+            out[k] = a.get(k) or b.get(k)
+    return out
+
+
+def decide_with_retry(prompt: str, agent: str) -> tuple[list | None, str, dict | None, str]:
+    """调 LLM 拿调仓决策；解析失败追加「只输出 JSON」**重试 1 次**（2026-09-12 P0-5）。
+
+    返回 (decisions, 最终原文, 合并 usage, 失败原因)；成功时原因=""。仍失败 decisions=None，
+    由调用方留痕（旧行为是只 print 一行 → UI 看不见、事后无法解释「今天为什么零交易」）。
+    失败原因三态（2026-09-12 审查 LOW-2）："api_failed"（调用失败，无输出）/
+    "empty_output"（返回空串）/ "parse_failed"（有输出但取不出决策）——三者要用的
+    排查方向不同，不能都写成「模型输出解析不了」。
+    """
+    from live_hourly_analysis import call_llm
+
+    content, usage = "", None
     try:
-        d = json.loads(payload)
-    except json.JSONDecodeError:
-        return None
-    out = []
-    for x in (d.get("decisions") if isinstance(d, dict) else None) or []:
-        action = (x.get("action") or "").lower()
-        if action not in ("hold", "sell", "buy"):
-            continue
-        out.append({
-            "action": action,
-            "code": str(x.get("code") or "").strip(),
-            "pct": float(x.get("pct") or 0),
-            "reason": str(x.get("reason") or ""),
-        })
-    return out or None
+        content, usage = call_llm(prompt, agent)
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ [{agent}] LLM 调用失败: {exc}")
+        return None, "", None, "api_failed"
+    decisions = parse_decision(content)
+    if decisions is not None:
+        return decisions, content, usage, ""
+    if not content:
+        return None, "", usage, "empty_output"
+    print(f"  ⚠️ [{agent}] 决策解析失败，追加「只输出 JSON」重试一次")
+    try:
+        content2, usage2 = call_llm(prompt + JSON_ONLY_HINT, agent)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠️ [{agent}] 解析重试调用失败: {exc}")
+        return None, content, usage, "parse_failed"
+    usage = _merge_usage(usage, usage2)
+    if content2:
+        decisions2 = parse_decision(content2)
+        if decisions2 is not None:
+            return decisions2, content2, usage, ""
+    return None, (content2 or content), usage, "parse_failed"
 
 
-# ---------- 执行 ----------
+_FAIL_LABEL = {"api_failed": "LLM 调用失败（无输出）", "empty_output": "LLM 返回空响应",
+               "parse_failed": "决策解析失败（含重试）"}
 
-def sell_one(broker, code: str, volume: int, limit: float, agent: str | None) -> dict:
-    """桥卖出 + 分账记账（agent 为空 = 总账户持仓，只记券商）。"""
-    result = broker.sell(None, None, code, volume, price=limit)
-    if agent:
-        ledger = load_ledger()
-        ledger = record_sell(ledger, agent, code, volume, limit, now_cn().isoformat())
-        save_ledger(ledger)
-    return result
+
+def _log_parse_failure(agent: str, prompt: str, content: str, usage: dict | None,
+                       reason: str = "parse_failed") -> None:
+    """调仓失败留痕：对话流 kind=reason + 事件（2026-09-12 P0-5）。
+
+    旧行为只有 cron stdout 一行——UI 对话 tab 看不见「这个 agent 今天为什么零交易」，
+    与「失败必留痕」的既有口径不一致（先例：append_failure_log / daily_report）。
+
+    reason 分叉文案（2026-09-12 审查 LOW-2）：把「网络/接口失败」写成「模型输出
+    解析不了」会把运维排查引到错误方向，三种失败必须区分：
+      api_failed（调用失败，无输出）/ empty_output（返回空串）/ parse_failed（有输出但取不出决策）。
+    """
+    text = (content or "").strip()
+    if reason == "api_failed":
+        head = ("⚠️ 本轮调仓 LLM 调用失败（网络/桥/接口错误，未取得任何输出）：本轮该 agent"
+                "未产生任何买卖（零交易）。排查方向在调用链（见 stdout 的调用错误），不是模型输出格式。")
+        raw = "（无输出）"
+    elif reason == "empty_output":
+        head = ("⚠️ 本轮调仓 LLM 返回空响应：本轮该 agent 未产生任何买卖（零交易）。"
+                "空响应多为接口异常而非格式问题，故未做「只输出 JSON」重试。")
+        raw = "（空输出）"
+    else:
+        head = ("⚠️ 本轮调仓决策解析失败（已追加「只输出 JSON」重试 1 次）：LLM 输出没有可用的"
+                "决策 JSON（无 JSON / decisions 为空 / 格式不符）。本轮该 agent 未产生任何买卖"
+                "（零交易）。")
+        raw = text[:500] or "（空输出）"
+    body = "\n".join([head, "", "原文前 500 字：", "", raw])
+    try:
+        from live_hourly_analysis import append_log
+
+        append_log(prompt, body, agent, usage, kind=reason)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠️ [{agent}] 失败留痕写对话流失败: {exc}")
+    try:
+        from live_fills import record_event
+
+        record_event(reason, agent,
+                     f"[{agent}] 09:35 调仓{_FAIL_LABEL.get(reason, '决策失败')} → 本轮零交易；"
+                     f"原文前 120 字：{text[:120] or '（无输出）'!r}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠️ [{agent}] 失败留痕事件落盘失败: {exc}")
 
 
 # ---------- 单实例锁 / 当日状态 / 断线重试 ----------
@@ -541,7 +644,7 @@ def _run(args) -> int:
         return 1
     print(f"📋 候选池 {len(pool)} 只  大盘: {direction.get('direction', '—')}")
 
-    from live_hourly_analysis import append_log, call_llm, daily_buy_codes
+    from live_hourly_analysis import append_log, daily_buy_codes
 
     agents = [a.strip() for a in args.agents.split(",") if a.strip()] or enabled_agents()
     ledger = load_ledger()
@@ -585,15 +688,12 @@ def _run(args) -> int:
                               for c, n, v, q in too_pricey))
         prompt = build_prompt(agent, my_holdings, pool_rows(pool_for_agent), direction,
                               remaining, pool=pool_for_agent)
-        content, usage = "", None
-        try:
-            content, usage = call_llm(prompt, agent)
-        except Exception as exc:  # noqa: BLE001
-            print(f"❌ [{agent}] LLM 调用失败: {exc}")
-        decisions = parse_decision(content)
+        # 决策：LLM + 解析，失败重试 1 次（2026-09-12 P0-5）
+        decisions, content, usage, fail_reason = decide_with_retry(prompt, agent)
         if decisions is None:
-            print(f"⚠️ [{agent}] 决策解析失败，跳过（LLM 原文前 200 字）："
+            print(f"⚠️ [{agent}] 决策失败（{fail_reason}），跳过（LLM 原文前 200 字）："
                   f"{content[:200]!r}")
+            _log_parse_failure(agent, prompt, content, usage, fail_reason)
             continue
         if not decisions:
             print(f"⏭️ [{agent}] 空决策（合法 no-op，本轮不动）")
@@ -627,10 +727,16 @@ def _run(args) -> int:
                 if avail <= 0:
                     print(f"  ⏭️ [{agent}] 卖出 {code}: T+1 不可卖（可卖量 0），跳过")
                     continue
-                raw_vol = int(avail * min(max(d["pct"], 0), 1))
+                # 脏 pct（给了值但解析不出，如 "0.3股"）≠ 没给比例：跳过并留痕，
+                # 绝不按清仓执行（2026-09-12 审查 HIGH-2；sell_fraction 兜底返 0）
+                if d.get("pct_bad_raw"):
+                    print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'sell')}")
+                    continue
+                frac = sell_fraction(d)
+                raw_vol = int(avail * frac)
                 vol = round_sell_qty(code, raw_vol, avail)
                 if vol <= 0:
-                    print(f"  ⏭️ [{agent}] 卖出 {code}: 比例 {d['pct']} 无合法可卖量，跳过")
+                    print(f"  ⏭️ [{agent}] 卖出 {code}: 比例 {frac:.0%} 无合法可卖量，跳过")
                     continue
                 if vol != raw_vol:
                     print(f"  ⚖️ [{agent}] 卖出 {code}: 意图 {raw_vol} 股 → 手数合规实际 {vol} 股"
@@ -640,10 +746,19 @@ def _run(args) -> int:
                     continue
                 sells.append((code, vol, d["reason"]))
                 print(f"  📉 [{agent}] 卖出 {code} {vol}/{avail}股 "
-                      f"({d['pct']:.0%}): {d['reason']}")
+                      f"({frac:.0%}{'' if d.get('pct_given', True) else '，未给比例按清仓'}): "
+                      f"{d['reason']}")
             elif d["action"] == "buy":
                 if code in pending_buy:
                     print(f"  ⏭️ [{agent}] 买入 {code}: 已有在途买单未确认，跳过")
+                    continue
+                if d.get("pct_bad_raw"):
+                    print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'buy')}")
+                    continue
+                if d["pct"] <= 0:
+                    why = ("明说 pct=0" if d.get("pct_given", True)
+                           else "未表达买入比例（pct）")
+                    print(f"  ⏭️ [{agent}] 买入 {code}: {why}，跳过（买入必须有明确比例）")
                     continue
                 bd = check_buy(code, d["pct"], bool(h), new_buys, opened_today, gate,
                                name=(h or {}).get("name") or nm_by_code.get(code))
@@ -712,34 +827,37 @@ def _run(args) -> int:
                 from live_fills import ack_line
 
                 print("  " + ack_line(f"[{agent}] 卖出 {code}", result))
+                limit = round(price * 0.99, 2)
                 fill = wait_fill(broker, result.get("order_id", ""))
-                if fill and int(fill.get("filled_volume") or 0) > 0:
-                    fv = int(fill["filled_volume"])
-                    fp = float(fill.get("filled_price") or round(price * 0.99, 2))
+                fv = int((fill or {}).get("filled_volume") or 0)
+                fp, approx = float((fill or {}).get("filled_price") or limit), False
+                if fv > 0:
                     fp, approx = _quote_guarded_price(broker, code, fp)
                     if approx:
                         print(f"  ⚠️ [{agent}] 卖出 {code}: 桥回报成交价偏离实时价>40%，"
                               f"按实时价 {fp} 记账（approx）")
-                    ledger = load_ledger()
-                    cost_p = float((((ledger.get("agents") or {}).get(agent) or {})
-                                    .get("positions") or {}).get(code, {}).get("cost_price") or 0)
-                    ledger = record_sell(ledger, agent, code, fv, fp,
-                                         now_cn().isoformat())
-                    save_ledger(ledger)
+                # 记账 + 余量跟踪统一收口（2026-09-12 P0-4）：部分成交剩余的量挂
+                # pending 继续跟踪，不再「记完已成交的就走」→ 余下成交成账外单
+                rec = settle_place_fill(result.get("order_id"), agent, code, "sell",
+                                        vol, limit, fill, fill_price=fp)
+                if rec["filled"] > 0:
                     log_line({"ts": now_cn().isoformat(), "mode": "execute",
                               "agent": agent, "code": code, "side": "sell",
-                              "volume": fv, "price": fp, "cost_price": cost_p,
+                              "volume": rec["filled"], "price": rec["price"],
+                              "cost_price": rec["cost_price"],
+                              "remaining": rec["remaining"],
                               "approx": approx,
-                              "fill": {"order_id": fill.get("order_id"),
-                                       "filled_price": fp, "filled_volume": fv}})
-                else:
-                    add_pending(result.get("order_id"), agent, code, "sell", vol,
-                                round(price * 0.99, 2), now_cn().isoformat())
+                              "fill": {"order_id": (fill or {}).get("order_id"),
+                                       "filled_price": rec["price"],
+                                       "filled_volume": rec["filled"]}})
+                if rec["pending"] or rec["untracked"]:
                     pending_sell.add(code)   # 同轮重复决策同一代码时不再下第二单
+                    # （untracked：桥没回委托号 → reconcile 追不了，更要挡重复下单）
                     log_line({"ts": now_cn().isoformat(), "mode": "execute",
                               "agent": agent, "code": code, "side": "sell",
-                              "volume": vol, "price": round(price * 0.99, 2),
-                              "pending": True, "result": result})
+                              "volume": vol, "price": limit,
+                              "pending": rec["pending"], "untracked": rec["untracked"],
+                              "result": result})
             except Exception as exc:  # noqa: BLE001
                 print(f"  ❌ [{agent}] 卖出 {code} 失败: {exc}")
                 from live_ledger import defer_on_exc
@@ -808,29 +926,31 @@ def _run(args) -> int:
                 print("  " + ack_line(f"[{agent}] 买入 {code} {o['volume']}股 "
                                       f"限价 ¥{o['limit_price']:.2f}", result))
                 fill = wait_fill(broker, result.get("order_id", ""))
-                if fill and int(fill.get("filled_volume") or 0) > 0:
-                    fv = int(fill["filled_volume"])
-                    fp = float(fill.get("filled_price") or o["price"])
+                fv = int((fill or {}).get("filled_volume") or 0)
+                fp, approx = float((fill or {}).get("filled_price") or o["price"]), False
+                if fv > 0:
                     fp, approx = _quote_guarded_price(broker, code, fp)
                     if approx:
                         print(f"  ⚠️ [{agent}] 买入 {code}: 桥回报成交价偏离实时价>40%，"
                               f"按实时价 {fp} 记账（approx）")
-                    ledger = record_buy(load_ledger(), agent, code, fv, fp,
-                                        now_cn().isoformat())
-                    save_ledger(ledger)
+                rec = settle_place_fill(result.get("order_id"), agent, code, "buy",
+                                        o["volume"], o["price"], fill, fill_price=fp)
+                if rec["filled"] > 0:
                     log_line({"ts": now_cn().isoformat(), "mode": "execute",
                               "agent": agent, "code": code, "side": "buy",
-                              "volume": fv, "price": fp, "approx": approx,
-                              "fill": {"order_id": fill.get("order_id"),
-                                       "filled_price": fp, "filled_volume": fv}})
-                else:
-                    add_pending(result.get("order_id"), agent, code, "buy",
-                                o["volume"], o["price"], now_cn().isoformat())
+                              "volume": rec["filled"], "price": rec["price"],
+                              "remaining": rec["remaining"], "approx": approx,
+                              "fill": {"order_id": (fill or {}).get("order_id"),
+                                       "filled_price": rec["price"],
+                                       "filled_volume": rec["filled"]}})
+                if rec["pending"] or rec["untracked"]:
                     pending_buy.add(code)    # 同轮重复决策同一代码时不再下第二单
+                    # （untracked：桥没回委托号 → reconcile 追不了，更要挡重复下单）
                     log_line({"ts": now_cn().isoformat(), "mode": "execute",
                               "agent": agent, "code": code, "side": "buy",
                               "volume": o["volume"], "price": o["price"],
-                              "pending": True, "result": result})
+                              "pending": rec["pending"], "untracked": rec["untracked"],
+                              "result": result})
             except Exception as exc:  # noqa: BLE001
                 print(f"  ❌ [{agent}] 买入 {code} 失败: {exc}")
                 from live_ledger import defer_on_exc

@@ -49,6 +49,12 @@ def collect_facts(agent: str, date: str) -> str:
                 continue
             if r.get("agent") != agent or r.get("error") or not r.get("side"):
                 continue
+            if r.get("pending") or r.get("untracked"):
+                # 未确认行不许算成交：部分成交时同一单会写两行（fill 行 + pending
+                # 行 volume=整单量），不过滤会把 100 股实际成交记成 400（2026-09-12
+                # 审查 MEDIUM-1）；纯 pending 行（无成交回报）同样不是成交。
+                # untracked（桥缺委托号）更没有成交确认，同样剔除。
+                continue
             ts = str(r.get("ts") or "")
             if ts[:10] != date:
                 continue

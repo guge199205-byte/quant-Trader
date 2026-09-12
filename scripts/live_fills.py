@@ -94,22 +94,30 @@ def save_pending(entries: list) -> None:
 
 
 def add_pending(order_id, agent: str, code: str, side: str, volume: int,
-                price: float, ts: str, protect: bool = False) -> None:
-    """登记在途委托。protect=True 表示这是保护价（跌停价）挂队单：
+                price: float, ts: str, protect: bool = False,
+                recorded: int = 0) -> bool:
+    """登记在途委托；返回是否真的登记了（空委托号 → False，只落事件）。
+    protect=True 表示这是保护价（跌停价）挂队单：
     排队等买盘是它的正常形态，停滞告警时不可触发重启桥的自愈动作。
 
     没拿到委托号（桥响应缺 order_id）不能静默 return：无号 = 这笔单跟踪不了、
     成交也不会被 reconcile 补记，必须落事件让人核对当日委托（2026-09-11）。
+
+    recorded = 这笔委托**已经记账**的成交量（下单路径内联记过的部分成交）。
+    默认 0 只对「尚无成交回报」安全：已记账量若不带着走，reconcile 的增量
+    = 桥 filled − 0 会把同一笔成交再记一次（record_sell 量不足时直接删持仓 +
+    多记现金，见 live_ledger.record_sell）。
     """
     if not order_id:
         record_event("untracked_order", code,
                      f"[{agent}] {side} {code} {int(volume)}股 委托未拿到委托号，"
                      f"成交无法记账（限价 ¥{price}）——需人工核对当日委托",
                      side=side)
-        return
+        return False
     entry = {
         "order_id": str(order_id), "agent": agent, "code": code, "side": side,
-        "volume": int(volume), "price": float(price or 0), "volume_recorded": 0,
+        "volume": int(volume), "price": float(price or 0),
+        "volume_recorded": max(int(recorded or 0), 0),
         "ts": ts,
     }
     if protect:
@@ -120,6 +128,127 @@ def add_pending(order_id, agent: str, code: str, side: str, volume: int,
         pend = load_pending()
         pend.append(entry)
         save_pending(pend)
+    return True
+
+
+def record_inline_fill(agent: str, code: str, side: str, volume: int, price: float,
+                       order_id: str, ts: str | None = None) -> float:
+    """下单后已确认的成交**立即**记账（09:35 调仓 / 整点轮执行路径共用）。
+
+    `volume` 是桥回报的**累计**成交量（filled_volume），不是增量。
+
+    与 reconcile 共用同一把跨进程锁 + 同一个 applied_fills 幂等标记。老实现直接
+    load_ledger→record_sell→save_ledger：
+      - 不持锁 → 与每分钟 record-only 的账本整表读-改-写互相丢更新（一方白记）；
+      - 不写标记 → 记账后若进程崩在 add_pending 之前，下一轮 reconcile 从 0 起算
+        增量，同一笔成交记两次。
+    标记只兜住「重复记账」这一半；反方向的窗口（崩在记账与挂 pending 之间 → 余量
+    无人跟踪）在 settle_place_fill 的说明里如实写明，不在这里重复承诺。
+    范围：无人值守四条路径（见 settle_place_fill）；live_trade_picks 的手工路径
+    尚未接入，别把「同锁」读成全仓库账本写者都满足。
+    返回该票记账前的成本价（卖出路径的 fill_confirm 日志要用）。
+    """
+    from live_ledger import load_ledger, record_buy, record_sell, save_ledger
+
+    ts = ts or now_cn().isoformat()
+    vol, px = int(volume), float(price or 0)
+    with _file_lock():
+        ledger = load_ledger()
+        cost_p = float(((ledger.get("agents") or {}).get(agent) or {})
+                       .get("positions", {}).get(code, {}).get("cost_price") or 0)
+        ledger = (record_buy if side == "buy" else record_sell)(
+            ledger, agent, code, vol, px, ts)
+        ledger["applied_fills"] = _with_applied(ledger.get("applied_fills"), order_id,
+                                                vol, ts[:10])
+        save_ledger(ledger)
+    return cost_p
+
+
+def settle_place_fill(order_id, agent: str, code: str, side: str, volume: int,
+                      price: float, fill: dict | None, *, fill_price: float | None = None,
+                      ts: str | None = None, protect: bool = False) -> dict:
+    """下单回报的账务收口（四条无人值守下单路径共用，2026-09-12 P0-4）。
+
+    背景：`wait_fill` 一见到「有成交」就返回——部分成交（100/300）且委托仍在途时，
+    旧代码把 100 记完就走，剩下 200 股日后成交**没有任何跟踪**（不在 pending →
+    reconcile 永远补不到）→ 账外成交、账实不符。四条路径各写一遍判断必然漂移，
+    统一收到这里：
+
+      - 有成交 → `record_inline_fill`（同锁 + 幂等标记）；
+      - 还有未成交量、委托非终态 → 挂 pending（recorded=已记账量），余量继续跟踪；
+      - 还有未成交量、委托已终态（partial_cancelled 等）→ 不挂 pending（挂了下一轮
+        reconcile 立刻移除），落 unfilled 告警事件如实写明余量；**零成交的终态**
+        另写一行 `fill_abort` 到成交流水（否则这次下单尝试在 trade jsonl 里不留痕，
+        decision_track.backfill 就看不到「卖出决策被废单」的历史）；
+      - 全部成交 / 尚无成交回报 → 调用方原样处理。
+
+    范围（2026-09-12 审查 MEDIUM-2）：只覆盖**无人值守**的四条路径（09:35 调仓
+    卖出/买入、整点轮卖出/买入）。`live_trade_picks` 的交互式手工 sell/buy 仍是
+    旧模式（按限价即记账、不挂在途、账本写不在 _file_lock 内），迁移待办——手工
+    路径与 cron 的 record-only/reconcile 并发时仍可能丢更新，别把本函数的
+    「同锁」承诺读成全仓库成立。
+
+    已知窗口（2026-09-12 审查 MEDIUM-3）：`record_inline_fill` 与 `add_pending`
+    是两次写盘，进程若恰好崩在中间——已成交部分已记账、幂等标记已写，但这笔单
+    不在 pending，`_recorded_baseline` 只在遍历 pending 时读标记 → 余量从此无人
+    跟踪（窗口=两条语句之间，代价是少跟踪而非重复记账，取舍如此）。docstring
+    不许把它说成「完全兜住」。
+
+    fill_price：调用方坏 tick 护栏修正后的成交价（覆盖桥回报价）。
+    返回 {"filled", "price", "cost_price", "remaining", "pending", "terminal",
+          "untracked"}——untracked=True 表示桥没回委托号（这笔单无法被 reconcile
+    跟踪），调用方同样要把 code 计入本轮「不再下单」闸门集。pending 只在**真的
+    登记了**在途单时为真（缺委托号 → pending=False + untracked=True，不许报一个
+    reconcile 追不了的假在途）。
+    """
+    oid = str(order_id or "")
+    f = fill or {}
+    fv = int(_int(f.get("filled_volume")))
+    status = str(f.get("status") or "")
+    px = float(fill_price if fill_price is not None else (f.get("filled_price") or price or 0))
+    wanted = int(volume or 0)
+    terminal = status in TERMINAL_STATUSES
+    out = {"filled": 0, "price": px, "cost_price": 0.0, "remaining": wanted,
+           "pending": False, "terminal": status if terminal else "", "untracked": not oid}
+    if fv > 0:
+        out["cost_price"] = record_inline_fill(agent, code, side, fv, px, oid, ts)
+        out["filled"] = fv
+        out["remaining"] = max(wanted - fv, 0)
+    if out["remaining"] <= 0:
+        return out
+    if terminal:
+        record_event("unfilled", code,
+                     f"委托终态 {status}：[{agent}] {code} {side} 成交 {fv}/{wanted} 股，"
+                     f"剩余 {wanted - fv} 股未成交（限价 ¥{price}）——不会自动重下",
+                     side=side)
+        if fv == 0:
+            try:
+                from live_trade_picks import log_line
+
+                log_line({"ts": ts or now_cn().isoformat(), "mode": "fill_abort",
+                          "agent": agent, "code": code, "side": side, "volume": 0,
+                          "filled": 0, "remaining": wanted, "status": status,
+                          "price": price})
+            except Exception as exc:  # noqa: BLE001
+                print(f"⚠️ live_fills: fill_abort 流水写入失败（{exc}）", file=sys.stderr)
+        return out
+    out["pending"] = add_pending(oid, agent, code, side, wanted, price,
+                                 ts or now_cn().isoformat(), protect=protect, recorded=fv)
+    return out
+
+
+def note_pct_unparsed(agent: str, code: str, raw: str, side: str) -> str:
+    """脏 pct 的统一留痕（2026-09-12 审查 HIGH-2）：落非告警事件 + 返回一行文案。
+
+    模型给了减仓比例但解析不出（如 `"0.3股"`）——不许当成「没给」按清仓执行：
+    猜小只是少卖（下一轮决策与哨兵兜住），猜大是不可逆的清仓。调用方 print 本行
+    并 `continue` 跳过该决策；跳过动作本身必须留痕（事件面 + stdout），
+    事后能回答「这轮为什么没执行这条决策」。
+    """
+    msg = (f"[{agent}] {code} {side}: 决策的比例无法解析（pct={raw}），"
+           f"按解析失败跳过——不猜比例（猜小=少卖由下一轮兜住，猜大=清仓不可逆）")
+    record_event("pct_unparsed", code, msg, side=side, alert=False)
+    return f"[{agent}] {code} {side} 比例无法解析（pct={raw}），跳过不猜比例"
 
 
 def inflight(code: str, side: str | None = None) -> list:

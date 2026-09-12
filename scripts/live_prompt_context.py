@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """live_hourly_analysis 的上下文/解析纯函数（P1-2 拆分，行为不变）。
-仅依赖标准库；ROOT 与主模块同源（仓库根）。"""
+仅依赖标准库与同为纯标准库的同级 `llm_json`（解析抽取共用）；ROOT 与主模块同源（仓库根）。"""
 import json
+import math
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from llm_json import extract_json
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -44,7 +47,8 @@ def build_trade_recap(agent: str, days: int = 7) -> str:
             events.append({"ts": ts, "code": r.get("code"),
                            "side": str(r["side"]).lower(), "vol": fv,
                            "price": float(fp or 0),
-                           "intent": r.get("intent_volume")})
+                           "intent": r.get("intent_volume"),
+                           "remain": int(r.get("remaining") or 0)})
     if not events:
         return ""
     events.sort(key=lambda e: e["ts"])
@@ -58,7 +62,11 @@ def build_trade_recap(agent: str, days: int = 7) -> str:
             act = "买入" if e["side"] == "buy" else "卖出"
             px = f" @{e['price']:.2f}" if e["price"] else ""
             note = ""
-            if e.get("intent") and e["vol"] != int(e["intent"]):
+            if e.get("remain"):
+                # 部分成交：vol≠intent 是「只成交了一部分」，不是手数取整（2026-09-12
+                # 审查 LOW-3）——成交行带 remaining 时不许归因到「手数合规后实际」
+                note = f"（部分成交，剩余 {int(e['remain'])} 股未成交）"
+            elif e.get("intent") and e["vol"] != int(e["intent"]):
                 note = f"（申报意图 {int(e['intent'])} 股，手数合规后实际 {e['vol']} 股）"
             lines.append(f"- {d} {act} {e['code']} {e['vol']}股{px}{note}")
     if not lines:
@@ -105,16 +113,51 @@ def load_review_recap(agent: str) -> str:
 
 
 
-def parse_intraday_decision(text: str) -> list | None:
-    """LLM 输出 → 盘中决策列表（与 live_llm_trade.parse_decision 同构）。
-    依次尝试：整段 JSON → ```json 围栏 → 括号平衡块；
-    只解析 decisions 数组；未知 action 忽略。
-    返回 [{"action","code","pct","pct_given","stop_loss","take_profit","reason"}]
-    （stop_loss/take_profit 仅 watch 有，其余 None），解析失败返回 None。"""
-    import re
+PCT_GIVEN, PCT_MISSING, PCT_DIRTY = "given", "missing", "dirty"
 
-    if not text:
-        return None
+
+def parse_pct(x) -> tuple[float, str]:
+    """pct 解析 → (值, 状态)：given / missing / dirty 三态（2026-09-12 审查 HIGH-2）。
+
+    - **given**：有效有限数；字符串先规范化（去空白、全角 ％→%、结尾 % 视作百分数，
+      `"30%"` → 0.3）——模型确实表达了比例，就尽量读出来而不是当没看见；
+    - **missing**：None/空串/N-A/NaN·Inf（含字符串形式）——**没表达**，消费点回退默认；
+    - **dirty**：给了值但解析不出（`"0.3股"`、`"三成"`、`[0.3]`）——不许等同于
+      missing：卖出链对 missing 按清仓执行（模型只说了方向），对 dirty 必须停下 +
+      留痕（原始值进日志与事件）。把「想减 30%」静默执行成清仓是资金方向上不可逆的
+      放大，而旧行为（脏值抛 ValueError 炸穿整轮）至少是「少做」。
+    """
+    if x is None:
+        return 0.0, PCT_MISSING
+    if isinstance(x, str):
+        s = x.strip().replace("％", "%")
+        if s in ("", "N/A", "n/a"):
+            return 0.0, PCT_MISSING
+        if s.endswith("%"):
+            try:
+                v = float(s[:-1]) / 100.0
+            except ValueError:
+                return 0.0, PCT_DIRTY
+        else:
+            try:
+                v = float(s)
+            except ValueError:
+                return 0.0, PCT_DIRTY
+    else:
+        try:
+            v = float(x)
+        except (TypeError, ValueError):
+            return 0.0, PCT_DIRTY
+    return (v, PCT_GIVEN) if math.isfinite(v) else (0.0, PCT_MISSING)
+
+
+def parse_intraday_decision(text: str) -> list | None:
+    """LLM 输出 → 盘中决策列表（与 live_llm_trade.parse_decision 同构，共用抽取器）。
+    抽取顺序交给 llm_json.extract_json（整段 → ```json 围栏 → 括号平衡块）；
+    只解析 decisions 数组；未知 action 忽略。
+    返回 [{"action","code","pct","pct_given",...,"pct_bad_raw"?}]——pct_bad_raw 仅在
+    「给了 pct 但解析不出」时存在（dirty 态标记，见 parse_pct）；
+    解析失败返回 None。"""
 
     def _num(x) -> float | None:
         """价位解析：None/空/N/A → None；非数字 → None（不炸）。"""
@@ -126,61 +169,76 @@ def parse_intraday_decision(text: str) -> list | None:
             return None
         return v if v > 0 else None
 
-    def _extract(payload: str) -> list | None:
+    def _fnum(x, default: float = 0.0) -> float:
+        """宽松数字解析（confidence 等辅助字段）：坏了按缺省，不许炸穿整轮。"""
         try:
-            d = json.loads(payload)
-        except json.JSONDecodeError:
-            return None
+            v = float(x)
+        except (TypeError, ValueError):
+            return default
+        return v if math.isfinite(v) else default
+
+    def _rows(obj: dict) -> list:
         out = []
-        for x in (d.get("decisions") if isinstance(d, dict) else None) or []:
-            action = (x.get("action") or "").lower()
+        for x in (obj.get("decisions") if isinstance(obj, dict) else None) or []:
+            if not isinstance(x, dict):
+                continue
+            action = str(x.get("action") or "").lower()
             if action not in ("hold", "sell", "buy", "watch"):
                 continue
-            out.append({
+            pct, state = parse_pct(x.get("pct"))
+            row = {
                 "action": action,
                 "code": str(x.get("code") or "").strip(),
                 "name": str(x.get("name") or "").strip(),
-                "pct": float(x.get("pct") or 0),
+                "pct": pct,
                 # 「模型没给 pct」与「明说 pct=0」必须可区分（2026-09-12 审查 HIGH-1）：
-                # 上面的 `or 0` 把两者压成同一个 0.0，watch 规则据此判「0 = 不表达卖出量」
-                # 时会把**漏给比例**的条件位也静默丢掉——该挂的止损不挂、零痕迹。
-                "pct_given": x.get("pct") is not None,
+                # 不区分时 watch 规则会把**漏给比例**的条件位也静默丢掉——该挂的止损不挂。
+                "pct_given": state == PCT_GIVEN,
                 "stop_loss": _num(x.get("stop_loss")),
                 "take_profit": _num(x.get("take_profit")),
                 "move_stop": _num(x.get("move_stop")),
                 "invalidation": str(x.get("invalidation") or ""),
-                "confidence": float(x.get("confidence") or 0),
+                "confidence": _fnum(x.get("confidence")),
                 "risk_amount": _num(x.get("risk_amount")),
                 "reason": str(x.get("reason") or ""),
-            })
-        return out or None
+            }
+            if state == PCT_DIRTY:
+                # 脏值 ≠ 没给（2026-09-12 审查 HIGH-2）：带上原始值供消费点留痕/审计
+                row["pct_bad_raw"] = repr(x.get("pct"))[:40]
+            out.append(row)
+        return out
 
-    # 1) 整段即 JSON（模型只输出决策块）
-    r = _extract(text.strip())
-    if r:
-        return r
-    # 2) ```json 围栏
-    m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
-    if m:
-        r = _extract(m.group(1).strip())
-        if r:
-            return r
-    # 3) 括号平衡块：找所有 {…} 平衡片段，逐个尝试
-    for i, ch in enumerate(text):
-        if ch != "{":
-            continue
-        depth = 0
-        for j in range(i, len(text)):
-            if text[j] == "{":
-                depth += 1
-            elif text[j] == "}":
-                depth -= 1
-                if depth == 0:
-                    r = _extract(text[i : j + 1])
-                    if r:
-                        return r
-                    break
-    return None
+    # 「首个含有效 decisions 的块」语义：校验器要求至少有一条合法决策，
+    # 空数组/全是被忽略 action 的块继续往后找（与旧 _extract 的 `out or None` 等价）
+    obj = extract_json(text, want=lambda d: bool(_rows(d)))
+    return _rows(obj) if obj is not None else None
+
+
+def sell_fraction(d: dict) -> float:
+    """卖出决策的执行比例口径（盘中/09:35 两条执行链共用，2026-09-12 P0-5）。
+
+    - 缺 pct（pct_given=False，且无 pct_bad_raw）按**清仓**处理：旧代码
+      `min(max(d["pct"],0),1)` 在 pct 缺失时算出 0 股 → 打一行「无合法可卖量」就
+      跳过——模型明说「卖出」、只是漏了比例，结果静默不下单。与哨兵侧「没给 pct
+      → 按全仓挂」同口径（漏挂的防守位当日无人执行）。
+    - **脏 pct（pct_bad_raw 存在）返回 0**（2026-09-12 审查 HIGH-2）：模型给了值但
+      没解析出来（如 `"0.3股"`）——把「想减 30%」执行成清仓是不可逆的方向放大。
+      调用点必须先停下（print 原始值 + 落 pct_unparsed 事件）再跳过；这里的 0 是
+      兜底：调用点万一漏检，宁可少卖（下一轮决策与哨兵兜住），不可多卖。
+    - 明说 `pct=0` 仍按 0（不卖）；没带 pct_given 键的旧调用点（测试桩/手工构造
+      决策）按「已给」处理，保持原语义。
+    """
+    if d.get("pct_bad_raw"):
+        return 0.0
+    if not d.get("pct_given", True):
+        return 1.0
+    try:
+        v = float(d.get("pct") or 0)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(v):
+        return 1.0
+    return min(max(v, 0.0), 1.0)
 
 
 

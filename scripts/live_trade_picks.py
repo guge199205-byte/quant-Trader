@@ -265,6 +265,11 @@ def sell_flow(broker, args, log_line) -> int:
         # 分账记账：下单≠成交——等成交回报按真实成交价/量扣减；未确认成交挂 pending
         # 由 reconcile 兜底（2026-09-11 前按委托限价即刻记账：跌停封死没卖出去也照样
         # 扣减持仓、释放额度，账本与真实持仓脱节）
+        #
+        # ⚠️ 待办（2026-09-12 审查 MEDIUM-2）：这里是**手工**下单路径，仍未接入
+        # live_fills.settle_place_fill——部分成交的余量不会挂 pending 继续跟踪，
+        # 且账本写不在 _file_lock 内（与 cron 的 record-only/reconcile 并发时可能丢
+        # 更新）。无人值守的四条路径（09:35 调仓、整点轮）已收口；手工路径迁移待办。
         holder = find_holder(ledger, code)
         order_id = str(result.get("order_id") or "")
         fill = wait_fill(broker, order_id)
@@ -439,6 +444,8 @@ def main() -> None:
                   "price": o["limit_price"], "result": result})
         # 分账记账：记到该 agent 名下（券商持仓按股票合并，账本按 agent 分开）。
         # 下单≠成交：等成交回报按真实成交价/量入账，未确认成交挂 pending 由 reconcile 兜底
+        # ⚠️ 待办（2026-09-12 审查 MEDIUM-2）：手工路径同 sell_flow——未接 settle_place_fill，
+        #    部分成交余量不跟踪、账本写不在 _file_lock 内。
         order_id = str(result.get("order_id") or "")
         fill = wait_fill(broker, order_id)
         fv = int((fill or {}).get("filled_volume") or 0)

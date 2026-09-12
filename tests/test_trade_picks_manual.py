@@ -96,8 +96,10 @@ def manual(monkeypatch, tmp_path):
     monkeypatch.setattr(P, "record_sell", _record_sell)
     monkeypatch.setattr(P, "record_buy", _record_buy)
 
-    def _add_pending(order_id, agent, code, side, volume, price, ts, protect=False):
+    def _add_pending(order_id, agent, code, side, volume, price, ts,
+                     protect=False, recorded=0):
         # 与真实 add_pending 同口径：空委托号不写假在途单（只落 untracked_order 事件）
+        # （recorded/protect 本路径用不到，保留形参以免签名漂移时静默 TypeError）
         if not order_id:
             return
         rec["pending"].append({"order_id": order_id, "agent": agent, "code": code,

@@ -109,7 +109,7 @@ INTRA_DAY_SCHEMA = (
 
 from live_prompt_context import (build_gap_note, build_trade_recap,  # noqa: E402
                              load_decision_scorecard, load_hypotheses_summary,
-                             load_review_recap, parse_intraday_decision)
+                             load_review_recap, parse_intraday_decision, sell_fraction)
 
 
 def _load_dotenv() -> None:
@@ -1048,9 +1048,12 @@ def system_prompt_for(model: str, mode: dict) -> str:
     return base + f"\n\n【本次分析配置：{mode['name']}】\n{mode['prompt']}"
 
 
-def append_log(user_content: str, content: str, sig: str, usage: dict | None = None) -> Path:
+def append_log(user_content: str, content: str, sig: str, usage: dict | None = None,
+               kind: str | None = None) -> Path:
     """写入模型对话日志(agent_data_astock/{sig}/log/{date}/log.jsonl)。
-    usage 记录本次 LLM 调用的真实 token 消耗(供前端累计统计)。"""
+    usage 记录本次 LLM 调用的真实 token 消耗(供前端累计统计)。
+    kind：特殊条目类型（如 parse_failed 解析失败留痕），前端按此渲染/过滤；
+    普通对话不写该键（与 daily_report/review 的既有写法一致）。"""
     now = now_cn()
     log_dir = ROOT / Path("data/agent_data_astock") / sig / "log" / now.strftime("%Y-%m-%d")
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1062,6 +1065,8 @@ def append_log(user_content: str, content: str, sig: str, usage: dict | None = N
             {"role": "assistant", "content": content},
         ],
     }
+    if kind:
+        entry["kind"] = kind
     if usage:
         entry["usage"] = usage
     path = log_dir / "log.jsonl"
@@ -1529,9 +1534,9 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
     """
     import time
 
-    from live_fills import add_pending, inflight_codes, wait_fill
-    from live_ledger import (agent_remaining, agent_virtual_cash, load_ledger,
-                             record_buy, record_sell, save_ledger)
+    from live_fills import (inflight_codes, note_pct_unparsed,
+                            settle_place_fill, wait_fill)
+    from live_ledger import agent_remaining, agent_virtual_cash, load_ledger
 
     # 在途单闸门：有未确认成交的同代码单，不再重复下单（口径统一在 live_fills.inflight_codes）
     pending_sell = inflight_codes("sell")
@@ -1570,10 +1575,16 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
             if avail <= 0:
                 print(f"  ⏭️ [{agent}] 卖出 {code}: T+1 不可卖（可卖量 0），跳过")
                 continue
-            raw_vol = int(avail * min(max(d["pct"], 0), 1))
+            # 脏 pct（给了值但解析不出，如 "0.3股"）≠ 没给比例：跳过并留痕，
+            # 绝不按清仓执行（2026-09-12 审查 HIGH-2；sell_fraction 兜底返 0）
+            if d.get("pct_bad_raw"):
+                print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'sell')}")
+                continue
+            frac = sell_fraction(d)   # 缺 pct → 按清仓（与 09:35 调仓同口径，2026-09-12 P0-5）
+            raw_vol = int(avail * frac)
             vol = round_sell_qty(code, raw_vol, avail)
             if vol <= 0:
-                print(f"  ⏭️ [{agent}] 卖出 {code}: 比例 {d['pct']:.0%} 无合法可卖量，跳过")
+                print(f"  ⏭️ [{agent}] 卖出 {code}: 比例 {frac:.0%} 无合法可卖量，跳过")
                 continue
             if vol != raw_vol:
                 print(f"  ⚖️ [{agent}] 卖出 {code}: 意图 {raw_vol} 股 → 手数合规实际 {vol} 股"
@@ -1582,10 +1593,20 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
                 print(f"  ⏭️ [{agent}] 卖出 {code}: 跌停（{h['day_chg']:+.2f}%），不接")
                 continue
             sells.append((code, vol, d["reason"], raw_vol))
-            print(f"  📉 [{agent}] 卖出 {code} {vol}/{avail}股 ({d['pct']:.0%}): {d['reason']}")
+            print(f"  📉 [{agent}] 卖出 {code} {vol}/{avail}股 "
+                  f"({frac:.0%}{'' if d.get('pct_given', True) else '，未给比例按清仓'}): "
+                  f"{d['reason']}")
         elif d["action"] == "buy":
             if code in pending_buy:
                 print(f"  ⏭️ [{agent}] 买入 {code}: 已有在途买单未确认，跳过")
+                continue
+            if d.get("pct_bad_raw"):
+                print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'buy')}")
+                continue
+            if d["pct"] <= 0:
+                why = ("明说 pct=0" if d.get("pct_given", True)
+                       else "未表达买入比例（pct）")
+                print(f"  ⏭️ [{agent}] 买入 {code}: {why}，跳过（买入必须有明确比例）")
                 continue
             bd = check_buy(code, d["pct"], bool(h), new_buys, opened_today, gate,
                            name=(h or {}).get("name") or (names or {}).get(code))
@@ -1642,34 +1663,34 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
             print("  " + ack_line(f"[{agent}] 卖出 {code}", result))
             fill = wait_fill(broker, result.get("order_id", ""),
                              timeout_s=FILL_POLL_TIMEOUT_S)
-            if fill and int(fill.get("filled_volume") or 0) > 0:
-                fv = int(fill["filled_volume"])
-                fp = float(fill.get("filled_price") or limit)
-                ledger = load_ledger()
-                cost_p = float((((ledger.get("agents") or {}).get(agent) or {})
-                                .get("positions") or {}).get(code, {}).get("cost_price") or 0)
-                ledger = record_sell(ledger, agent, code, fv, fp,
-                                     now_cn().isoformat())
-                save_ledger(ledger)
+            # 记账 + 余量跟踪统一收口（2026-09-12 P0-4，与 09:35 调仓同口径）：
+            # 部分成交剩余的量挂 pending 继续跟踪，不再「记完已成交的就走」→
+            # 余下成交不在 pending → reconcile 永远补不到 = 账外成交
+            rec = settle_place_fill(result.get("order_id"), agent, code, "sell",
+                                    vol, limit, fill)
+            if rec["filled"] > 0:
                 from live_trade_picks import log_line
 
                 log_line({"ts": now_cn().isoformat(), "mode": "execute_intraday",
                           "agent": agent, "code": code, "side": "sell",
-                          "volume": fv, "price": fp, "cost_price": cost_p,
+                          "volume": rec["filled"], "price": rec["price"],
+                          "cost_price": rec["cost_price"],
+                          "remaining": rec["remaining"],
                           "intent_volume": raw_vol,
-                          "fill": {"order_id": fill.get("order_id"),
-                                   "filled_price": fp, "filled_volume": fv}})
-                executed.append({"action": "sell", "code": code, "volume": fv,
-                                 "price": fp, "reason": reason})
-            else:
-                # 未确认成交：挂 pending，由 reconcile 兜底（≤1 分钟）
-                add_pending(result.get("order_id"), agent, code, "sell", vol,
-                            limit, now_cn().isoformat())
+                          "fill": {"order_id": (fill or {}).get("order_id"),
+                                   "filled_price": rec["price"],
+                                   "filled_volume": rec["filled"]}})
+                executed.append({"action": "sell", "code": code, "volume": rec["filled"],
+                                 "price": rec["price"], "reason": reason})
+            if rec["pending"] or rec["untracked"]:
+                pending_sell.add(code)   # 同轮重复决策同一代码时不再下第二单
+                # （untracked：桥没回委托号 → 这笔单 reconcile 追不了，更要挡住重复下单）
                 from live_trade_picks import log_line
 
                 log_line({"ts": now_cn().isoformat(), "mode": "execute_intraday",
                           "agent": agent, "code": code, "side": "sell",
-                          "volume": vol, "price": limit, "pending": True,
+                          "volume": vol, "price": limit,
+                          "pending": rec["pending"], "untracked": rec["untracked"],
                           "intent_volume": raw_vol,
                           "result": result})
         except Exception as exc:  # noqa: BLE001
@@ -1723,31 +1744,32 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
                                   f"限价 ¥{o['limit_price']:.2f}", result))
             fill = wait_fill(broker, result.get("order_id", ""),
                              timeout_s=FILL_POLL_TIMEOUT_S)
-            if fill and int(fill.get("filled_volume") or 0) > 0:
-                fv = int(fill["filled_volume"])
-                fp = float(fill.get("filled_price") or o["price"])
-                ledger = record_buy(load_ledger(), agent, code, fv, fp,
-                                    now_cn().isoformat())
-                save_ledger(ledger)
+            # 与卖出同口径（2026-09-12 P0-4）：部分成交余量挂 pending 跟踪，
+            # 不重复记账（recorded=已记账量）
+            rec = settle_place_fill(result.get("order_id"), agent, code, "buy",
+                                    o["volume"], o["price"], fill)
+            if rec["filled"] > 0:
                 from live_trade_picks import log_line
 
                 log_line({"ts": now_cn().isoformat(), "mode": "execute_intraday",
                           "agent": agent, "code": code, "side": "buy",
-                          "volume": fv, "price": fp,
-                          "fill": {"order_id": fill.get("order_id"),
-                                   "filled_price": fp, "filled_volume": fv}})
-                executed.append({"action": "buy", "code": code, "volume": fv,
-                                 "price": fp, "reason": reason})
-            else:
-                # 未确认成交：挂 pending，由 reconcile 兜底（≤1 分钟）
-                add_pending(result.get("order_id"), agent, code, "buy",
-                            o["volume"], o["price"], now_cn().isoformat())
+                          "volume": rec["filled"], "price": rec["price"],
+                          "remaining": rec["remaining"],
+                          "fill": {"order_id": (fill or {}).get("order_id"),
+                                   "filled_price": rec["price"],
+                                   "filled_volume": rec["filled"]}})
+                executed.append({"action": "buy", "code": code, "volume": rec["filled"],
+                                 "price": rec["price"], "reason": reason})
+            if rec["pending"] or rec["untracked"]:
+                pending_buy.add(code)    # 同轮重复决策同一代码时不再下第二单
+                # （untracked：桥没回委托号 → 这笔单 reconcile 追不了，更要挡住重复下单）
                 from live_trade_picks import log_line
 
                 log_line({"ts": now_cn().isoformat(), "mode": "execute_intraday",
                           "agent": agent, "code": code, "side": "buy",
                           "volume": o["volume"], "price": o["price"],
-                          "pending": True, "result": result})
+                          "pending": rec["pending"], "untracked": rec["untracked"],
+                          "result": result})
         except Exception as exc:  # noqa: BLE001
             print(f"  ❌ [{agent}] 买入 {code} 失败: {exc}")
             from live_ledger import defer_on_exc
@@ -1761,6 +1783,26 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
                       "code": code, "error": str(exc)})
         time.sleep(1)
     return executed
+
+
+def planned_sell_values(decisions: list, holdings: list) -> dict:
+    """模型已主动计划卖出的市值 {code: 市值}（2026-09-12 审查 HIGH-1 抽函数）。
+
+    口径必须与执行段（execute_intraday_decision 的 sell_fraction）**完全一致**：
+    缺 pct 按清仓——旧口径在这种决策上记 0，而执行段会真卖 100%，compute_forced_trims
+    据此少扣 → 对同一持仓（或其他持仓）再砍一刀 = 「模型清仓 + 系统强减」双卖
+    （14:00 事故形态）；脏 pct 记 0——该决策执行段会跳过留痕，不能算已计划卖出。
+    """
+    planned: dict = {}
+    for d in decisions:
+        if d.get("action") != "sell":
+            continue
+        h = next((x for x in holdings if x["code"] == d["code"]), None)
+        if not h or h["avail"] <= 0:
+            continue
+        vol = round_sell_qty(h["code"], int(h["avail"] * sell_fraction(d)), h["avail"])
+        planned[h["code"]] = planned.get(h["code"], 0) + h["price"] * vol
+    return planned
 
 
 def compute_forced_trims(holdings: list, virtual_cash: float,
@@ -2061,18 +2103,9 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
             exec_list = [d for d in decisions if d["action"] in ("sell", "buy")]
             # 杠杆硬约束：超限强制减仓（走同一套卖出闸门，不依赖模型自觉）
             if my_rows:
-                # 模型已主动计划卖的市值（按卖出闸门同口径：avail×pct 取整到手）
-                planned: dict = {}
-                for d in decisions:
-                    if d["action"] != "sell":
-                        continue
-                    h = next((x for x in my_holdings if x["code"] == d["code"]), None)
-                    if not h or h["avail"] <= 0:
-                        continue
-                    vol = round_sell_qty(h["code"],
-                                         int(h["avail"] * min(max(d["pct"], 0), 1)),
-                                         h["avail"])
-                    planned[h["code"]] = planned.get(h["code"], 0) + h["price"] * vol
+                # 模型已主动计划卖的市值：口径抽到 planned_sell_values（与执行段
+                # sell_fraction 单点对齐——缺 pct 按清仓，否则强减多砍一刀 = 双卖）
+                planned = planned_sell_values(decisions, my_holdings)
                 forced = compute_forced_trims(my_holdings, virtual_cash, planned)
                 if forced:
                     print(f"[{now:%F %T}] ⚠️ [{agent}] 杠杆超限，强制减仓 {len(forced)} 笔"

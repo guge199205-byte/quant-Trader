@@ -1057,7 +1057,12 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
             rules[agent] = kept
         else:
             rules.pop(agent, None)
-    flush_watch(snapshot, rules)
+    # dry-run（含执行开关关闭的自动降级）**不回写条件位文件**：本轮没有消费/丢弃，
+    # 文件原样即「规则保留」；而 _fix_rule_direction / move_stop 的在内存改写若落盘，
+    # 就成了「试运行改了状态」（且护栏依据的是当时那条行情，桥抖动时不该被固化）。
+    # 告警面（exec_disabled / account_degenerate 事件）是既定的有意例外，不在此列。
+    if not dry_run:
+        flush_watch(snapshot, rules)
     return counts
 
 

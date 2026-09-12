@@ -123,20 +123,24 @@ def test_run_watch_keeps_rule_when_exec_switch_off(sentinel, monkeypatch):
 
     assert _total(fired) == 0
     assert sentinel["sell"] == []
-    kept = sentinel["saved"][-1]["agentA"]
-    assert [r["code"] for r in kept] == ["600362.SH"]  # 保留 → 下一分钟继续守
+    assert sentinel["saved"] == []          # 不消费 = 不回写：文件原样，规则下一分钟还在
     events = json.loads(sentinel["events"].read_text(encoding="utf-8"))
     assert any(k.startswith("exec_disabled:600362.SH") for k in events)
 
 
 def test_run_watch_dry_run_flag_keeps_rule(sentinel):
-    """显式 --dry-run（手工试运行）同样不消费条件位——试运行不该改状态，也不告警。"""
+    """显式 --dry-run（手工试运行）同不消费条件位、**不回写文件**，也不告警。
+
+    「保留」的机制就是「不写」（2026-09-12）：dry-run 下无人消费/丢弃规则，文件原样
+    即规则原样；此前仍走 flush_watch，会把方向护栏/move_stop 的在内存改写落盘——
+    试运行不该改状态。
+    """
     fired = W.run_watch(_FakeBroker(), dry_run=True,
                         now=datetime(2026, 9, 11, 10, 0, 0, tzinfo=CN))
 
     assert _total(fired) == 0
     assert sentinel["sell"] == []
-    assert [r["code"] for r in sentinel["saved"][-1]["agentA"]] == ["600362.SH"]
+    assert sentinel["saved"] == []
     assert not sentinel["events"].exists()   # 手工试运行不写委托事件（避免误告警）
 
 

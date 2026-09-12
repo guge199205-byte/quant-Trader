@@ -211,3 +211,26 @@ def test_production_watch_file_is_still_parseable():
         assert agent and isinstance(rules, list)
         for r in rules:
             assert isinstance(r, dict) and str(r.get("code") or "")
+
+
+@pytest.mark.parametrize("switch_on", [True, False], ids=["--dry-run", "执行开关关闭"])
+def test_dry_run_does_not_rewrite_watch_file(legacy, monkeypatch, switch_on):
+    """dry-run / 执行开关关闭（自动降级 dry-run）**不得回写条件位文件**。
+
+    计划书原则「dry-run 路径不得改动任何持久状态」；本轮演练里 001312 的两条 17.05
+    会被方向护栏在内存里翻成止盈（`_fix_rule_direction` 就地改写）、move_stop 也会
+    在内存推进——若照常 flush，这些改写会落盘，与「试运行」承诺不符（且护栏是基于
+    当时那条行情判断的，快照/桥抖动时不该被试运行固化）。
+    规则保留 ≠ 必须回写：dry-run 下无人消费/丢弃规则，文件原样即保留。
+    """
+    import live_hourly_analysis
+
+    if not switch_on:
+        monkeypatch.setattr(live_hourly_analysis, "intraday_exec_enabled", lambda: False)
+
+    before = legacy.path.read_bytes()
+    counts = W.run_watch(legacy.broker, dry_run=switch_on, now=NOW)
+
+    assert counts == ZERO and legacy.broker.sold == []
+    assert legacy.path.read_bytes() == before          # 逐字节不变（含结尾换行）
+    assert sum(len(v) for v in legacy.rules().values()) == 7

@@ -54,6 +54,9 @@ TRIGGER_SECTOR_PP = 3.0     # 持仓所属板块涨跌较上次分析变化 ≥3
 TRIGGER_SECTOR_ABS = 5.0    # 或板块绝对涨跌 ≥5%（强势/弱势确认）
 TRIGGER_INOUT_DELTA = 0.3   # 持仓内外盘失衡较上次分析变化 ≥0.3（-1..1 尺度）→ 唤醒
 TRIGGER_NEWS_IMPACT = 1.0   # 新闻管线持仓信号新出现 |impact|≥1 → 唤醒
+DAILY_ROUND_LIMIT = 20      # 每日分析预算（P1-2）: 轮/日/agent —— 超过后仅**唤醒触发轮**
+                            # 跳过（整点/尾盘/补跑/手动不受限），是节流/冷却再失效时的
+                            # 硬兜底（2026-09-11 一天跑出 78 轮完整分析、约 215 万 tokens）
 
 # ---- 锁仓降频（2026-09-08）：持仓全部 T+1 锁定且资金不足以建仓 → 整点轮跳过该 agent。
 # 唤醒机制（波动/板块/L2/新闻）与尾盘轮不走此闸门，兜底不漏事；默认保守（宁多跑）。
@@ -589,13 +592,21 @@ def build_user_content(rows: list, asset: float, cash: float, agent: str,
         _led_pos = (load_ledger().get("agents") or {}).get(agent, {}).get("positions") or {}
     except Exception:  # noqa: BLE001
         _led_pos = {}
-    for r in rows:
+    # 展示副本换账本成本口径（2026-09-12 P1-1）：上面 rows 本体仍是桥口径，还被
+    # 波动触发基线/compute_forced_trims/执行路径 holdings 消费——这里只改喂 LLM 的
+    # 这一份；账本无该票 → 桥值 + `*` 标注（glm 曾把桥混合成本的 −2.8% 讲成 +83%）
+    from live_prompt_context import LEDGER_COST_NOTE, ledger_cost_rows
+
+    for r in ledger_cost_rows(rows, _led_pos):
         day = f"{r['day_chg']:+.2f}" if r["day_chg"] is not None else "—"
+        mark = "" if r["cost_src"] == "ledger" else "*"
         lines.append(
-            f"| {r['name']} | {r['code']} | {r['price']} | {r['cost']} | {r['volume']} "
+            f"| {r['name']} | {r['code']} | {r['price']} | {r['cost']}{mark} | {r['volume']} "
             f"| ¥{r['price'] * r['volume']:,.0f} | ¥{r['pnl']:+,.0f} | {r['pnl_pct']:+.2f}% | {day} | {r['avail']} | {_holding_txt(_led_pos.get(r['code']))} |"
         )
     lines += [
+        "",
+        LEDGER_COST_NOTE,
         "",
         "⚠️ T+1 规则：**可卖量为 0 的持仓 = 今日买入，今天不能卖出**；"
         "可卖量 = 总数量 的持仓是昨天或更早买入，可正常卖出。"
@@ -1220,6 +1231,47 @@ def update_state(updates: dict | None = None, mutate=None) -> dict:
             print(f"[{now_cn():%F %T}] 波动基线写入失败: {exc}")
             return cur
         return new
+
+
+# ---------- 每日分析预算（P1-2，2026-09-12） ----------
+# 阈值 DAILY_ROUND_LIMIT 见文件头常量区（与 MIN_ANALYSIS_INTERVAL_MIN 同区）
+
+
+def is_wakeup_reason(reason: str) -> bool:
+    """唤醒触发轮判据：波动/板块联动/L2 资金流/新闻持仓信号统一从 check_volatility
+    出来、走「波动触发: …」前缀（见 main 里的唯一调用点）；整点/补跑/手动不是。"""
+    return str(reason).startswith("波动触发")
+
+
+def rounds_today_of(state: dict, agent: str, today: str) -> int:
+    """该 agent 当日已跑轮次。日期不是今天 → 0（不清理旧值，读到即视为过期）。"""
+    if (state.get("rounds_date") or {}).get(agent) != today:
+        return 0
+    try:
+        return int((state.get("rounds_today") or {}).get(agent) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def bump_round_counter(agent: str, today: str) -> int:
+    """当日轮次 +1（跨日归零），返回**写后**读数（锁超时/写失败 → 实际未加，
+    返回旧值，不撒谎）。走 update_state 的锁内读-改-写：采样进程/同轮其他 agent
+    并发写状态时不会把计数抹掉（2026-09-11 的教训）。"""
+    def _mut(cur: dict) -> dict:
+        n = rounds_today_of(cur, agent, today) + 1
+        return {**cur,
+                "rounds_date": {**(cur.get("rounds_date") or {}), agent: today},
+                "rounds_today": {**(cur.get("rounds_today") or {}), agent: n}}
+
+    return rounds_today_of(update_state(mutate=_mut), agent, today)
+
+
+def wakeup_over_budget(state: dict, agent: str, today: str, reason: str) -> bool:
+    """该 agent 的唤醒触发轮是否超出当日预算。**只拦唤醒触发轮**——整点/尾盘/
+    断线补跑/手动照跑（这是 09-11「78 轮完整分析」事故的硬兜底，不是日常节流；
+    节流本身由 last_ts/last_trigger 的 20 分钟/60 分钟冷却负责）。"""
+    return (is_wakeup_reason(reason)
+            and rounds_today_of(state, agent, today) >= DAILY_ROUND_LIMIT)
 
 
 # ---------- 断线恢复判据辅助（2026-09-07 加固，纯函数便于单测） ----------
@@ -1865,6 +1917,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
     gap_window=(start,end ISO)：断线恢复补跑时注入【断线窗口提示】——
     模型需知分析覆盖了数据中断窗口，窗口轨迹可回放/明说缺失。"""
     now = now_cn()
+    today = now.strftime("%Y-%m-%d")   # 每日分析预算（P1-2）的跨日键
     gap_start_iso, gap_end_iso = (gap_window or (None, None))
     # 先补记在途成交（下单≠成交，按真实成交价/量入账，≤1 分钟延迟兜底）
     from live_fills import reconcile
@@ -1939,6 +1992,28 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
             print(f"[{now:%F %T}] {agent} 🔒 持仓全部 T+1 锁定且可用资金不足建仓 → 本轮跳过"
                   f"（波动/板块/L2/新闻唤醒与尾盘轮仍在线）")
             continue
+        # 每日分析预算（P1-2，2026-09-12）：节流/冷却万一再失效（09-11 一天 78 轮、
+        # 约 215 万 tokens）时的硬兜底。计数含所有轮次，但**只拦唤醒触发轮**——
+        # 整点/尾盘/断线补跑/手动照跑，兜底不漏事。
+        # 位置在 agent 块**最前**（池加载、pool_sig 记忆写入之前）：被跳过的轮次
+        # 必须完全无副作用——否则空仓 agent 的「池已注入」标记会先于实际注入落盘，
+        # 下一轮把首次注入错判成重复注入（紧凑摘要）。
+        # dry-run 同样计数：与 last_ts/last_reason（:2230）同口径——dry-run 只是
+        # 不下单，LLM 开销真实发生；交易状态（账本/条件位/委托）不受影响。
+        st_budget = load_state()
+        if wakeup_over_budget(st_budget, agent, today, reason):
+            from live_fills import record_event
+
+            n_rounds = rounds_today_of(st_budget, agent, today)
+            print(f"[{now:%F %T}] 🧮 {agent} 当日已完成 {n_rounds} 轮"
+                  f"（预算 {DAILY_ROUND_LIMIT}），跳过本轮唤醒触发：{reason}"
+                  f"（整点/尾盘/补跑/手动不受限）")
+            record_event("round_budget_skip", "",
+                         f"{agent} 当日轮次 {n_rounds} 超预算 {DAILY_ROUND_LIMIT}，"
+                         f"唤醒触发轮跳过（{reason}）",
+                         key=f"round_budget_skip:{agent}:{today}", alert=True)
+            continue
+        bump_round_counter(agent, today)
         if not pool_loaded:  # 候选池：持仓 agent 也要（新开仓/换仓 + 注入池内实时价）
             from live_llm_trade import load_pool
 
@@ -1972,7 +2047,6 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
             # 前 8 行 + 全名单；llm 无状态模式/池变化/当日首次 → 全表（保守可逆）
             st = load_state()
             pool_sig = ",".join(str(p.get("code") or "") for p in pool_agent)
-            today = now.strftime("%Y-%m-%d")
             seen_sigs = st.get("last_pool_sig") or {}
             seen_days = st.get("last_pool_sig_day") or {}
             pool_compact = (agent_mode_for(agent) == "dsh"
@@ -2013,7 +2087,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
         agent_exec_done = False  # 每 agent 每小时只执行一轮（多模式多轮会叠加买入突破分账额度）
         hyp_lines = load_hypotheses_summary()
         sc_lines = load_decision_scorecard(agent)  # 决策远期记分卡（自我纠正回路）
-    # 盘面状态（系统确定性注入，模型不可争辩；5 分钟缓存）
+        # 盘面状态（系统确定性注入，模型不可争辩；5 分钟缓存）
         try:
             from market_state import build_market_state
 

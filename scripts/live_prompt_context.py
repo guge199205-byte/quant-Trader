@@ -241,7 +241,54 @@ def sell_fraction(d: dict) -> float:
     return min(max(v, 0.0), 1.0)
 
 
+LEDGER_COST_NOTE = (
+    "口径说明：**成本列 = 你名下分账账本**（你自己的加权平均买入成本，加仓加权、"
+    "减仓不动余仓成本），该列盈亏/% 均按此成本计算；数量与可卖量 = 桥账户实时口径，"
+    "执行（可卖量/手数）一律以桥为准。两本账在成交回报到账前可能短暂不一致"
+    "（账本数量滞后于桥），属正常对账窗口。成本列带 `*` = 账本暂无该票记录、"
+    "暂用券商账户混合成本（可能含历史仓位，仅供参照，勿据此算盈亏）。")
 
+
+def ledger_cost_rows(rows: list[dict], positions: dict) -> list[dict]:
+    """持仓行 → 提示词展示副本：成本/浮盈改**分账账本**口径（2026-09-12 P1-1）。
+
+    背景：桥 account 的 cost_price 是券商**共享账户混合成本**（历史仓位、别的来源
+    都算在同一个账户里），照抄给 LLM 会把口径差当成盈亏——glm 曾把实际浮亏 −2.8%
+    讲成 +83% 并据此决策。账本成本是本策略自己的加权平均买入价（live_ledger.
+    record_buy/record_sell），才是"我这笔仓位赚没赚"的正确基准。
+
+    边界（计划书 P1-1）：
+    - **只改展示**：返回新 dict，绝不改入参行——`build_rows` 的 `pnl_pct` 还被波动
+      触发基线、`compute_forced_trims`、执行路径 holdings 消费，交易判定一律不动。
+    - 账本无该票（或 cost_price ≤0 的脏记录）→ 回退桥值，`cost_src="bridge"`，
+      渲染端标 `*`（见 LEDGER_COST_NOTE）。
+    - 数量/可卖量仍用桥值；`pnl`（行里若有此键）按「账本成本 × 桥数量」重算，
+      与口径说明句一致。
+
+    positions = {code: {"volume","cost_price",...}}（live_ledger 的 agent positions）。
+    类型坏值（positions 非 dict、cost_price 非数）一律走回退分支，不许炸穿提示词。
+    """
+    if not isinstance(positions, dict):
+        positions = {}
+    out = []
+    for r in rows:
+        row = dict(r)
+        pos = positions.get(r.get("code"))
+        try:
+            lc = float((pos or {}).get("cost_price") or 0)
+        except (TypeError, ValueError, AttributeError):
+            lc = 0.0
+        if lc > 0:
+            price = float(row.get("price") or 0)
+            row["cost"] = round(lc, 2)
+            if "pnl" in row:
+                row["pnl"] = round((price - lc) * float(row.get("volume") or 0), 2)
+            row["pnl_pct"] = round((price - lc) / lc * 100, 2)
+            row["cost_src"] = "ledger"
+        else:
+            row["cost_src"] = "bridge"      # 保持桥值原样，仅标注来源
+        out.append(row)
+    return out
 
 
 def _fresh_price(rec, now, max_age_min: int) -> tuple[float | None, float | None, bool]:

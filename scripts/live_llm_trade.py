@@ -233,16 +233,23 @@ def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
         f"管理 ¥{AGENT_QUOTA:,.0f} 虚拟额度（已用 ¥{agent_used(load_ledger(), agent):,.0f}，"
         f"剩余 ¥{quota_remaining:,.0f}）。",
         "",
-        "【你名下的现有持仓】（成本/现价/盈亏%/可卖量，可卖量 0 = 今日买入 T+1 不可卖）：",
+        "【你名下的现有持仓】（成本=你名下分账账本口径；现价/盈亏%/可卖量 = 桥账户"
+        "实时口径，可卖量 0 = 今日买入 T+1 不可卖）：",
         "",
         "| 代码 | 名称 | 数量 | 成本 | 现价 | 盈亏% | 今日涨跌% | 可卖量 |",
         "|------|------|------|------|------|-------|-----------|--------|",
     ]
-    for h in holdings:
+    # 展示副本换账本成本口径（2026-09-12 P1-1）：holding_rows 本体仍是桥口径（执行
+    # 路径消费它），这里只改喂 LLM 的这一份；账本无该票 → 桥值 + `*` 标注
+    from live_prompt_context import LEDGER_COST_NOTE, ledger_cost_rows
+
+    _led_pos = (load_ledger().get("agents") or {}).get(agent, {}).get("positions") or {}
+    for h in ledger_cost_rows(holdings, _led_pos):
+        mark = "" if h["cost_src"] == "ledger" else "*"
         lines.append(
-            f"| {h['code']} | {h['name']} | {h['volume']} | {h['cost']} | {h['price']} "
+            f"| {h['code']} | {h['name']} | {h['volume']} | {h['cost']}{mark} | {h['price']} "
             f"| {h['pnl_pct']:+.2f}% | {h['day_chg']:+.2f}% | {h['avail']} |")
-    lines += ["", "【今日大盘方向】（最新研究产出）：",
+    lines += ["", LEDGER_COST_NOTE, "", "【今日大盘方向】（最新研究产出）：",
               f"{direction.get('direction', '—')}"
               f"{'（总分 ' + str(direction.get('total_score')) + '/11）' if direction.get('total_score') is not None else ''}",
               ""]

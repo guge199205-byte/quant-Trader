@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
 import { AgentTokenUsage, MarketId, marketMeta } from '../api/client';
+import { displayAgentName } from '../utils/agents';
 import { fmtMoney, fmtPct, pnlClass } from '../utils/format';
 
 /** token 缩写: 11871 → 11.9k, 1234567 → 1.23M */
@@ -24,9 +25,12 @@ export const MODEL_COLORS: Record<string, string> = {
 
 export const modelColor = (name: string): string => MODEL_COLORS[name] ?? '#5a5a5a';
 
-/** 模型名 → 短标签（终端显示） */
+/** 模型名 → 短标签（终端显示）。
+ *  agent 展示名先过 displayAgentName（展示层唯一入口）：模型卡 / 配置面板 / 成交
+ *  事件 feed 都走本函数，market-research 若直接 toUpperCase 会裸露 "MARKET-RESEARCH"
+ *  （2026-09-12 审查 LOW）。模型名经该映射原样返回，行为不变。 */
 export const shortName = (name: string): string =>
-  name
+  displayAgentName(name)
     .replace('deepseek-v4', 'DS V4')
     .replace('deepseek', 'DS')
     .toUpperCase();

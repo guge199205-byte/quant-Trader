@@ -8,7 +8,9 @@
 口径（有意为止损面最小的设计）：
   - 只提醒，**不改行为**：过期照样返回档位（fail-open 维持，不阻断交易路径）；
   - 应定档日 = 今天（交易日）否则最近一个交易日（周末/假期沿用上一交易日档位）；
-  - 文件缺失/损坏保持既有语义（返回 {}，由调用方各自默认），不在本次告警面内。
+  - 文件缺失/损坏/结构异常同样返回 {}（由调用方各自默认），**但同样要告警**
+    （2026-09-12 审查 LOW）：读不到档位 = 当天按调用方硬编码默认跑（1.5/20%，
+    比预算档松），这正是「静默半失效」；旧实现只在 return {} 之前漏掉告警调用。
 
 运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_risk_budget_freshness.py -q
 """
@@ -98,7 +100,7 @@ def test_stale_budget_alerts_but_still_returns_limits(env, monkeypatch, capsys):
 
     assert lim == BUDGET                                   # fail-open：不阻断
     out = capsys.readouterr().out
-    assert "风险预算过期" in out
+    assert "风险预算异常" in out
     hits = _stale_events(env / "events.json")
     assert len(hits) == 1
     assert hits[0]["alert"] is True                        # 必须上告警面
@@ -126,9 +128,79 @@ def test_missing_date_field_alerts(env, monkeypatch):
     assert len(hits) == 1 and hits[0]["alert"] is True
 
 
-def test_missing_file_keeps_old_semantics(env, monkeypatch):
-    """文件缺失维持 {} 语义（调用方各自默认），不在本次告警面内。"""
+def test_missing_file_keeps_empty_semantics_but_alerts(env, monkeypatch):
+    """文件缺失维持 {} 语义（调用方各自默认），但必须留痕——读不到档位 =
+    当天按调用方默认档跑（可能比预算档松），不能再无声（2026-09-12 审查 LOW）。"""
     _freeze(monkeypatch, WED)
 
     assert R.load_limits(env / "absent.json") == {}
-    assert _stale_events(env / "events.json") == []
+    hits = _stale_events(env / "events.json")
+    assert len(hits) == 1 and hits[0]["alert"] is True
+    assert "不存在" in hits[0]["msg"] or "不可读" in hits[0]["msg"]
+
+
+def test_corrupt_file_alerts_instead_of_silent_default(env, monkeypatch):
+    """写坏/写空（磁盘满、进程被杀）→ 解析失败同样要上告警面。
+
+    旧实现在 `except (OSError, ValueError): return {}` 里直接返回，`_warn_if_stale`
+    永不执行——P2 想消除的「定档链路静默故障」恰恰漏了这一形态。"""
+    _freeze(monkeypatch, WED)
+    p = env / "budget.json"
+
+    for bad in ("", "{不是 JSON", '{"date":'):     # 空文件 / 垃圾 / 截断
+        p.write_text(bad, encoding="utf-8")
+        assert R.load_limits(p) == {}
+
+    hits = _stale_events(env / "events.json")
+    assert len(hits) == 1 and hits[0]["alert"] is True      # 同日一条（覆盖语义）
+    assert "JSON" in hits[0]["msg"]
+
+
+def test_non_dict_doc_does_not_raise_and_alerts(env, monkeypatch):
+    """顶层非 dict（JSON 数组/数字/字符串）→ 不许抛 AttributeError。
+
+    旧实现 `doc.get("budget")` 在 isinstance 兜底（现 298 行）**之前**执行，非 dict
+    直接抛异常，被两个调用点的 `except Exception` 静默吞掉 → 无告警、按松默认跑，
+    兜底那行成了死代码。"""
+    _freeze(monkeypatch, WED)
+
+    for bad in ([1, 2], 5, "oops"):                # 都是合法 JSON、都不是 dict
+        p = env / "budget.json"
+        p.write_text(json.dumps(bad), encoding="utf-8")
+        assert R.load_limits(p) == {}
+
+    hits = _stale_events(env / "events.json")
+    assert len(hits) == 1 and hits[0]["alert"] is True
+    assert "结构异常" in hits[0]["msg"]
+
+
+def test_non_dict_budget_field_alerts(env, monkeypatch):
+    """doc 是 dict 但 budget 字段是 truthy 非 dict（`[1]`/`"x"`）→ 同样读不出档位，
+    同样要看见（否则 `lv.get` 又是一次被吞掉的 AttributeError）。"""
+    _freeze(monkeypatch, WED)
+    p = _write(env / "budget.json", {"date": WED.isoformat(), "budget": [1]})
+
+    assert R.load_limits(p) == {}
+    assert len(_stale_events(env / "events.json")) == 1
+
+
+def test_missing_budget_field_alerts_even_with_fresh_date(env, monkeypatch):
+    """日期新鲜但没有 budget 字段：结构性故障优先于日期判据被报出来
+    （定档写入侧永远产出四个键，缺失即故障）。"""
+    _freeze(monkeypatch, WED)
+    p = _write(env / "budget.json", {"date": WED.isoformat(), "level": "calm"})
+
+    assert R.load_limits(p) == {}
+    hits = _stale_events(env / "events.json")
+    assert len(hits) == 1 and hits[0]["alert"] is True and "budget" in hits[0]["msg"]
+
+
+def test_empty_budget_object_alerts(env, monkeypatch):
+    """budget 是空对象（写入侧 bug 形态）→ 一个档位都取不到，与缺失同罪：
+    返回 {} 却无声 = 当天按调用方默认档跑。"""
+    _freeze(monkeypatch, WED)
+    p = _write(env / "budget.json", {"date": WED.isoformat(), "budget": {}})
+
+    assert R.load_limits(p) == {}
+    hits = _stale_events(env / "events.json")
+    assert len(hits) == 1 and "可用" in hits[0]["msg"]

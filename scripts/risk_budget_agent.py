@@ -253,21 +253,21 @@ def budget_stale_reason(doc: dict, today: date) -> str:
             "——定档 cron 或数据源可能故障，当天沿用旧档位")
 
 
-def _warn_if_stale(doc: dict, path: Path) -> None:
-    """过期只提醒不改行为（P2，2026-09-12）：fail-open 维持——风控读不到新鲜档位
-    也不阻断交易路径，但必须让人看见「今天用的是旧档位」。定档链路静默故障时，
-    档位偏松 = 风控半失效，此前没有任何暴露面。同日一条事件（record_event 覆盖）。"""
-    reason = budget_stale_reason(doc, _bj_now().date())
+def _warn_budget_issue(reason: str, path: Path) -> None:
+    """档位不可用/过期只提醒不改行为（P2，2026-09-12）：fail-open 维持——风控读不到
+    新鲜档位也不阻断交易路径，但必须让人看见「今天用的是旧档位 / 调用方默认档」。
+    定档链路静默故障时，档位偏松 = 风控半失效，此前没有任何暴露面。
+    同日一条事件（record_event 覆盖语义），kind 沿用 risk_budget_stale。"""
     if not reason:
         return
-    print(f"⚠️ 风险预算过期：{reason}｜仍按现档位 fail-open（不阻断），请检查 {path}")
+    print(f"⚠️ 风险预算异常：{reason}｜不阻断交易路径（fail-open），请检查 {path}")
     try:
         from live_fills import record_event  # 局部导入：本模块也要能脱离实盘栈单跑
 
         record_event("risk_budget_stale", "",
-                     f"风险预算过期：{reason}（照常 fail-open，不阻断）")
+                     f"风险预算异常：{reason}（照常 fail-open，不阻断）")
     except Exception as exc:  # noqa: BLE001 事件面故障不许反过来打断风控读取
-        print(f"  ⚠️ 风险预算过期事件落盘失败（{str(exc)[:80]}）")
+        print(f"  ⚠️ 风险预算事件落盘失败（{str(exc)[:80]}）")
 
 
 def load_limits(path: Path | None = None) -> dict:
@@ -276,16 +276,39 @@ def load_limits(path: Path | None = None) -> dict:
     2026-09-08 前的漏洞：只有 live_hourly_analysis 读这份预算，09:35 主入口
     （live_llm_trade）硬编码 1.5/20% 且没有新开仓上限——预算定档"防守"时
     主入口仍按宽松档下单，风险预算只兑现了一半。统一从本函数取。
-    文件缺失/损坏 → {}（调用方保持各自默认，不阻断）。
-    档位过期（定档链路静默故障）→ 只打印 + 事件提醒，**不改返回行为**（见
-    `_warn_if_stale`，2026-09-12 P2）。
+    文件缺失/损坏/结构异常 → {}（调用方保持各自默认，不阻断），**且一律留痕**
+    （2026-09-12 审查 LOW：旧实现在解析失败分支直接 `return {}`，告警调用永不执行；
+    `doc.get` 又先于 isinstance 兜底，非 dict 直接抛异常被调用点静默吞掉——
+    「定档链路静默故障」当时只覆盖了日期过期一种形态。读不到档位 = 当天按调用方
+    硬编码默认跑（1.5/20%，比预算档松），同样必须让人看见）。
+    档位过期（定档链路静默故障）→ 只打印 + 事件提醒，**不改返回行为**。
     """
     p = path or OUT
     try:
-        doc = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        raw = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        _warn_budget_issue(
+            f"档位文件不存在或不可读（{exc.__class__.__name__}: {str(exc)[:80]}）"
+            "——当天按调用方默认档运行，可能比预算档松", p)
         return {}
-    lv = doc.get("budget") or {}
+    try:
+        doc = json.loads(raw)
+    except ValueError as exc:
+        _warn_budget_issue(
+            f"档位文件不是合法 JSON（{str(exc)[:80]}）"
+            "——当天按调用方默认档运行，可能比预算档松", p)
+        return {}
+    if not isinstance(doc, dict):
+        _warn_budget_issue(
+            f"档位文件结构异常（顶层是 {type(doc).__name__}）"
+            "——当天按调用方默认档运行，可能比预算档松", p)
+        return {}
+    problem = ""
+    lv = doc.get("budget")
+    if not isinstance(lv, dict):
+        problem = (f"档位文件的 budget 字段缺失或结构异常（{type(lv).__name__}）"
+                   "——当天按调用方默认档运行，可能比预算档松")
+        lv = {}
     out: dict = {}
     for k in LIMIT_KEYS:
         v = lv.get(k)
@@ -295,7 +318,10 @@ def load_limits(path: Path | None = None) -> dict:
             out[k] = int(v) if k == "max_new_buys" else float(v)
         except (TypeError, ValueError):
             continue
-    _warn_if_stale(doc if isinstance(doc, dict) else {}, p)
+    if not problem and not out:
+        problem = ("档位文件没有任何可用的档位字段（budget 为空或字段均不可解析）"
+                   "——当天按调用方默认档运行，可能比预算档松")
+    _warn_budget_issue(problem or budget_stale_reason(doc, _bj_now().date()), p)
     return out
 
 

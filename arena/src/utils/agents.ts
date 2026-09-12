@@ -13,3 +13,21 @@ export function displayAgentName(name: string | null | undefined): string {
   const key = String(name ?? '');
   return DISPLAY_NAMES[key] ?? key;
 }
+
+export interface Performer {
+  name: string;
+  ret: number;
+}
+
+/** 涨幅榜的最高/最低（Live 顶栏 chip）。展示名映射放在函数内——调用点直接渲染
+ *  `r.name` 时，下跌行情里 0% 的研究线常排最高，页面会裸露英文签名
+ *  （2026-09-12 审查 LOW）。返回 null 表示无收益数据，页面照旧渲染「—」。 */
+export function rankPerformers(
+  rows: { name: string; ret: number | null | undefined }[],
+): { highest: Performer | null; lowest: Performer | null } {
+  const list = rows
+    .map((r) => ({ name: displayAgentName(r.name), ret: r.ret }))
+    .filter((p): p is Performer => p.ret != null)
+    .sort((a, b) => b.ret - a.ret);
+  return { highest: list[0] ?? null, lowest: list[list.length - 1] ?? null };
+}

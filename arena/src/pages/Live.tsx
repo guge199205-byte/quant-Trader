@@ -42,7 +42,7 @@ import { MarketSwitcher } from '../components/Navbar';
 import { fmtMoney, fmtPct, fmtPrice, pnlClass } from '../utils/format';
 import { stockLabel, stockName } from '../utils/symbols';
 import { toLiveAdjust, toLiveFill } from '../utils/liveFills';
-import { displayAgentName } from '../utils/agents';
+import { displayAgentName, rankPerformers } from '../utils/agents';
 import './Live.css';
 
 const BENCH_COLOR = '#10a37f';
@@ -785,13 +785,12 @@ export default function Live() {
     return { last, dayChange: prev ? (last - prev) / prev : null };
   }, [bench.data]);
 
-  const performers = useMemo(() => {
-    const list = rows
-      .map((r) => ({ name: r.name, ret: r.summary?.total_return ?? null }))
-      .filter((p) => p.ret != null)
-      .sort((a, b) => (b.ret as number) - (a.ret as number));
-    return { highest: list[0] ?? null, lowest: list[list.length - 1] ?? null };
-  }, [rows]);
+  // 展示名映射在 rankPerformers 内：研究线在 cn 下跌行情里常排最高，
+  // 直接渲染 r.name 会裸露英文签名（2026-09-12 审查 LOW）
+  const performers = useMemo(
+    () => rankPerformers(rows.map((r) => ({ name: r.name, ret: r.summary?.total_return ?? null }))),
+    [rows],
+  );
 
   // ---------- 右侧列表渲染 ----------
   const renderList = () => {

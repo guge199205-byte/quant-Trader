@@ -113,7 +113,8 @@ def _news_block(d0: str) -> str:
     # 2) 今日各轮要点（宏观/主题/持仓信号，跨轮合并去重）
     try:
         rounds = []
-        for line in (nb / "history.jsonl").read_text(encoding="utf-8").splitlines():
+        for line in (nb / "history.jsonl").read_text(encoding="utf-8",
+                                                     errors="replace").splitlines():
             try:
                 b = _json.loads(line)
             except _json.JSONDecodeError:

@@ -40,7 +40,11 @@ def load_day_briefs(day: str, path: Path | None = None) -> list[dict]:
     """history.jsonl 中当日（北京）的分子列表。"""
     out = []
     try:
-        for line in (path or HISTORY_FILE).read_text(encoding="utf-8").splitlines():
+        # errors="replace"：news history 是含中文的追加日志（news_brief.py:680 open("a")），
+        # 截断在多字节字符中间会整文件抛 UnicodeDecodeError（不是 OSError）；
+        # 逐行 handler 本就容错，替换成 U+FFFD 只损失撕裂那一行（2026-09-12 批 10）
+        for line in (path or HISTORY_FILE).read_text(encoding="utf-8",
+                                                     errors="replace").splitlines():
             try:
                 d = json.loads(line)
             except json.JSONDecodeError:

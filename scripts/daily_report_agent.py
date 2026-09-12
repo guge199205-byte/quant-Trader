@@ -112,7 +112,9 @@ def collect(date: str | None = None) -> dict:
         lf = ROOT / "data" / "agent_data_astock" / a / "log" / today / "log.jsonl"
         rounds = failed = 0
         try:
-            rounds, failed = _rounds_from_log(lf.read_text(encoding="utf-8"))
+            # errors="replace"：模型对话流是含中文的追加日志，截断在多字节字符中间会
+            # 整文件抛 UnicodeDecodeError（不是 OSError）→ 当日轮次统计整段丢（批 10）
+            rounds, failed = _rounds_from_log(lf.read_text(encoding="utf-8", errors="replace"))
         except OSError:
             pass
         rec["rounds"] = rounds
@@ -123,7 +125,10 @@ def collect(date: str | None = None) -> dict:
             if "_us_" in f.name or "_hk_" in f.name:
                 continue
             try:
-                for l in f.read_text(encoding="utf-8").splitlines():
+                # errors="replace"：含中文追加流水可能截断在多字节字符中间，严格解码
+                # 会整文件抛 UnicodeDecodeError（不是 OSError/JSONDecodeError），
+                # 该 agent 当日成交统计整段丢失（2026-09-12 批 10）
+                for l in f.read_text(encoding="utf-8", errors="replace").splitlines():
                     r = json.loads(l)
                     if r.get("agent") == a and r.get("ts", "").startswith(today) \
                             and not r.get("error") and r.get("side"):

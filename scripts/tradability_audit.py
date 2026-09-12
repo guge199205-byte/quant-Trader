@@ -160,7 +160,9 @@ def load_trades(paths: list) -> list:
     by_order: dict = {}
     generic: list = []
     for p in paths:
-        for line in Path(p).read_text(encoding="utf-8").splitlines():
+        # errors="replace"：含中文追加流水可能截断在多字节字符中间；本行式读取每个
+        # 读取点都逐行容错，唯独解码一步没有 try，撕裂 = 整个审计崩（2026-09-12 批 10）
+        for line in Path(p).read_text(encoding="utf-8", errors="replace").splitlines():
             if not line.strip():
                 continue
             try:

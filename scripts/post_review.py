@@ -39,7 +39,9 @@ def collect_facts(agent: str, date: str) -> str:
         if "_us_" in f.name or "_hk_" in f.name:
             continue
         try:
-            text = f.read_text(encoding="utf-8")
+            # errors="replace"：含中文追加流水可能截断在多字节字符中间，严格解码会
+            # 整文件抛 UnicodeDecodeError（不是 OSError）→ 当日事实整段丢失（批 10）
+            text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         for ln in text.splitlines():

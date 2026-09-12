@@ -80,7 +80,9 @@ def realized_loss_today(agent: str, day: str, path: Path | None = None) -> float
     """
     src = path or _trade_path(day)
     try:
-        text = src.read_text(encoding="utf-8")
+        # errors="replace"：含中文追加流水可能截断在多字节字符中间，严格解码会整文件
+        # 抛 UnicodeDecodeError（不是 OSError），当天熔断判据直接失联（2026-09-12 批 10）
+        text = src.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0.0
     loss = 0.0

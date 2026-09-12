@@ -1579,7 +1579,9 @@ def daily_buy_codes(agent: str, day: str | None = None,
     path = path or (ROOT / "logs" / f"live_trade_{day.replace('-', '')}.jsonl")
     out: set = set()
     try:
-        text = path.read_text(encoding="utf-8")
+        # errors="replace"：含中文追加流水可能截断在多字节字符中间，严格解码会整文件
+        # 抛 UnicodeDecodeError（不是 OSError）穿出本函数（2026-09-12 批 10）
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return out
     for line in text.splitlines():

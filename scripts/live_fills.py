@@ -324,7 +324,11 @@ def fill_recorded(order_id: str, now: datetime | None = None) -> bool:
     now = now or now_cn()
     path = LOG_DIR / f"live_trade_{now:%Y%m%d}.jsonl"
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        # errors="replace"：流水是**追加型含中文**日志，非原子写被杀可能截断在多字节
+        # 字符中间；严格解码会整文件抛 UnicodeDecodeError（ValueError 子类，不是
+        # OSError），穿出 except 打断对账/结算。替换成 U+FFFD → 该行 json 失败被跳过，
+        # 其余行照用（2026-09-12 批 10）。
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return False                     # 当天还没有流水文件 = 什么都没记过
     for line in lines:

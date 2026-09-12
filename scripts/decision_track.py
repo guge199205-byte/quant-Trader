@@ -137,7 +137,10 @@ def load_pool(path: Path | None = None) -> list[dict]:
         return []
     out = []
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        # errors="replace"：决策池是含中文的追加 JSONL（_append 走 open("a")），
+        # 截断在多字节字符中间会整文件抛 UnicodeDecodeError（不是 OSError）；
+        # 逐行 handler 本就容错，替换成 U+FFFD 只损失撕裂那一行（2026-09-12 批 10）
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -424,7 +427,9 @@ def backfill_from_agent_logs(path: Path | None = None) -> dict:
             continue
         day = f.parent.name
         try:
-            text = f.read_text(encoding="utf-8")
+            # errors="replace"：模型对话流是含中文的追加日志，截断在多字节字符中间会
+            # 整文件抛 UnicodeDecodeError（不是 OSError）→ 该日历史决策补录整段丢（批 10）
+            text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         for line in text.splitlines():
@@ -507,7 +512,9 @@ def backfill_from_logs(path: Path | None = None) -> dict:
         if any(m in f.name for m in ("_us_", "_hk_")):
             continue
         try:
-            text = f.read_text(encoding="utf-8")
+            # errors="replace"：含中文追加流水可能截断在多字节字符中间，严格解码会
+            # 整文件抛 UnicodeDecodeError（不是 OSError）→ 历史补录整段丢（批 10）
+            text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         for line in text.splitlines():

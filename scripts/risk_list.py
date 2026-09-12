@@ -468,7 +468,10 @@ def _read_fundamental_flags(path: Path | None = None) -> dict:
 
 def _read_news_lines() -> list:
     try:
-        text = NEWS_HISTORY.read_text(encoding="utf-8")
+        # errors="replace"：news history 是含中文的追加日志（news_brief.py:680 open("a")），
+        # 截断在多字节字符中间会整文件抛 UnicodeDecodeError（不是 OSError）；
+        # 逐行 handler 本就容错（2026-09-12 批 10）
+        text = NEWS_HISTORY.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     out = []

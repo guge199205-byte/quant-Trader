@@ -128,6 +128,23 @@ def test_missing_date_field_alerts(env, monkeypatch):
     assert len(hits) == 1 and hits[0]["alert"] is True
 
 
+def test_non_utf8_file_alerts_instead_of_raising(env, monkeypatch):
+    """非 UTF-8 字节（写入侧是非原子写 + `ensure_ascii=False` 含中文，进程被杀/
+    磁盘满可能截断在多字节字符中间）→ read_text 抛 UnicodeDecodeError。
+
+    它是 ValueError 子类、**不是** OSError，只捕 OSError 会让它穿出 load_limits：
+    无 print、无事件，退回「静默按默认档跑」——本函数要消的正是这个形态
+    （2026-09-12 复审 LOW）。"""
+    _freeze(monkeypatch, WED)
+    p = env / "budget.json"
+    p.write_bytes(b'{"date": "2026-09-09", "note": "\xe4\xb8')   # 多字节字符截断
+
+    assert R.load_limits(p) == {}
+    hits = _stale_events(env / "events.json")
+    assert len(hits) == 1 and hits[0]["alert"] is True
+    assert "UTF-8" in hits[0]["msg"]
+
+
 def test_missing_file_keeps_empty_semantics_but_alerts(env, monkeypatch):
     """文件缺失维持 {} 语义（调用方各自默认），但必须留痕——读不到档位 =
     当天按调用方默认档跑（可能比预算档松），不能再无声（2026-09-12 审查 LOW）。"""

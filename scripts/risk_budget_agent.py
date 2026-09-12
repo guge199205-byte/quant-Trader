@@ -276,7 +276,8 @@ def load_limits(path: Path | None = None) -> dict:
     2026-09-08 前的漏洞：只有 live_hourly_analysis 读这份预算，09:35 主入口
     （live_llm_trade）硬编码 1.5/20% 且没有新开仓上限——预算定档"防守"时
     主入口仍按宽松档下单，风险预算只兑现了一半。统一从本函数取。
-    文件缺失/损坏/结构异常 → {}（调用方保持各自默认，不阻断），**且一律留痕**
+    文件缺失/损坏/结构异常/非 UTF-8 字节 → {}（调用方保持各自默认，不阻断），
+    **且一律留痕**
     （2026-09-12 审查 LOW：旧实现在解析失败分支直接 `return {}`，告警调用永不执行；
     `doc.get` 又先于 isinstance 兜底，非 dict 直接抛异常被调用点静默吞掉——
     「定档链路静默故障」当时只覆盖了日期过期一种形态。读不到档位 = 当天按调用方
@@ -286,6 +287,14 @@ def load_limits(path: Path | None = None) -> dict:
     p = path or OUT
     try:
         raw = p.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # 非 UTF-8 字节（写入侧非原子写 + ensure_ascii=False 含中文，截断在多字节
+        # 字符中间）：UnicodeDecodeError 是 ValueError 子类、**不是** OSError，
+        # 漏捕会让它穿出本函数、退回静默（2026-09-12 复审 LOW）
+        _warn_budget_issue(
+            f"档位文件不是合法的 UTF-8 文本（{str(exc)[:80]}）"
+            "——当天按调用方默认档运行，可能比预算档松", p)
+        return {}
     except OSError as exc:
         _warn_budget_issue(
             f"档位文件不存在或不可读（{exc.__class__.__name__}: {str(exc)[:80]}）"

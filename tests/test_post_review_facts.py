@@ -1,4 +1,5 @@
-"""复盘事实收集不得把「未确认委托」算成成交（2026-09-12 审查 MEDIUM-1）。
+"""复盘事实收集不得把「未确认委托」算成成交（2026-09-12 审查 MEDIUM-1），
+且轮次摘要不得被 new_messages 里的非 dict 项炸穿（同日 review-p05 LOW）。
 
 部分成交时同一笔委托在成交流水里有**两行**：fill 行（实际成交 100 股）+ pending
 行（volume=整单 300 股）。`collect_facts` 原本见行就按 `r.get("volume")` 记账 →
@@ -82,3 +83,32 @@ def test_other_agents_fills_not_attributed(monkeypatch, tmp_path):
     ])
 
     assert "无（或全部被拒单）" in text
+
+
+def _write_agent_log(tmp_path: Path, rows: list) -> None:
+    d = tmp_path / "data" / "agent_data_astock" / AGENT / "log" / DATE
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "log.jsonl").write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+
+
+def test_non_dict_message_item_does_not_crash_summary(monkeypatch, tmp_path):
+    """new_messages 混入非 dict 项不得炸穿整份复盘事实（2026-09-12 review-p05 LOW）。
+
+    轮次摘要的遍历循环在读取段的 try **之外**：旧实现 `m.get("role")` 遇非 dict 项抛
+    AttributeError 穿出 collect_facts → 该 agent 当日复盘整体失败。同族读方
+    daily_report_agent / decision_track 已有 isinstance 守卫，此处补齐属防御一致性
+    （当前唯一写入方 base_agent_astock 只产 dict）。
+    """
+    monkeypatch.setattr(P, "ROOT", tmp_path)
+    _write_flow(tmp_path, [])
+    _write_agent_log(tmp_path, [
+        {"timestamp": TS, "new_messages": ["裸字符串", 123, None,
+                                           {"role": "assistant", "content": "第1轮：减仓三成"}]},
+        # 整个 new_messages 被写成字符串（历史脏数据的典型形态）：逐字符遍历也须安全
+        {"timestamp": TS, "new_messages": "第2轮原文本"},
+    ])
+
+    text = P.collect_facts(AGENT, DATE)
+
+    assert "第1轮：减仓三成" in text

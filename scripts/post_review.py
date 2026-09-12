@@ -96,6 +96,11 @@ def collect_facts(agent: str, date: str) -> str:
             rows = []
         for r in rows[-12:]:
             for m in (r.get("new_messages") or []):
+                # 非 dict 项跳过（同族读方 daily_report_agent / decision_track 同守卫）。
+                # 该循环在读取段的 try **之外**：混入一项就是 AttributeError 穿出、
+                # 整个 agent 的复盘失败——当前写入方不产出非 dict，属防御一致性。
+                if not isinstance(m, dict):
+                    continue
                 if str(m.get("role")) in ("assistant", "ai"):
                     c = str(m.get("content") or "").replace("\n", " ")
                     lines.append(f"- {r.get('timestamp', '')[:16]} {c[:360]}")

@@ -99,11 +99,35 @@ def test_broken_positions_types_fall_back():
         assert row["cost"] == BRIDGE_COST and row["cost_src"] == "bridge"
 
 
+def test_non_finite_ledger_cost_falls_back_to_bridge():
+    """成本列非有限数（Inf/NaN，手改账本或写入侧脏数据）→ 回退桥值。
+
+    旧实现 `lc > 0` 对 inf 为真 → 成本列渲染 ¥inf、盈亏 `(price-inf)/inf` 渲染
+    +nan%，模型照着 nan% 决策（2026-09-12 审查 LOW）。"""
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        (row,) = PC.ledger_cost_rows([_hourly_row()], {CODE: {"volume": VOLUME,
+                                                              "cost_price": bad}})
+        assert row["cost"] == BRIDGE_COST and row["pnl_pct"] == -90.0, bad
+        assert row["cost_src"] == "bridge"
+
+
 def test_trade_row_without_pnl_key_is_safe():
     out = PC.ledger_cost_rows([_trade_holding()], _positions())
     assert out[0]["cost"] == LEDGER_COST
     assert out[0]["pnl_pct"] == pytest.approx(17.65)
     assert "pnl" not in out[0]
+
+
+def test_degraded_summary_uses_ledger_basis():
+    """LLM 降级摘要与提示词表同口径（2026-09-12 审查 LOW）：同一轮对话流里
+    提示词按账本、摘要按桥混合成本 = 前后自相矛盾。"""
+    text = PC.degraded_summary("极限", [_hourly_row()], _positions())
+    assert "¥8.5" in text and "+17.65%" in text and "-90.00%" not in text
+    assert "分账账本" in text
+
+    # 账本无该票 → 桥值 + `*` 标注，说明句里注明含义
+    text2 = PC.degraded_summary("极限", [_hourly_row()], {})
+    assert "¥100.0*" in text2 and "回退桥值" in text2
 
 
 # ---------- 提示词接线：整点轮 ----------
@@ -155,3 +179,15 @@ def test_llm_trade_prompt_marks_bridge_fallback(monkeypatch):
     text = T.build_prompt(AGENT, [_trade_holding()], [], {}, 100000.0)
     assert "| 100.0* |" in text
     assert "口径说明" in text
+
+
+def test_llm_trade_prompt_header_states_ledger_basis(monkeypatch):
+    """表头措辞必须与表体口径一致（2026-09-12 审查 MEDIUM）：盈亏% 列由账本成本
+    重算，仍说「现价/盈亏%/可卖量 = 桥账户实时口径」会自相矛盾（下一行就是
+    LEDGER_COST_NOTE 的「该列盈亏/% 均按此成本计算」）。"""
+    monkeypatch.setattr(T, "load_ledger", lambda: _ledger_doc())
+    text = T.build_prompt(AGENT, [_trade_holding()], [], {}, 100000.0)
+
+    head = text.split("【你名下的现有持仓】")[1].split("\n")[0]
+    assert "盈亏%" in head and "账本口径" in head
+    assert "现价/盈亏%" not in head          # 旧措辞：把盈亏% 也说成桥口径

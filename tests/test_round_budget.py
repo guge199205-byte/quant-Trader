@@ -53,6 +53,36 @@ def test_wakeup_reason_detection():
     assert not H.is_wakeup_reason("手动触发")
 
 
+def test_wakeup_reason_builder_and_detector_share_one_prefix():
+    """构造口与判据同源（2026-09-12 审查 MEDIUM）：前缀字面量只许有一处。
+
+    main 手写前缀、判据手写前缀时，改一处即可让预算闸静默失效——判据认不出
+    唤醒轮 = 闸门形同不存在，且没有任何报错。"""
+    assert H.wakeup_reason("个股涨跌 -11.5pp") == "波动触发: 个股涨跌 -11.5pp"
+    assert H.is_wakeup_reason(H.wakeup_reason("板块联动：银行 +3.0pp"))
+
+    import inspect
+
+    src = inspect.getsource(H.main)
+    assert "wakeup_reason(vol_reason)" in src       # main 走构造函数
+    assert H.WAKEUP_REASON_PREFIX not in src        # main 里不许再出现裸前缀字面量
+
+
+def test_rounds_today_of_survives_broken_state_shapes():
+    """结构坏值不许在每轮每 agent 的路径上抛异常（抛 = 整轮分析中断）；按 0 处理。"""
+    today = _today()
+    for bad in (None, ["x"], "state-oops"):
+        assert H.rounds_today_of(bad, AGENT, today) == 0
+    assert H.rounds_today_of({"rounds_date": "oops"}, AGENT, today) == 0
+    assert H.rounds_today_of({"rounds_date": {AGENT: today}, "rounds_today": "5"},
+                             AGENT, today) == 0
+    assert H.rounds_today_of({"rounds_date": {AGENT: today}, "rounds_today": {AGENT: "x"}},
+                             AGENT, today) == 0
+    # 正常路径不受影响
+    assert H.rounds_today_of({"rounds_date": {AGENT: today}, "rounds_today": {AGENT: 3}},
+                             AGENT, today) == 3
+
+
 def test_budget_gate_only_blocks_wakeup_rounds():
     today = _today()
     over = {"rounds_date": {AGENT: today}, "rounds_today": {AGENT: H.DAILY_ROUND_LIMIT}}
@@ -120,9 +150,9 @@ class _Broker:
 def quiet(monkeypatch):
     """把分析段的外围依赖全部静音：本测试只关心预算闸与计数器。
 
-    rotated_modes → []：agent 进入分析段但一轮 LLM 都不调用（预算闸在它之前），
-    所以既不需要 LLM 桩、也证明「闸门在开销发生前生效」。
-    """
+    rotated_modes → []：agent 进入分析段但一轮 LLM 都不调用（预算闸在它之前）。
+    「闸门确实在开销之前」由 test_budget_gate_sits_before_any_llm_cost 用真模式
+    轮转 + call_llm 探针单独证明——本 fixture 的 [] 让该断言恒真，不作证据。"""
     import prompts.analysis_modes as AM
 
     monkeypatch.setattr(AM, "rotated_modes", lambda agent: [])
@@ -158,6 +188,48 @@ def test_wakeup_round_over_budget_is_skipped_with_event(state, quiet, capsys):
     hits = [e for e in _events() if e["kind"] == "round_budget_skip"]
     assert len(hits) == 1 and AGENT in hits[0]["msg"]
     assert hits[0]["alert"] is True                            # 静默跳过不许无声
+
+
+def test_budget_gate_sits_before_any_llm_cost(state, quiet, monkeypatch):
+    """闸必须在开销发生之前（2026-09-12 审查测试缺口）：用**真**模式轮转 + call_llm
+    探针，超预算的唤醒轮一次 LLM 调用都不许发生。
+
+    旧用例的 rotated_modes→[] 下，「没调用 LLM」恒真，证明不了闸在 LLM 段之前——
+    闸若被挪到 LLM 循环之后，用例照样绿，而 09-11 的 78 轮成本会原样复现。"""
+    import prompts.analysis_modes as AM
+
+    calls = []
+    monkeypatch.setattr(AM, "rotated_modes",
+                        lambda agent: [{"id": "x", "name": "X", "prompt": "正文"}])
+    monkeypatch.setattr(H, "call_llm", lambda *a, **k: calls.append(a))
+    today = _today()
+    H.update_state({"rounds_date": {AGENT: today},
+                    "rounds_today": {AGENT: H.DAILY_ROUND_LIMIT}})
+
+    H.run_analysis(_Broker(), "波动触发: 个股涨跌", dry_run=True, agents=[AGENT])
+
+    assert calls == []
+
+
+def test_bump_counter_uses_locked_mutate_path(monkeypatch):
+    """计数必须走 update_state 的锁内读-改-写（mutate=）：退化回「先读快照、
+    再整表写」会与每分钟采样进程互相丢更新（09-11 根因），而四个计数用例都
+    察觉不到（2026-09-12 审查测试缺口）。"""
+    seen = {}
+
+    def _spy(**kw):
+        seen.update(kw)
+        return {"rounds_date": {}, "rounds_today": {}}
+
+    monkeypatch.setattr(H, "update_state", _spy)
+
+    H.bump_round_counter("agentA", "2026-09-12")
+
+    assert callable(seen.get("mutate"))
+    # 锁内回调对「别人刚写过的」最新文档做增量，而不是覆盖成自算的值
+    out = seen["mutate"]({"rounds_date": {"agentA": "2026-09-12"},
+                          "rounds_today": {"agentA": 2}})
+    assert out["rounds_today"]["agentA"] == 3
 
 
 def test_scheduled_and_recovery_rounds_not_limited_by_budget(state, quiet):

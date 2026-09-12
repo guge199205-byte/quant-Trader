@@ -237,17 +237,22 @@ def settle_place_fill(order_id, agent: str, code: str, side: str, volume: int,
     return out
 
 
-def note_pct_unparsed(agent: str, code: str, raw: str, side: str) -> str:
+def note_pct_unparsed(agent: str, code: str, raw: str, side: str,
+                      persist: bool = True) -> str:
     """脏 pct 的统一留痕（2026-09-12 审查 HIGH-2）：落非告警事件 + 返回一行文案。
 
     模型给了减仓比例但解析不出（如 `"0.3股"`）——不许当成「没给」按清仓执行：
     猜小只是少卖（下一轮决策与哨兵兜住），猜大是不可逆的清仓。调用方 print 本行
     并 `continue` 跳过该决策；跳过动作本身必须留痕（事件面 + stdout），
     事后能回答「这轮为什么没执行这条决策」。
+
+    persist=False（dry-run/演练）：只回文案、不写事件——dry-run 不得改动任何持久
+    状态（事件面也是持久状态：演练条目会混进真实委托事件流，事后对账分不清）。
     """
     msg = (f"[{agent}] {code} {side}: 决策的比例无法解析（pct={raw}），"
            f"按解析失败跳过——不猜比例（猜小=少卖由下一轮兜住，猜大=清仓不可逆）")
-    record_event("pct_unparsed", code, msg, side=side, alert=False)
+    if persist:
+        record_event("pct_unparsed", code, msg, side=side, alert=False)
     return f"[{agent}] {code} {side} 比例无法解析（pct={raw}），跳过不猜比例"
 
 

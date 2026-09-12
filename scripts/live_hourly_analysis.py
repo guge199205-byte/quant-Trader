@@ -1237,18 +1237,42 @@ def update_state(updates: dict | None = None, mutate=None) -> dict:
 # 阈值 DAILY_ROUND_LIMIT 见文件头常量区（与 MIN_ANALYSIS_INTERVAL_MIN 同区）
 
 
+WAKEUP_REASON_PREFIX = "波动触发: "
+
+
+def wakeup_reason(detail: str) -> str:
+    """唤醒轮 reason 的唯一构造口（main 里的波动/板块/L2/新闻触发调用点）。
+
+    前缀必须与 `is_wakeup_reason` 的判据同源——两处各写各的字面量时，改一处
+    就会让预算闸静默失效（判据认不出唤醒轮 = 闸门形同不存在）。
+    """
+    return f"{WAKEUP_REASON_PREFIX}{detail}"
+
+
 def is_wakeup_reason(reason: str) -> bool:
     """唤醒触发轮判据：波动/板块联动/L2 资金流/新闻持仓信号统一从 check_volatility
-    出来、走「波动触发: …」前缀（见 main 里的唯一调用点）；整点/补跑/手动不是。"""
-    return str(reason).startswith("波动触发")
+    出来、走 `wakeup_reason()` 构造的前缀（见 main 里的唯一调用点）；
+    整点/补跑/手动不是。"""
+    return str(reason).startswith(WAKEUP_REASON_PREFIX)
 
 
 def rounds_today_of(state: dict, agent: str, today: str) -> int:
-    """该 agent 当日已跑轮次。日期不是今天 → 0（不清理旧值，读到即视为过期）。"""
-    if (state.get("rounds_date") or {}).get(agent) != today:
+    """该 agent 当日已跑轮次。日期不是今天 → 0（不清理旧值，读到即视为过期）。
+
+    结构坏值（state/rounds_date/rounds_today 非 dict，手改或旧版本格式）一律按 0：
+    本函数在**每轮每 agent** 的路径上（bump/预算闸），抛异常 = 整轮分析中断；
+    计数退化成 0 只削弱兜底力度，不影响交易（2026-09-12 审查 MEDIUM）。
+    """
+    if not isinstance(state, dict):
+        return 0
+    rd = state.get("rounds_date")
+    if not isinstance(rd, dict) or rd.get(agent) != today:
+        return 0
+    rt = state.get("rounds_today")
+    if not isinstance(rt, dict):
         return 0
     try:
-        return int((state.get("rounds_today") or {}).get(agent) or 0)
+        return int(rt.get(agent) or 0)
     except (TypeError, ValueError):
         return 0
 
@@ -1647,7 +1671,7 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
             # 脏 pct（给了值但解析不出，如 "0.3股"）≠ 没给比例：跳过并留痕，
             # 绝不按清仓执行（2026-09-12 审查 HIGH-2；sell_fraction 兜底返 0）
             if d.get("pct_bad_raw"):
-                print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'sell')}")
+                print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'sell', persist=not dry_run)}")
                 continue
             frac = sell_fraction(d)   # 缺 pct → 按清仓（与 09:35 调仓同口径，2026-09-12 P0-5）
             raw_vol = int(avail * frac)
@@ -1670,7 +1694,7 @@ def execute_intraday_decision(broker, agent: str, decisions: list,
                 print(f"  ⏭️ [{agent}] 买入 {code}: 已有在途买单未确认，跳过")
                 continue
             if d.get("pct_bad_raw"):
-                print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'buy')}")
+                print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'buy', persist=not dry_run)}")
                 continue
             if d["pct"] <= 0:
                 why = ("明说 pct=0" if d.get("pct_given", True)
@@ -2171,13 +2195,13 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                 content = ""
             if not content:
                 # LLM 降级: 数据摘要（对话 tab 至少可看数据）—— 未调用 API，不计 token
+                # 口径与提示词表一致（2026-09-12 审查 LOW）：成本/盈亏走分账账本，
+                # 否则同一轮对话流里提示词是账本口径、摘要却是桥混合成本，前后打架。
                 usage = None
-                summary = [f"（{mode['name']} LLM 分析暂不可用，附实时数据）"]
-                for r in my_rows:
-                    summary.append(
-                        f"- {r['name']} {r['code']}: 现价 ¥{r['price']} / 成本 ¥{r['cost']} "
-                        f"/ {r['volume']}股 / 盈亏 ¥{r['pnl']:+,.0f}({r['pnl_pct']:+.2f}%)")
-                content = "\n".join(summary)
+                from live_prompt_context import degraded_summary
+
+                content = degraded_summary(mode["name"], my_rows,
+                                           rec.get("positions") or {})
             path = append_log(labeled_content, content, agent, usage)
             tok = f", token {usage.get('total_tokens')} (入{usage.get('prompt_tokens')}/出{usage.get('completion_tokens')})" if usage else ""
             print(f"[{now:%F %T}] {agent}·{mode['name']} 分析完成 {len(my_rows)} 只名下持仓{tok} → {path.relative_to(ROOT)}")
@@ -2368,7 +2392,7 @@ def main() -> int:
                             print(f"[{now:%F %T}] ⏭️ 已有分析实例在跑，跳过（防并发叠跑）")
                         else:
                             try:
-                                run_analysis(broker, f"波动触发: {vol_reason}",
+                                run_analysis(broker, wakeup_reason(vol_reason),
                                              dry_run=not do_execute, gap_window=win)
                             except Exception as exc:  # noqa: BLE001
                                 print(f"[{now:%F %T}] ⚠️ 波动触发分析失败: {exc}")

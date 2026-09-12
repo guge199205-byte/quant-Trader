@@ -250,8 +250,8 @@ def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
         f"管理 ¥{AGENT_QUOTA:,.0f} 虚拟额度（已用 ¥{agent_used(load_ledger(), agent):,.0f}，"
         f"剩余 ¥{quota_remaining:,.0f}）。",
         "",
-        "【你名下的现有持仓】（成本=你名下分账账本口径；现价/盈亏%/可卖量 = 桥账户"
-        "实时口径，可卖量 0 = 今日买入 T+1 不可卖）：",
+        "【你名下的现有持仓】（成本与盈亏% = 你名下分账账本口径；现价/数量/可卖量 = "
+        "桥账户实时口径，可卖量 0 = 今日买入 T+1 不可卖）：",
         "",
         "| 代码 | 名称 | 数量 | 成本 | 现价 | 盈亏% | 今日涨跌% | 可卖量 |",
         "|------|------|------|------|------|-------|-----------|--------|",
@@ -260,7 +260,11 @@ def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
     # 路径消费它），这里只改喂 LLM 的这一份；账本无该票 → 桥值 + `*` 标注
     from live_prompt_context import LEDGER_COST_NOTE, ledger_cost_rows
 
-    _led_pos = (load_ledger().get("agents") or {}).get(agent, {}).get("positions") or {}
+    # 账本读不到/结构坏 → 展示层全部回退桥值（提示词不许炸；与整点轮同口径）
+    try:
+        _led_pos = (load_ledger().get("agents") or {}).get(agent, {}).get("positions") or {}
+    except Exception:  # noqa: BLE001
+        _led_pos = {}
     for h in ledger_cost_rows(holdings, _led_pos):
         mark = "" if h["cost_src"] == "ledger" else "*"
         lines.append(
@@ -761,7 +765,7 @@ def _run(args) -> int:
                 # 脏 pct（给了值但解析不出，如 "0.3股"）≠ 没给比例：跳过并留痕，
                 # 绝不按清仓执行（2026-09-12 审查 HIGH-2；sell_fraction 兜底返 0）
                 if d.get("pct_bad_raw"):
-                    print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'sell')}")
+                    print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'sell', persist=bool(args.execute))}")
                     continue
                 frac = sell_fraction(d)
                 raw_vol = int(avail * frac)
@@ -784,7 +788,7 @@ def _run(args) -> int:
                     print(f"  ⏭️ [{agent}] 买入 {code}: 已有在途买单未确认，跳过")
                     continue
                 if d.get("pct_bad_raw"):
-                    print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'buy')}")
+                    print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'buy', persist=bool(args.execute))}")
                     continue
                 if d["pct"] <= 0:
                     why = ("明说 pct=0" if d.get("pct_given", True)

@@ -211,6 +211,45 @@ def test_dirty_pct_sell_is_skipped_with_event(env, monkeypatch):
     assert ev and ev[0]["alert"] is False and "0.3股" in ev[0]["msg"]
 
 
+def test_nan_pct_sell_is_skipped_with_event_not_liquidated(env, monkeypatch):
+    """`pct: NaN`（JSON 字面量，模型可产出）→ 跳过 + pct_unparsed 留痕，绝不整仓卖出。
+
+    2026-09-12 终审 HIGH：NaN 被判 missing → sell_fraction 返 1.0 → 全量下单。
+    方向与脏值停手原则相反且不可逆。"""
+    from live_prompt_context import parse_intraday_decision
+
+    monkeypatch.setattr(F, "wait_fill", _wait_fill_returns(None))
+    broker = FakeBroker()
+    decisions = parse_intraday_decision(
+        '{"decisions": [{"action": "sell", "code": "001312.SZ", "pct": NaN}]}')
+
+    out = env.H.execute_intraday_decision(broker, AGENT, decisions, _holdings(),
+                                          50000.0, dry_run=False)
+
+    assert out == [] and broker.orders == []
+    assert L.load_ledger()["agents"][AGENT]["positions"][SELL_CODE]["volume"] == 300
+    ev = [e for e in json.loads(F.EVENTS_FILE.read_text(encoding="utf-8")).values()
+          if e["kind"] == "pct_unparsed"]
+    assert ev and ev[0]["alert"] is False
+
+
+def test_dry_run_dirty_pct_writes_no_event(env, monkeypatch):
+    """dry-run 不得改动任何持久状态（2026-09-12 审查 LOW）：跳过文案照打（演练要看
+    得出），但事件面不落盘——演练条目混进真实委托事件流，事后对账分不清。"""
+    broker = FakeBroker()
+
+    out = env.H.execute_intraday_decision(
+        broker, AGENT,
+        [{"action": "sell", "code": SELL_CODE, "pct": 0.0, "pct_given": False,
+          "pct_bad_raw": "'0.3股'", "reason": "减三成"}],
+        _holdings(), 50000.0, dry_run=True)
+
+    assert out == [] and broker.orders == []
+    assert not F.EVENTS_FILE.exists() or not [
+        e for e in json.loads(F.EVENTS_FILE.read_text(encoding="utf-8")).values()
+        if e["kind"] == "pct_unparsed"]
+
+
 def test_untracked_order_blocks_duplicate_in_same_round(env, monkeypatch):
     """桥没回委托号 → 这笔单 reconcile 追不了：同轮第二条同 code 卖出必须被挡住
     （否则缺号 + 模型重复输出 = 重复下单，2026-09-12 审查 LOW-1）。"""

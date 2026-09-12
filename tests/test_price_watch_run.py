@@ -655,6 +655,39 @@ def test_watch_rule_with_nan_pct_falls_back_to_full_not_dropped(file_watch, caps
     assert "非有限数" in capsys.readouterr().out
 
 
+def test_dirty_pct_watch_decision_arms_full_and_traces_dirty(file_watch, capsys):
+    """解析器判脏的 watch 决策（NaN/Inf/"0.3股" → pct_bad_raw）：
+
+    - 保护层按全仓挂（漏挂 = 这个防守位当日无人执行）；
+    - 留痕说真话：事件是 watch_pct_dirty（解析不出），不是 watch_pct_missing（没给）——
+      两种原因排查方向不同，混成一条会掩盖「模型输出了坏值」这类系统性问题。"""
+    from live_prompt_context import parse_intraday_decision
+
+    decisions = parse_intraday_decision(
+        '{"decisions": [{"action": "watch", "code": "600362.SH", "stop_loss": 50.0,'
+        ' "pct": "0.3股"}]}')
+
+    assert W.save_watch_rules("agentA", decisions) == 1
+    assert file_watch.read()["agentA"][0]["pct"] == 1.0
+    ev = [e for e in _recorded_events(file_watch) if e["kind"] == "watch_pct_dirty"]
+    assert ev and ev[0]["alert"] is False and "0.3股" in ev[0]["msg"]
+    assert not [e for e in _recorded_events(file_watch) if e["kind"] == "watch_pct_missing"]
+
+
+def test_nan_pct_watch_decision_arms_full_and_traces_dirty(file_watch):
+    """NaN（JSON 字面量，模型可产出）走 parse_pct 的 dirty 分支，不是 missing。"""
+    from live_prompt_context import parse_intraday_decision
+
+    decisions = parse_intraday_decision(
+        '{"decisions": [{"action": "watch", "code": "600362.SH", "stop_loss": 50.0,'
+        ' "pct": NaN}]}')
+
+    assert W.save_watch_rules("agentA", decisions) == 1
+    assert file_watch.read()["agentA"][0]["pct"] == 1.0
+    ev = [e for e in _recorded_events(file_watch) if e["kind"] == "watch_pct_dirty"]
+    assert ev and "nan" in ev[0]["msg"].lower()
+
+
 def test_watch_rule_with_negative_pct_message_shows_actual_value(file_watch, capsys):
     """pct=-1 落在 pct<=0 分支：事件/print 要显示实际值，不能谎称「pct=0」。"""
     n = W.save_watch_rules("agentA", [

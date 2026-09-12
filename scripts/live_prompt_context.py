@@ -121,11 +121,15 @@ def parse_pct(x) -> tuple[float, str]:
 
     - **given**：有效有限数；字符串先规范化（去空白、全角 ％→%、结尾 % 视作百分数，
       `"30%"` → 0.3）——模型确实表达了比例，就尽量读出来而不是当没看见；
-    - **missing**：None/空串/N-A/NaN·Inf（含字符串形式）——**没表达**，消费点回退默认；
-    - **dirty**：给了值但解析不出（`"0.3股"`、`"三成"`、`[0.3]`）——不许等同于
-      missing：卖出链对 missing 按清仓执行（模型只说了方向），对 dirty 必须停下 +
-      留痕（原始值进日志与事件）。把「想减 30%」静默执行成清仓是资金方向上不可逆的
-      放大，而旧行为（脏值抛 ValueError 炸穿整轮）至少是「少做」。
+    - **missing**：None/空串/N-A——**没表达**，消费点回退默认；
+    - **dirty**：给了值但解析不出（`"0.3股"`、`"三成"`、`[0.3]`），**或解析出非有限数**
+      （`NaN`/`Infinity`/`1e999`，含字符串形式）——不许等同于 missing：卖出链对
+      missing 按清仓执行（模型只说了方向），对 dirty 必须停下 + 留痕（原始值进日志
+      与事件）。把「想减 30%」静默执行成清仓是资金方向上不可逆的放大，而旧行为
+      （脏值抛 ValueError 炸穿整轮）至少是「少做」。
+      非有限值归 dirty 而非 missing（2026-09-12 审查 HIGH-4 终审）：`NaN` 不是
+      「没表达」，是「表达了但没法用」——JSON 允许字面量 NaN，模型与手改都能给；
+      按 missing 处理会走整仓卖出，方向与 dirty 的停手原则正好相反。
     """
     if x is None:
         return 0.0, PCT_MISSING
@@ -148,7 +152,7 @@ def parse_pct(x) -> tuple[float, str]:
             v = float(x)
         except (TypeError, ValueError):
             return 0.0, PCT_DIRTY
-    return (v, PCT_GIVEN) if math.isfinite(v) else (0.0, PCT_MISSING)
+    return (v, PCT_GIVEN) if math.isfinite(v) else (0.0, PCT_DIRTY)
 
 
 def parse_intraday_decision(text: str) -> list | None:
@@ -227,6 +231,9 @@ def sell_fraction(d: dict) -> float:
       兜底：调用点万一漏检，宁可少卖（下一轮决策与哨兵兜住），不可多卖。
     - 明说 `pct=0` 仍按 0（不卖）；没带 pct_given 键的旧调用点（测试桩/手工构造
       决策）按「已给」处理，保持原语义。
+    - **读不出的值一律 0**（与 dirty 同侧，2026-09-12 终审）：解析异常或非有限数
+      （NaN/Inf）走 0，不再回退清仓——`NaN` 恰恰是「模型给了值但没法用」，
+      回退 1.0 会把脏值放大成整仓卖出，方向与 dirty 停手原则相反。
     """
     if d.get("pct_bad_raw"):
         return 0.0
@@ -235,9 +242,9 @@ def sell_fraction(d: dict) -> float:
     try:
         v = float(d.get("pct") or 0)
     except (TypeError, ValueError):
-        return 1.0
+        return 0.0
     if not math.isfinite(v):
-        return 1.0
+        return 0.0
     return min(max(v, 0.0), 1.0)
 
 
@@ -278,7 +285,9 @@ def ledger_cost_rows(rows: list[dict], positions: dict) -> list[dict]:
             lc = float((pos or {}).get("cost_price") or 0)
         except (TypeError, ValueError, AttributeError):
             lc = 0.0
-        if lc > 0:
+        # 非有限成本（NaN/Inf）必须走回退：`inf > 0` 为真 → 成本列渲染 ¥inf、
+        # 盈亏渲染 +nan%，模型照着 nan% 决策（2026-09-12 审查 LOW）。
+        if math.isfinite(lc) and lc > 0:
             price = float(row.get("price") or 0)
             row["cost"] = round(lc, 2)
             if "pnl" in row:
@@ -289,6 +298,21 @@ def ledger_cost_rows(rows: list[dict], positions: dict) -> list[dict]:
             row["cost_src"] = "bridge"      # 保持桥值原样，仅标注来源
         out.append(row)
     return out
+
+
+def degraded_summary(mode_name: str, rows: list[dict], positions: dict) -> str:
+    """LLM 降级时的对话流数据摘要（未调用 API 时给 UI 兜底展示）。
+
+    口径与提示词持仓表一致（2026-09-12 审查 LOW）：成本/盈亏走分账账本，`*` = 账本
+    无该票回退桥值——同一轮里提示词是账本口径、摘要却打桥混合成本，前后自相矛盾。
+    """
+    lines = [f"（{mode_name} LLM 分析暂不可用，附实时数据；"
+             f"成本/盈亏 = 你名下分账账本口径，`*` = 账本无记录回退桥值）"]
+    for r in ledger_cost_rows(rows, positions):
+        mark = "" if r["cost_src"] == "ledger" else "*"
+        lines.append(f"- {r['name']} {r['code']}: 现价 ¥{r['price']} / 成本 ¥{r['cost']}{mark} "
+                     f"/ {r['volume']}股 / 盈亏 ¥{r['pnl']:+,.0f}({r['pnl_pct']:+.2f}%)")
+    return "\n".join(lines)
 
 
 def _fresh_price(rec, now, max_age_min: int) -> tuple[float | None, float | None, bool]:

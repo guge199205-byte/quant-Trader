@@ -257,6 +257,10 @@ def _rules_from_decisions(decisions: list) -> list:
     压成 pct=0.0，与本条规则的「0 = 不表达卖出量」撞车 → 该挂的止损被静默丢掉。
     靠 pct_given 区分：**没给 → 按全仓挂**（漏挂 = 这个防守位当日无人执行，比按
     全仓挂危险得多）；**明说 0 → 不挂，但落 watch_pct_zero 事件留痕**。
+
+    脏值（pct_bad_raw，NaN/Inf/"0.3股"）同走「按全仓挂」：执行链对脏值停手
+    （不该猜比例下单），但保护层偏向离场——条件位漏挂才是当日裸奔。留痕用
+    `watch_pct_dirty` 说清是「解析不出」而不是「没给」（2026-09-12 终审）。
     """
     mine, seen = [], set()
     for d in decisions or []:
@@ -281,6 +285,7 @@ def _rules_from_decisions(decisions: list) -> list:
             print(f"  ⚠️ watch {code}: pct={raw_pct} 超出 (0,1]（疑似百分数），按 100% 全仓处理")
         pct = _pct(raw_pct)
         if pct <= 0:
+            raw_bad = d.get("pct_bad_raw")
             if d.get("pct_given", True):
                 print(f"  🗑️ watch {code}: 决策明说 pct={raw_pct!r}（不表达卖出量），未挂条件位")
                 record_event("watch_pct_zero", code,
@@ -288,11 +293,18 @@ def _rules_from_decisions(decisions: list) -> list:
                              f"止损 {d.get('stop_loss')} / 止盈 {d.get('take_profit')}",
                              alert=False)
                 continue
-            print(f"  ⚠️ watch {code}: 决策未给 pct，按全仓（100%）挂条件位")
-            record_event("watch_pct_missing", code,
-                         f"[{code}] watch 决策未给减仓比例，按全仓挂条件位"
-                         f"（止损 {d.get('stop_loss')} / 止盈 {d.get('take_profit')}）",
-                         alert=False)
+            if raw_bad:
+                print(f"  ⚠️ watch {code}: pct 无法解析（{raw_bad}），保护层按全仓（100%）挂条件位")
+                record_event("watch_pct_dirty", code,
+                             f"[{code}] watch 决策比例无法解析（{raw_bad}，解析器判脏）："
+                             f"按全仓挂条件位（止损 {d.get('stop_loss')} / 止盈 {d.get('take_profit')}）",
+                             alert=False)
+            else:
+                print(f"  ⚠️ watch {code}: 决策未给 pct，按全仓（100%）挂条件位")
+                record_event("watch_pct_missing", code,
+                             f"[{code}] watch 决策未给减仓比例，按全仓挂条件位"
+                             f"（止损 {d.get('stop_loss')} / 止盈 {d.get('take_profit')}）",
+                             alert=False)
             pct = 1.0
         sig = (code, _lvl(d.get("stop_loss")), _lvl(d.get("take_profit")), pct)
         if sig in seen:

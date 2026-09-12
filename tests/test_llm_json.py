@@ -10,8 +10,9 @@
   1. 统一抽取器 `llm_json.extract_json`：整段 / 围栏 / 散文夹块 / 嵌套与字符串内
      花括号 / 多块取首个通过校验的 / 全都不行 → None；
   2. 两个解析器都能吃散文输出（不再「解析失败，跳过」）；
-  3. pct 脏值（"0.3股" / NaN）不再抛 ValueError 炸穿整轮，按「未表达比例」处理
-     （pct_given=False，消费点回退默认），明说 0 仍区分得出来；
+  3. pct 脏值（"0.3股"）与非有限数（NaN/Inf）不再抛 ValueError 炸穿整轮，按
+     **脏值**处理（pct_given=False + pct_bad_raw，消费点停手留痕）；只有真「没给」
+     （None/空）才回退默认。明说 0 仍区分得出来；
   4. 卖出决策缺 pct → 按清仓（`_sell_fraction`），不是静默算 0 股跳过。
 
 运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_llm_json.py -q
@@ -110,13 +111,18 @@ def test_intraday_parser_dirty_pct_does_not_raise():
     assert ds[0]["pct"] == 0.0 and ds[0]["pct_given"] is False
 
 
-def test_intraday_parser_nan_pct_treated_as_missing():
+def test_intraday_parser_nan_pct_treated_as_dirty():
+    """NaN 不是「没表达」：JSON 允许字面量 NaN（模型/手改都能给），按 missing 处理
+    会让卖出链走清仓——「想减 30%」被放大成整仓，方向与脏值停手原则相反
+    （2026-09-12 终审 HIGH）。"""
     from live_prompt_context import parse_intraday_decision
 
     ds = parse_intraday_decision(
         '{"decisions": [{"action": "watch", "code": "600309.SH", "pct": NaN}]}')
 
     assert ds[0]["pct_given"] is False
+    assert ds[0]["pct_bad_raw"]                       # 脏值标记：消费点据此停手
+    assert "nan" in ds[0]["pct_bad_raw"].lower()
 
 
 def test_intraday_parser_explicit_zero_still_distinguishable():
@@ -209,10 +215,19 @@ def test_parse_pct_three_states():
     assert parse_pct("0.3") == (0.3, "given")
     assert parse_pct(None) == (0.0, "missing")
     assert parse_pct("") == (0.0, "missing")
-    assert parse_pct(float("nan")) == (0.0, "missing")
+    assert parse_pct(float("nan")) == (0.0, "dirty")
     assert parse_pct("三成") == (0.0, "dirty")
     assert parse_pct("0.3股") == (0.0, "dirty")
     assert parse_pct([0.3]) == (0.0, "dirty")
+
+
+def test_parse_pct_non_finite_is_dirty_not_missing():
+    """非有限数（含字符串 `1e999` → inf、`"nan"`）归 dirty：消费点宁可停手，不许
+    按 missing 走到清仓（2026-09-12 终审 HIGH）。"""
+    from live_prompt_context import parse_pct
+
+    for bad in (float("inf"), float("-inf"), "inf", "1e999", "nan", "NaN"):
+        assert parse_pct(bad) == (0.0, "dirty"), bad
 
 
 def test_parse_pct_normalizes_percent_strings():
@@ -254,6 +269,24 @@ def test_sell_fraction_returns_zero_for_dirty_pct():
 
     assert sell_fraction({"pct": 0.0, "pct_given": False,
                           "pct_bad_raw": "'0.3股'"}) == 0.0
+
+
+def test_nan_pct_sell_never_liquidates_end_to_end():
+    """解析 → 执行比例的完整链路：`pct: NaN` 的卖出决策不许变成整仓卖出。
+
+    2026-09-12 终审 HIGH 的场景：NaN 被判 missing → sell_fraction 返 1.0 →
+    `int(avail * 1.0)` 全量下单，且没有 pct_bad_raw/pct_unparsed 任何留痕。"""
+    from live_prompt_context import sell_fraction
+    import live_llm_trade as L
+
+    d = L.parse_decision(
+        '{"decisions": [{"action": "sell", "code": "001312.SZ", "pct": Infinity}]}')[0]
+
+    assert d["pct_given"] is False and d["pct_bad_raw"]
+    assert sell_fraction(d) == 0.0
+    # 非解析器构造的裸 dict（无 pct 标记）同样不许放大
+    assert sell_fraction({"pct": float("nan")}) == 0.0
+    assert sell_fraction({"pct": "0.3股"}) == 0.0
 
 
 # ---------- 解析重试与失败留痕（decide_with_retry / _log_parse_failure） ----------

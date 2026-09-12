@@ -225,3 +225,18 @@ def test_buy_partial_fill_marks_and_tracks_remainder():
     assert _pos("600362.SH")["volume"] == 100
     assert L.load_ledger()["applied_fills"]["B1"]["filled"] == 100
     assert F.load_pending()[0]["volume_recorded"] == 100
+
+
+# ---------- 脏 pct 留痕的 persist 开关（dry-run 不写事件） ----------
+
+def test_note_pct_unparsed_persist_flag_skips_event():
+    """persist=False（dry-run/演练）只回文案、不落事件：演练条目混进真实委托事件流，
+    事后对账分不清哪条是真跑出来的（2026-09-12 审查 LOW）。"""
+    line = F.note_pct_unparsed(AGENT, CODE, "'0.3股'", "sell", persist=False)
+
+    assert "跳过" in line and "0.3股" in line
+    assert not [e for e in _events().values() if e["kind"] == "pct_unparsed"]
+
+    F.note_pct_unparsed(AGENT, CODE, "'0.3股'", "sell")   # 默认 persist=True
+    ev = [e for e in _events().values() if e["kind"] == "pct_unparsed"]
+    assert len(ev) == 1 and ev[0]["alert"] is False

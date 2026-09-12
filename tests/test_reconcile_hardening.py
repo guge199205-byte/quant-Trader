@@ -129,7 +129,7 @@ def test_record_only_path_books_fills(monkeypatch, tmp_path):
     monkeypatch.setattr(H, "load_state", lambda: {})
     monkeypatch.setattr(H, "last_good_sample_ts", lambda st: NOW.isoformat())
     monkeypatch.setattr(H, "missed_sample_minutes", lambda last, now: 0)
-    monkeypatch.setattr(H, "save_state", lambda st: None)
+    monkeypatch.setattr(H, "update_state", lambda *a, **kw: {})
     monkeypatch.setattr(H, "check_volatility", lambda broker, positions: None)
     monkeypatch.setattr(sys, "argv", ["live_hourly_analysis.py", "--record-only"])
 

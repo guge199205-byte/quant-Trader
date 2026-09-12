@@ -14,9 +14,13 @@
   python scripts/live_hourly_analysis.py --force    # 忽略时段检查（调试/补跑）
 """
 import argparse
+import fcntl
 import json
 import os
 import sys
+import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -33,6 +37,9 @@ from live_fills import round_sell_qty  # noqa: E402
 
 # ---- 方案 C: 波动触发参数 ----
 STATE_PATH = ROOT / "logs" / "live_analysis_state.json"  # 上次分析的持仓基线
+# 状态文件的写锁：**独立于 live_analysis.lock**（整点轮整轮持有那把锁，而 record-only
+# 采样每分钟都要写状态，复用会互相饿死）。从 STATE_PATH 派生 → 测试兜底网自动重定向。
+STATE_LOCK_PATH = STATE_PATH.with_name(STATE_PATH.name + ".lock")
 MIN_ANALYSIS_INTERVAL_MIN = 20  # 波动触发节流: 距上次完整分析不足 20 分钟不重复触发
 TRIGGER_PNL_PP = 3.0            # 任一持仓盈亏% 较上次分析变化 ≥3pp → 触发
 TRIGGER_DAY_CHG = 5.0           # 任一持仓个股当日涨跌 ≥5% → 触发
@@ -1130,12 +1137,101 @@ def load_state() -> dict:
     return {}
 
 
-def save_state(baseline: dict) -> None:
+_STATE_LOCK_DEPTH = threading.local()
+
+
+@contextmanager
+def _state_lock(timeout: float = 3.0):
+    """状态文件的跨进程写锁（flock）。yield True=可以继续写，False=超时没抢到。
+
+    与 live_fills._file_lock 同款：同线程可重入（重入计数放 thread.local，线程之间
+    仍各自持 fd 互斥），锁文件打不开时按**无锁继续**并告警——状态写不进去只影响
+    节流/去重，不该反过来打断交易路径。
+    """
+    depth = getattr(_STATE_LOCK_DEPTH, "depth", 0)
+    if depth:                      # 同线程嵌套：直接放行
+        _STATE_LOCK_DEPTH.depth = depth + 1
+        try:
+            yield True
+        finally:
+            _STATE_LOCK_DEPTH.depth = depth
+        return
+    fh, locked = None, False
     try:
-        STATE_PATH.write_text(json.dumps(baseline, ensure_ascii=False, indent=2),
-                              encoding="utf-8")
+        STATE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(STATE_LOCK_PATH, "a+")
+        deadline = time.monotonic() + max(timeout, 0)
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.02)
     except OSError as exc:
-        print(f"[{now_cn():%F %T}] 波动基线写入失败: {exc}")
+        print(f"[{now_cn():%F %T}] ⚠️ 状态锁不可用（{exc}），本次按无锁继续")
+        yield True
+        return
+    finally:
+        if not locked and fh is not None:
+            fh.close()
+    if not locked:
+        yield False
+        return
+    _STATE_LOCK_DEPTH.depth = 1
+    try:
+        yield True
+    finally:
+        _STATE_LOCK_DEPTH.depth = 0
+        try:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fh.close()
+
+
+def _atomic_write_json(path: Path, doc: dict) -> None:
+    """同目录 tmp + os.replace：读者永远看不到半写状态（旧实现是截断式 write_text）。"""
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def update_state(updates: dict | None = None, mutate=None) -> dict:
+    """状态文件的**唯一写入口**：锁内读-改-写 + 原子替换，返回写后的状态。
+
+    2026-09-11 事故：旧 save_state 接受"调用方手里那整份字典"，每分钟的采样进程
+    于是把**分析前**读到的快照整表写回，抹掉同一时段触发轮写的 last_trigger /
+    last_news_key / last_ts → 20 分钟节流、60 分钟同向冷却、新闻 ts 去重全部失效
+    （当天 78 轮完整分析、约 215 万 tokens）。
+
+    现在调用方只提交**自己拥有的键**（updates 浅合并），嵌套字典的读-改-写用
+    mutate(current)->dict 在锁内做。整表覆盖的入口不存在 = 这一类 bug 结构上不可能。
+
+    写失败/抢锁超时只打印，不抛：状态丢了影响的是节流与去重，不该打断交易路径。
+    """
+    with _state_lock() as got:
+        if not got:
+            print(f"[{now_cn():%F %T}] ⚠️ 状态写入放弃（锁超时），键: "
+                  f"{sorted((updates or {}).keys())}")
+            return load_state()
+        cur = load_state()
+        new = dict(cur)
+        if updates:
+            new.update(updates)
+        if mutate is not None:
+            new = mutate(dict(new)) or new
+        try:
+            _atomic_write_json(STATE_PATH, new)
+        except OSError as exc:
+            print(f"[{now_cn():%F %T}] 波动基线写入失败: {exc}")
+            return cur
+        return new
 
 
 # ---------- 断线恢复判据辅助（2026-09-07 加固，纯函数便于单测） ----------
@@ -1338,8 +1434,8 @@ def check_volatility(broker, positions: list) -> str | None:
             brief = {}
         news_hits, new_key = news_triggers(brief, state.get("last_news_key") or "")
         if news_hits:
-            # 立即记账（防同一分子反复唤醒）；merge 保存保留其他键
-            save_state({**load_state(), "last_news_key": new_key})
+            # 立即记账（防同一分子反复唤醒）；只写自己拥有的键（见 update_state）
+            update_state({"last_news_key": new_key})
         triggers += news_hits
     except Exception:  # noqa: BLE001
         pass
@@ -1383,7 +1479,7 @@ def check_volatility(broker, positions: list) -> str | None:
               f"（{TRIGGER_SAME_DIR_COOLDOWN_MIN} 分钟内同向不重复）")
     if not kept:
         return None
-    save_state({**state, "last_trigger": lt})
+    update_state({"last_trigger": lt})
     return "；".join(kept[:5]) + ("…" if len(kept) > 5 else "")
 
 
@@ -1768,7 +1864,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
         return 0
     # 心跳基线提前写：慢分析（LLM 120s 超时）跨分钟时，波动节流依然有效
     # （原实现只在分析结束后写 last_ts，glm 超时会让下一分钟重新触发 → 叠跑）
-    save_state({**load_state(), "last_ts": now.isoformat(), "last_reason": reason})
+    update_state({"last_ts": now.isoformat(), "last_reason": reason})
 
     names = load_names()
     rows = build_rows(broker, positions, names)
@@ -1854,9 +1950,14 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                             and seen_sigs.get(agent) == pool_sig
                             and seen_days.get(agent) == today)
             if not pool_compact:
-                save_state({**st,
-                            "last_pool_sig": {**seen_sigs, agent: pool_sig},
-                            "last_pool_sig_day": {**seen_days, agent: today}})
+                # 嵌套字典的读-改-写在锁内做：同轮里前一个 agent 刚写的 sig 不能被
+                # 本 agent 手里的陈旧副本抹掉（见 update_state 的 mutate）
+                update_state(mutate=lambda cur: {
+                    **cur,
+                    "last_pool_sig": {**(cur.get("last_pool_sig") or {}), agent: pool_sig},
+                    "last_pool_sig_day": {**(cur.get("last_pool_sig_day") or {}),
+                                          agent: today},
+                })
             user_content = build_flat_content(pool_agent, direction, virtual_cash, agent,
                                               compact=pool_compact)
             print(f"[{now:%F %T}] {agent} 空仓，候选池复盘"
@@ -2037,13 +2138,14 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
                 last_inout[r["code"]] = inout
     except Exception:  # noqa: BLE001
         pass
-    save_state({**load_state(),
-                "last_ts": now.isoformat(),
-                "last_reason": reason,
-                "last_pnl": {r["code"]: r["pnl_pct"] for r in rows},
-                "last_day": {r["code"]: r["day_chg"] for r in rows if r["day_chg"] is not None},
-                "last_sector_chg": last_sector_chg,
-                "last_inout": last_inout})
+    update_state({
+        "last_ts": now.isoformat(),
+        "last_reason": reason,
+        "last_pnl": {r["code"]: r["pnl_pct"] for r in rows},
+        "last_day": {r["code"]: r["day_chg"] for r in rows if r["day_chg"] is not None},
+        "last_sector_chg": last_sector_chg,
+        "last_inout": last_inout,
+    })
     return 0 if ok else 1
 
 
@@ -2177,10 +2279,13 @@ def main() -> int:
                                 print(f"[{now:%F %T}] ⚠️ 断线恢复补跑失败: {exc}（下分钟重试）")
                                 keep_last_good = True
         # 记录本分钟采样有效性（旧键保留兼容；补跑失败不推进 last_good → 下分钟重试）
+        # 只提交采样键：旧实现把**分析前**读到的 st_prev 整表写回，抹掉了本分钟内
+        # 触发轮写的 last_trigger/last_ts/last_news_key → 节流/冷却/去重全失效
+        # （2026-09-11，78 轮完整分析）。见 update_state。
         new_sample = {"last_sample_asset": asset, "last_sample_ts": now.isoformat()}
         if asset > 0 and not keep_last_good:
             new_sample["last_good_sample_ts"] = now.isoformat()
-        save_state({**st_prev, **new_sample})
+        update_state(new_sample)
         return 0
 
     if not args.force and not in_trading_window(now):

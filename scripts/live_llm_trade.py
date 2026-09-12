@@ -120,15 +120,12 @@ def _quote_guarded_price(broker, code: str, fp: float) -> tuple[float, bool]:
 
 # ---------- 候选池 ----------
 
-def load_pool(top: int = 20) -> tuple[list, dict]:
-    """候选池：picks.json → 决策用表格行 + 大盘方向。
-    返回 (rows, market_direction)；无池子返回 ([], {})。
+def load_pool_meta(top: int = 20) -> tuple[list, dict, dict]:
+    """候选池 + 大盘方向 + 来源元数据（2026-09-12 P1-3）。
 
-    池子入口即剔除 ST/*ST/退市整理/操作员黑名单/事件风险标的
-    （symbol_policy.filter_pool，2026-09-11 用户口径「agent 选出来的股票、
-    跟踪的股票，不需要 ST 的」）。实盘三条取池路径（09:35 决策 / 整点轮 /
-    L2 采集）共用本函数，单点生效；下单闸门仍独立拦一次兜底。
-    多取 POOL_FILTER_OVERFETCH 只：剔除的名额由后续排名补上，池子不白白变小。
+    实盘消费路径（09:35 调仓 / 整点轮）用本函数：提示词与 log.jsonl 都要写明
+    「用的是哪一天的哪类池、是否滞后」；池整份缺失/最新一期读不出 → 事件
+    （alert，按自然日去重）。L2 采集 / 新闻管线只要代码，继续用 load_pool。
     """
     fetch_top = top + POOL_FILTER_OVERFETCH if top > 0 else 0
     sel = subprocess.run(
@@ -147,15 +144,35 @@ def load_pool(top: int = 20) -> tuple[list, dict]:
               + "、".join(f"{r.get('code')} {r.get('name') or ''}" for r, _ in blocked))
     if top > 0:
         pool = pool[:top]
-    # 大盘方向：最新 picks.json 顶层 market_direction
+    # 来源元数据（picks_source，与 select_from_reports 子进程同一套判据）：
+    # 方向也取自**同一个**池文件——原来是另一个 glob 字典序取最后（可与池子不同源）
+    from picks_source import latest_picks, note_missing_pool, pool_meta
+
+    info = latest_picks(PICKS_JSON)
+    meta = pool_meta(info)
+    if meta["missing"] or meta["unreadable"]:
+        note_missing_pool(meta["note"])
     direction = {}
-    files = sorted(PICKS_JSON.glob("*_picks.json"))
-    if files:
-        try:
-            d = json.loads(files[-1].read_text(encoding="utf-8"))
-            direction = d.get("market_direction") or {}
-        except (OSError, json.JSONDecodeError):
-            pass
+    if info and isinstance(info[2], dict):
+        d = info[2].get("market_direction")
+        if isinstance(d, dict):
+            direction = d
+    return pool, direction, meta
+
+
+def load_pool(top: int = 20) -> tuple[list, dict]:
+    """候选池：picks.json → 决策用表格行 + 大盘方向。
+    返回 (rows, market_direction)；无池子返回 ([], {})。
+
+    池子入口即剔除 ST/*ST/退市整理/操作员黑名单/事件风险标的
+    （symbol_policy.filter_pool，2026-09-11 用户口径「agent 选出来的股票、
+    跟踪的股票，不需要 ST 的」）。实盘三条取池路径（09:35 决策 / 整点轮 /
+    L2 采集）共用本函数，单点生效；下单闸门仍独立拦一次兜底。
+    多取 POOL_FILTER_OVERFETCH 只：剔除的名额由后续排名补上，池子不白白变小。
+
+    需要池来源/新鲜度说明的路径用 load_pool_meta（本函数是它的二值包装）。
+    """
+    pool, direction, _ = load_pool_meta(top)
     return pool, direction
 
 
@@ -644,12 +661,18 @@ def _run(args) -> int:
     holdings = holding_rows(broker, positions)
     print(f"💰 账户资产 ¥{asset:,.0f} 现金 ¥{cash:,.0f} 持仓 {len(holdings)} 只")
 
-    pool, direction = load_pool(args.top)
+    pool, direction, pool_info = load_pool_meta(args.top)
     if not pool:
         print("❌ 无候选池（picks.json 缺失或为空），终止")
         mark(ok=False, note="no_pool")
         return 1
     print(f"📋 候选池 {len(pool)} 只  大盘: {direction.get('direction', '—')}")
+    # 池来源/新鲜度随行进提示词（P1-3）：log.jsonl 存的就是提示词，事后对账能看出
+    # 某一轮吃的是哪份池；滞后/缺失在这里也必须可见（不能只留在 stderr）
+    from picks_source import prompt_line
+
+    pool_note = prompt_line(pool_info)
+    print(f"  {pool_note}")
 
     from live_hourly_analysis import append_log, daily_buy_codes
 
@@ -695,6 +718,7 @@ def _run(args) -> int:
                               for c, n, v, q in too_pricey))
         prompt = build_prompt(agent, my_holdings, pool_rows(pool_for_agent), direction,
                               remaining, pool=pool_for_agent)
+        prompt = f"{pool_note}\n{prompt}"   # 池来源首部注入（P1-3，进对话流/日志）
         # 决策：LLM + 解析，失败重试 1 次（2026-09-12 P0-5）
         decisions, content, usage, fail_reason = decide_with_retry(prompt, agent)
         if decisions is None:

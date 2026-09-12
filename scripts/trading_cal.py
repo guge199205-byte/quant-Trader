@@ -130,6 +130,23 @@ def next_trading_day(d: date | None = None) -> date:
     return d
 
 
+def prev_trading_day(d: date | None = None, *, inclusive: bool = False) -> date:
+    """最近交易日：inclusive=True 且 d 本身是交易日 → 返回 d；否则严格早于 d。
+
+    用于「最近已收盘交易日」判定：批量任务在凌晨/盘前运行时当天的会话尚未收盘，
+    必须回看前一天（周末/假期自动跳过）。日历未覆盖时退化为星期判断
+    （同 is_trading_day 的口径）。
+    """
+    d = d or date.today()
+    if inclusive and is_trading_day(d):
+        return d
+    for _ in range(20):          # 覆盖春节/国庆最长休市段
+        d = d - timedelta(days=1)
+        if is_trading_day(d):
+            return d
+    return d
+
+
 def days_to_next_trading_day(d: date | None = None) -> int:
     """距下一交易日的自然日数（1=复市就在明天 → 「休市最后一晚」）。
 

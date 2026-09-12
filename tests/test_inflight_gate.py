@@ -165,7 +165,10 @@ def llm_trade(monkeypatch, tmp_path, pending_file):
     monkeypatch.setattr(L, "_query_account_with_retry",
                         lambda *a, **kw: (FakeBroker(), FakeBroker()._account_query()))
     monkeypatch.setattr(L, "holding_rows", lambda broker, pos: [dict(holding)])
-    monkeypatch.setattr(L, "load_pool", lambda top=20: ([{"code": CODE, "name": "福恩股份"}], {}))
+    monkeypatch.setattr(L, "load_pool_meta", lambda top=20: (
+        [{"code": CODE, "name": "福恩股份"}], {},
+        {"file": "20260911_picks.json", "date": "20260911", "kind": "quantmind",
+         "note": "", "missing": False, "unreadable": False}))
     monkeypatch.setattr(L, "load_ledger", lambda: json.loads(json.dumps(ledger)))
     monkeypatch.setattr(L, "agent_remaining", lambda ledger, agent: 100000.0)
     monkeypatch.setattr(L, "agent_virtual_cash", lambda ledger, agent: 100000.0)

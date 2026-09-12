@@ -1980,6 +1980,7 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
     last_decisions = load_last_decisions()
     ok = 0
     pool, direction = None, None  # 候选池（本轮懒加载一次，空仓建仓 + 持仓新开仓/换仓共用）
+    pool_info, pool_note = {}, ""  # 池来源元数据 + 提示词首部行（P1-3）
     pool_loaded = False
     for agent in (agents if agents is not None else enabled_agents()):
       try:  # per-agent 隔离：单 agent 执行/解析异常不拖死其他 agent（2026-09-07 复盘）
@@ -2015,9 +2016,12 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
             continue
         bump_round_counter(agent, today)
         if not pool_loaded:  # 候选池：持仓 agent 也要（新开仓/换仓 + 注入池内实时价）
-            from live_llm_trade import load_pool
+            from live_llm_trade import load_pool_meta
 
-            pool, direction = load_pool(20)
+            pool, direction, pool_info = load_pool_meta(20)
+            from picks_source import prompt_line
+
+            pool_note = prompt_line(pool_info)   # 池来源/新鲜度 → 提示词首部（进对话流）
             pool_loaded = True
         # 按资金量裁候选（2026-09-09）：单票预算 = 剩余额度×单票比例，且不超虚拟现金。
         # 买不起的（最小 100/200 股一手都超预算）整行不推给模型——池子是研究产物、
@@ -2083,6 +2087,11 @@ def run_analysis(broker, reason: str, dry_run: bool = True,
         # 比赛配置多选：多选时按自然日轮转（一天一种模式，跨天轮换，
         # 盘中口径一致不横跳；单选/轮转关闭时行为不变）
         from prompts.analysis_modes import rotated_modes
+
+        # 池来源/新鲜度首部注入（P1-3）：log.jsonl 存的就是 user_content，
+        # 事后对账能看出某一轮吃的是哪份池；池缺失/滞后也让模型看得见
+        if pool_note:
+            user_content = f"{pool_note}\n{user_content}"
 
         agent_exec_done = False  # 每 agent 每小时只执行一轮（多模式多轮会叠加买入突破分账额度）
         hyp_lines = load_hypotheses_summary()

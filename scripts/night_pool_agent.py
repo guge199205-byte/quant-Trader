@@ -7,13 +7,17 @@
    明晨 load_pool 自动优先进该池——多个 agent 选股先从这里找）
 3. 对话流（pseudo agent『研究总控』，data/agent_data_astock/market-research/）→ 模型对话页可见
 
-用法：python scripts/night_pool_agent.py [--date 2026-09-03]
-cron：每日 北京19:30（日历闸门在脚本内：交易日/休市最后一晚执行，周末与假期中段跳过）。
+用法：python scripts/night_pool_agent.py [--date 2026-09-03] [--if-missing]
+cron：北京 02:30 周二~周六（JST 03:30）→ 等 quantdb 当日分区落盘后产「当日」池；
+     另加 04:30 幂等补跑（--if-missing：目标日池已存在则跳过），覆盖同步延迟。
+     数据未落（分区 < 会话日）→ 退出码 2，宁可不产也不产陈旧池。
+输出命名：池文件按**目标交易日** `{target}_agent_picks.json`（09:35 消费的就是当日池）；
+         纪要 logs/night_pool/{session}.md/.json 按数据会话日。
 """
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,8 +25,37 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "prompts"))
 
-from trading_cal import (days_to_next_trading_day, is_trading_day,
-                         next_trading_day, why_not)  # noqa: E402
+from trading_cal import (is_trading_day, next_trading_day,  # noqa: E402
+                         prev_trading_day)
+
+NIGHT_POOL_DIR = ROOT / "logs" / "night_pool"
+PICKS_DIR = ROOT.parent / "projects/quantmind/data/reports/stock_picks"
+
+
+def _dash8(d8: str) -> str:
+    """YYYYMMDD → YYYY-MM-DD。"""
+    return f"{d8[:4]}-{d8[4:6]}-{d8[6:8]}"
+
+
+def session_and_target(now: datetime) -> tuple[str, str]:
+    """(数据会话日, 目标交易日)，均 YYYYMMDD。
+
+    02:30 运行时当天会话尚未收盘：今天若是交易日 → session=上一交易日（严格回看）；
+    若今天休市（周末/假期）→ session=最近一个交易日（含当日判断）。
+    target = session 之后的第一个交易日（跨周末/长假自动跳）。
+    """
+    d = now.date()
+    session = prev_trading_day(d, inclusive=not is_trading_day(d))
+    return session.strftime("%Y%m%d"), next_trading_day(session).strftime("%Y%m%d")
+
+
+def check_data_fresh(session: str) -> tuple[bool, str]:
+    """quantdb 最新分区是否已到会话日。未到 → (False, 原因)，调用方退出码 2。"""
+    d0 = latest_dt()
+    if not d0 or d0 < session:
+        return False, (f"quantdb 最新分区 {d0 or '（无）'} 落后于会话日 {session}"
+                       "——宁可不产也不产陈旧池（等 04:30 幂等补跑）")
+    return True, ""
 
 
 def _idle_days(d0: str) -> int:
@@ -269,11 +302,15 @@ def filter_risk_candidates(cands: list, risk: dict) -> tuple:
     return kept, dropped
 
 
-def run(date: str, dry: bool = False) -> int:
-    cands, d0 = build_candidates(date)
+def run(session: str, target: str, dry: bool = False) -> int:
+    """session=数据会话日(YYYYMMDD)；target=该池服务的目标交易日(YYYYMMDD)。"""
+    cands, d0 = build_candidates(session)
     if not cands:
-        print("❌ 无候选（数据缺失）")
+        print(f"❌ 无候选（数据缺失，分区 {d0 or '无'}）")
         return 1
+    if d0 < session:      # main 已先拦一次；直调 run() 的兜底（宁可不产，不产陈旧池）
+        print(f"⏸️ 数据分区 {d0} 早于会话日 {session}，不产陈旧池（等分区落盘）")
+        return 2
     from market_state import build_market_state
 
     from agent_tools.brokers.tdx_bridge import TdxBridgeBroker
@@ -317,6 +354,7 @@ def run(date: str, dry: bool = False) -> int:
     news = _news_block(d0)                      # 休市窗口新闻简报（平日晚间为空）
     time_box = 150 if news else 90              # 有简报时放宽思考时间盒
     task = f"""[晚间市场研究任务] 基于 quantdb {d0} 收盘数据已初筛出 {len(cands)} 只候选（附分数/涨跌/成交额）。
+本池将用于 {_dash8(target)} 开盘后的实盘决策（行情数据止于 {_dash8(d0)} 收盘）。
 
 要求（时间盒 {time_box} 秒，禁止逐只调工具取数）：
 1. 初筛数据已系统算好（涨跌/成交额/复合分/名称），直接使用；
@@ -359,14 +397,16 @@ def run(date: str, dry: bool = False) -> int:
     if not isinstance(payload, dict):
         payload = {"date": d0, "pool": [], "market_view": content[:400]}
     payload["date"] = d0
-    dpath = ROOT / "logs" / "night_pool"
+    dpath = NIGHT_POOL_DIR
     dpath.mkdir(parents=True, exist_ok=True)
-    (dpath / f"{d0}.md").write_text(f"# 晚间市场研究 · {d0}\n\n{content}", encoding="utf-8")
-    (dpath / f"{d0}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=1),
-                                      encoding="utf-8")
+    (dpath / f"{session}.md").write_text(
+        f"# 晚间市场研究 · {session}（服务 {target}）\n\n{content}", encoding="utf-8")
+    (dpath / f"{session}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=1),
+                                           encoding="utf-8")
     # 候选池写 quantmind 报告目录（兼容 select_from_reports：side/score/reason）。
     # side 恒为 HOLD 占位（无信息量）——消费端（load_pool/pool_rows/提示词）已不再展示，
     # 判断全部由各 agent 依据分数+大盘+板块+新闻综合给出。
+    # 命名按**目标交易日**（2026-09-12 P1-4）：09:35 消费端按日期取最新 → 当日池自然胜出。
     try:
         pool = []
         for p in (payload.get("pool") or [])[:20]:
@@ -376,57 +416,64 @@ def run(date: str, dry: bool = False) -> int:
                          "side": "HOLD", "score": float(p.get("score") or 0),
                          "events": _ev,
                          "reason": str(p.get("reason") or "")[:160]})
-        out = {"date": d0, "market_direction": {"direction": payload.get("market_view", "")[:80]},
+        out = {"date": target, "session": session,
+               "market_direction": {"direction": payload.get("market_view", "")[:80]},
                "picks": pool}
-        picks_dir = ROOT.parent / "projects/quantmind/data/reports/stock_picks"
-        picks_dir.mkdir(parents=True, exist_ok=True)
-        (picks_dir / f"{d0}_agent_picks.json").write_text(
+        PICKS_DIR.mkdir(parents=True, exist_ok=True)
+        (PICKS_DIR / f"{target}_agent_picks.json").write_text(
             json.dumps(out, ensure_ascii=False), encoding="utf-8")
-        print(f"✅ 池文件 {d0}_agent_picks.json（{len(pool)} 只）")
+        print(f"✅ 池文件 {target}_agent_picks.json（{len(pool)} 只，数据会话 {session}）")
     except OSError as exc:  # noqa: BLE001
         print(f"⚠️ 写池文件失败: {exc}")
-    # 对话流：pseudo『研究总控』
+    # 对话流：pseudo『研究总控』（归到该池服务的交易日——周一早班看得到周一的池）
     try:
-        lf = ROOT / "data" / "agent_data_astock" / "market-research" / "log" / date / "log.jsonl"
+        lf = ROOT / "data" / "agent_data_astock" / "market-research" / "log" / _dash8(target) / "log.jsonl"
         lf.parent.mkdir(parents=True, exist_ok=True)
         row = {"timestamp": datetime.now().astimezone().isoformat(),
                "signature": "market-research", "kind": "night_pool",
                "new_messages": [
-                   {"role": "user", "content": f"【晚间市场研究任务】{d0} 收盘数据 → 明日板块+候选池"},
+                   {"role": "user", "content": f"【晚间市场研究任务】{d0} 收盘数据 → {_dash8(target)} 板块+候选池"},
                    {"role": "assistant", "content": content},
                ]}
         with lf.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     except OSError as exc:  # noqa: BLE001
         print(f"⚠️ 写对话流失败: {exc}")
-    print(f"✅ 晚间研究完成 → logs/night_pool/{d0}.md/.json")
+    print(f"✅ 晚间研究完成 → logs/night_pool/{session}.md/.json（服务 {target}）")
     return 0
 
 
-def main() -> int:
+def main(argv: list | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--date", default="")
+    ap.add_argument("--date", default="", help="手工复跑：数据会话日（YYYY-MM-DD / YYYYMMDD）")
     ap.add_argument("--dry", action="store_true")
-    a = ap.parse_args()
-    # 日历闸门：①交易日晚上照常研究（当日有收盘、次日正常开市）；
-    # ②休市期最后一晚（周末/长假末夜，下一交易日就在明天）也补研究——
-    #   长假/周末期间新闻与外围变化可能改变次日开盘预期，复市前夜需刷新纪要；
-    # ③周末/假期中段（gap>1）跳过：无新收盘数据且离复市还早。
+    ap.add_argument("--if-missing", action="store_true",
+                    help="幂等补跑（04:30）：目标日池文件已存在则立即退出")
+    a = ap.parse_args(argv)
+    # 日历闸门（2026-09-12 改 02:30 后的口径）：
+    #   ①session = 最近已收盘交易日（凌晨运行时当天会话尚未收盘，自动回看前一天，
+    #     周末/长假自动跳过）；②target = session 之后第一个交易日 = 该池服务日；
+    #   ③quantdb 分区 < session（数据未落）→ 退出码 2：宁可不产也不产陈旧池
+    #     （日报会显示夜池缺失；04:30 幂等补跑兜住同步延迟）。
     if a.date:
-        date = a.date
-    else:
-        from zoneinfo import ZoneInfo
-
-        bj = datetime.now(ZoneInfo("Asia/Shanghai"))
-        today = bj.date()
-        gap = days_to_next_trading_day(today)
-        if not is_trading_day(today) and gap != 1:
-            nt = next_trading_day(today)
-            print(f"⏭️ {bj:%F %T} 非交易日（{why_not(today)}），距下一交易日 "
-                  f"{nt}（{gap} 天），跳过晚间研究")
-            return 0
-        date = bj.strftime("%Y-%m-%d")
-    return run(date, dry=a.dry)
+        session = a.date.replace("-", "")
+        try:
+            d = date.fromisoformat(_dash8(session))
+        except ValueError:
+            print(f"❌ --date 格式应为 YYYY-MM-DD 或 YYYYMMDD：{a.date}")
+            return 1
+        return run(session, next_trading_day(d).strftime("%Y%m%d"), dry=a.dry)
+    bj = now_cn()
+    session, target = session_and_target(bj)
+    if a.if_missing and (PICKS_DIR / f"{target}_agent_picks.json").is_file():
+        print(f"⏭️ {bj:%F %T} 目标日池已存在（{target}_agent_picks.json），补跑跳过")
+        return 0
+    ok, why = check_data_fresh(session)
+    if not ok:
+        print(f"⏸️ {bj:%F %T} {why}")
+        return 2
+    print(f"🌙 {bj:%F %T} 晚间研究：数据会话 {session} → 服务交易日 {target}")
+    return run(session, target, dry=a.dry)
 
 
 if __name__ == "__main__":

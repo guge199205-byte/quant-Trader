@@ -19,6 +19,7 @@ deepseek-v4-pro 的 001312.SZ 1100 股被抹成 100 股、现金虚增 ¥17,500�
   - 成交流水、哨兵动作日志（live_trade_picks.LOG_DIR、live_price_watch.LOG_DIR）
   - 条件位文件（live_price_watch.WATCH_FILE，写坏 = 真实止损被抹）
   - 决策/状态/熔断/L2 快照等次级状态
+  - 晚间研究纪要（logs/night_pool）与候选池产出（quantmind stock_picks）
 """
 import sys
 from pathlib import Path
@@ -44,6 +45,11 @@ _OPTIONAL_STATE_MODULES = {
     "live_llm_trade": ("LOCK_FILE", "STATE_FILE"),
     "live_breaker": ("TRIP_DIR",),
     "live_l2_capture": ("FACTORS_FILE", "STATE_FILE", "STATUS_FILE", "MARKET_FILE"),
+    # 晚间研究/候选池取用（2026-09-12 批 6）：这两个模块常量在原值下指向生产
+    # logs/ 与 quantmind 报告目录。实录：新增用例漏 patch NIGHT_POOL_DIR，
+    # 一次测试就把真实 logs/night_pool/{session}.md 覆写成桩内容。
+    "night_pool_agent": ("NIGHT_POOL_DIR", "PICKS_DIR"),
+    "picks_source": ("PICKS_DIR",),
 }
 for _m in _OPTIONAL_STATE_MODULES:
     try:
@@ -53,6 +59,9 @@ for _m in _OPTIONAL_STATE_MODULES:
 
 _PROD_LOGS = (ROOT / "logs").resolve()
 _PROD_DATA = (ROOT / "data").resolve()
+# quantmind 侧研究产物（stock_picks 候选池等）：不在本仓 logs//data/ 下，但同样是
+# 生产写路径——晚间研究池被测试覆写 = 次日实盘候选池被污染（2026-09-12 实录）。
+_PROD_QMDATA = (ROOT.parent / "projects/quantmind/data").resolve()
 
 
 def _redirect_leftover_state_paths(monkeypatch, tmp_path, modules) -> list:
@@ -78,7 +87,8 @@ def _redirect_leftover_state_paths(monkeypatch, tmp_path, modules) -> list:
             # 落点单独开一棵 prod-state/ 树（不走 tmp_path/"logs"）：有些用例自己
             # 会 mkdir(tmp_path/"logs")，预建同名目录会让它们 FileExistsError。
             for root, dest in ((_PROD_LOGS, tmp_path / "prod-state" / "logs"),
-                               (_PROD_DATA, tmp_path / "prod-state" / "data")):
+                               (_PROD_DATA, tmp_path / "prod-state" / "data"),
+                               (_PROD_QMDATA, tmp_path / "prod-state" / "quantmind")):
                 if real == root:
                     target = dest
                 elif str(real).startswith(str(root) + "/"):

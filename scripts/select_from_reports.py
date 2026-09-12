@@ -20,6 +20,9 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from picks_source import (KIND_AGENT, freshness_note,  # noqa: E402
+                          parse_picks_name)
+
 REPORTS = Path("/home/zbox/projects/quantmind/data/reports")
 
 
@@ -133,8 +136,24 @@ def load_from_md(md_file: Path) -> list[dict]:
 
 
 def latest_picks_file() -> Path:
-    files = sorted(REPORTS.glob("stock_picks/*_picks.json"))
-    return files[-1] if files else None
+    """最新一期池文件（**按文件名日期**取最新，同日晚间研究池优先）。
+
+    2026-09-12 P1-3：选择逻辑统一收进 picks_source（原来这里 sorted(glob)[-1]
+    裸取字典序最后：同日 agent 池被 quantmind 池压过、最新一期缺失无人知晓）。
+    """
+    from picks_source import latest_picks
+
+    info = latest_picks(REPORTS / "stock_picks")
+    return info[0] if info else None
+
+
+def picks_file_for_date(date8: str) -> Path:
+    """--date 指定日的池文件：`{d}_agent_picks.json` 优先，回退 `{d}_picks.json`。"""
+    d = REPORTS / "stock_picks"
+    for name in (f"{date8}_agent_picks.json", f"{date8}_picks.json"):
+        if (d / name).is_file():
+            return d / name
+    return d / f"{date8}_picks.json"
 
 
 def latest_md_file() -> Path:
@@ -154,13 +173,24 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.source == "picks":
-        picks_file = latest_picks_file()
-        if args.date:
-            picks_file = REPORTS / "stock_picks" / f"{args.date}_picks.json"
+        picks_file = picks_file_for_date(args.date) if args.date else latest_picks_file()
         if not picks_file or not picks_file.exists():
             sys.exit(f"未找到 picks 报告: {picks_file}")
         picks = load_picks(picks_file)
-        print(f"# 数据源: {picks_file}（{date.today()} 读取）", file=sys.stderr)
+        # 数据源行：池日期/类型 + 新鲜度——滞后必须显式（2026-09-12 P1-3），
+        # 下游（load_pool 提示词/log.jsonl）另走 picks_source.pool_meta。
+        src = f"# 数据源: {picks_file.name}（{date.today()} 读取）"
+        parsed = parse_picks_name(picks_file.name)
+        if parsed:
+            d8, kind = parsed
+            src = (f"# 数据源: {picks_file.name}（池日期 {d8}，"
+                   f"{'晚间研究池' if kind == KIND_AGENT else '盘后池'}；"
+                   f"{date.today()} 读取）")
+            if not args.date:
+                note = freshness_note(d8, kind)
+                if note:
+                    src += f"\n{note}"
+        print(src, file=sys.stderr)
     else:
         md_file = latest_md_file()
         if not md_file or not md_file.exists():

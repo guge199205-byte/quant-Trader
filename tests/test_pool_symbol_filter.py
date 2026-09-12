@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import live_llm_trade as LT  # noqa: E402
+import picks_source as PS    # noqa: E402
 import symbol_policy as SP  # noqa: E402
 
 
@@ -87,6 +88,60 @@ def test_load_pool_survives_bad_subprocess_output(pool_env, monkeypatch, tmp_pat
 
     monkeypatch.setattr(LT.subprocess, "run", broken)
     assert LT.load_pool(20) == ([], {})
+
+
+# ---------- 池来源元数据（P1-3，2026-09-12）：提示词/日志/事件同源 ----------
+
+def test_load_pool_meta_names_source_file(pool_env, tmp_path):
+    """元数据必须指向**子进程实际取用的同一目录**（LT.PICKS_JSON 可被测试/部署重定向）。"""
+    feed, _ = pool_env
+    feed.append([_row("600309.SH", "万华化学")])
+    d = tmp_path / "picks"
+    d.mkdir(exist_ok=True)
+    (d / "20260910_agent_picks.json").write_text(json.dumps({
+        "date": "20260910", "market_direction": {"direction": "震荡偏强"},
+        "picks": [{"code": "600309.SH", "name": "万华化学", "score": 9.0}]}),
+        encoding="utf-8")
+
+    pool, direction, meta = LT.load_pool_meta(20)
+
+    assert [p["code"] for p in pool] == ["600309.SH"]
+    assert direction == {"direction": "震荡偏强"}          # 方向取自**同一个池文件**
+    assert meta["file"] == "20260910_agent_picks.json" and meta["kind"] == "agent"
+    assert "20260910_agent_picks.json" in PS.prompt_line(meta)
+
+
+def test_load_pool_meta_missing_records_alert_event(pool_env):
+    """池目录一个文件都没有 → 元数据标 missing + 事件（alert，按日去重）。"""
+    import live_fills as F
+
+    feed, _ = pool_env
+    feed.append([])
+
+    pool, direction, meta = LT.load_pool_meta(20)
+
+    assert pool == [] and direction == {} and meta["missing"] is True
+    doc = json.loads(F.EVENTS_FILE.read_text(encoding="utf-8"))
+    hits = [v for v in doc.values() if v.get("kind") == "pool_missing"]
+    assert len(hits) == 1 and hits[0]["alert"] is True
+
+
+def test_load_pool_meta_unreadable_pool_alerts(pool_env, tmp_path):
+    """最新一期解析失败 → 不静默回退旧池（事故形态），同样上告警面。"""
+    import live_fills as F
+
+    feed, _ = pool_env
+    feed.append([_row("600309.SH", "万华化学")])
+    d = tmp_path / "picks"
+    d.mkdir(exist_ok=True)
+    (d / "20260910_picks.json").write_text("{坏 JSON", encoding="utf-8")
+
+    _, _, meta = LT.load_pool_meta(20)
+
+    assert meta["unreadable"] is True
+    doc = json.loads(F.EVENTS_FILE.read_text(encoding="utf-8"))
+    assert any("无法解析" in v.get("msg", "") for v in doc.values()
+               if v.get("kind") == "pool_missing")
 
 
 def test_live_paths_share_the_filtered_pool_entry():

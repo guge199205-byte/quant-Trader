@@ -189,8 +189,11 @@ def test_skipped_wakeup_round_has_no_side_effects(state, quiet, monkeypatch):
     import live_llm_trade as T
 
     calls = []
-    monkeypatch.setattr(T, "load_pool", lambda top: (
-        calls.append(top), ([{"code": CODE, "name": "X", "score": 9.0}], "震荡"))[1])
+    monkeypatch.setattr(T, "load_pool_meta", lambda top: (
+        calls.append(top), ([{"code": CODE, "name": "X", "score": 9.0}], {},
+                            {"missing": False, "unreadable": False, "note": "",
+                             "file": "20260911_picks.json", "date": "20260911",
+                             "kind": "quantmind"}))[1])
     monkeypatch.setattr(L, "load_ledger", lambda: {"agents": {AGENT: {
         "virtual_cash": 50000.0, "positions": {}}}})
     today = _today()

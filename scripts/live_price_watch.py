@@ -561,8 +561,15 @@ def _watch_plan_id(agent: str, rule: dict) -> str:
 
     plan_seq（2026-09-12）：终态未成交（废单）**重新布防**时必须再换一次号——
     桥的 plan 去重记在内存里（重启即丢），同号重下会被永久判 duplicate，规则
-    再也拿不到真单。plan_seq 是本条规则的重布防代数，只增不减。"""
-    stamp = re.sub(r"\D", "", str(rule.get("created_ts") or ""))[:12]
+    再也拿不到真单。plan_seq 是本条规则的重布防代数，只增不减。
+
+    created_ts 取到**微秒**（[:20]，不是只到分钟）：一次分析整组写下多条规则，
+    同一分钟内同代码的多条（001312 就有 17.05/16.60/17.05 三条）若共用一个号，
+    第一条真下单后，桥的**入口去重**会让兄弟规则永久判 duplicate——回捞到的唯一
+    候选又是已记账的那笔（不接管）→ dup_unresolved 每分钟空转，**更深的那道
+    全仓止损静默失效**。到微秒后 plan 号与 _rule_key（code, created_ts）一一对应：
+    一条规则一个号，重试仍复用同号。"""
+    stamp = re.sub(r"\D", "", str(rule.get("created_ts") or ""))[:20]
     if not stamp:
         stamp = f"{now_cn():%Y%m%d}"
     seq = int(_fnum(rule.get("plan_seq"), 0))

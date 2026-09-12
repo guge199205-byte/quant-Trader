@@ -525,6 +525,71 @@ def test_refire_events_of_two_orders_do_not_clobber_each_other(life):
     assert len(keys) == 2 and any("T1" in k for k in keys) and any("T2" in k for k in keys)
 
 
+class _DedupBroker(_LifeBroker):
+    """模拟桥的**入口去重**（Windows 侧 plan_executor._executed_plans，内存、重启即丢）：
+    同一个 plan 号第二次执行 → 409 DUPLICATE_PLAN，桥回 status=duplicate。"""
+
+    def __init__(self):
+        super().__init__()
+        self.executed, self.duplicates = set(), []
+
+    def sell(self, sig, date, code, vol, price=None, plan_id=None):
+        if plan_id in self.executed:
+            self.duplicates.append(plan_id)
+            return {"order_id": "", "status": "duplicate",
+                    "message": "plan 已执行过（桥去重）"}
+        self.executed.add(plan_id)
+        return super().sell(sig, date, code, vol, price, plan_id)
+
+
+def test_sibling_rules_in_same_minute_get_distinct_plan_ids():
+    """同批写下（created_ts 只差微秒）的同代码多条规则 → 各有各的 plan 号。
+
+    001312 实录：17.05(0.3) / 16.60(1.0) / 17.05(1.0) 三条同一分钟由一次分析写下。
+    号只取到分钟 → 三条共用一个号 → 桥对第二条起永久判 duplicate。
+    """
+    a = _life_rule(stop_loss=17.05, pct=0.3, created_ts="2026-09-12T09:35:00.100000+08:00")
+    b = _life_rule(stop_loss=16.60, pct=1.0, created_ts="2026-09-12T09:35:00.100003+08:00")
+    c = _life_rule(stop_loss=17.05, pct=1.0, created_ts="2026-09-12T09:35:00.100010+08:00")
+
+    ids = {W._watch_plan_id(LIFE_AGENT, r) for r in (a, b, c)}
+
+    assert len(ids) == 3
+
+
+def test_deeper_stop_can_fire_after_shallow_order_filled(life, monkeypatch):
+    """浅止损成交消费后，同批写下的**更深止损**必须还能真下单（001312 的真实形态）。
+
+    旧号只取到分钟 → 两条共号 → 第二条触发时被桥判 duplicate，回捞到的唯一候选又是
+    已记账的第一笔（不接管）→ dup_unresolved 空转：价格继续下探也没有第二笔保护性
+    卖出——**越深的保护越先失效**。正确语义：第二条带自己的号真下单。
+    """
+    monkeypatch.setattr(life, "broker", _DedupBroker())
+    life.write([_life_rule(stop_loss=17.10, pct=0.5,
+                           created_ts="2026-09-12T09:35:00.100000+08:00"),
+                _life_rule(stop_loss=16.60, pct=1.0,
+                           created_ts="2026-09-12T09:35:00.100003+08:00")])
+
+    # 第 1 轮：现价 17.00 跌破 17.10 → 浅止损下单 500 股
+    assert W.run_watch(life.broker, now=LIFE_NOW)["placed"] == 1
+    oid = life.rules()[0]["pending_order_id"]
+    assert oid and [s["volume"] for s in life.broker.sold] == [500]
+
+    # 满额成交（对账已把它移出在途表）→ 第 2 轮消费掉浅止损那条
+    life.outcomes({oid: {"status": "filled", "filled": 500, "wanted": 500,
+                         "ts": LIFE_NOW.isoformat()}})
+    F.save_pending([])
+    assert W.run_watch(life.broker, now=LIFE_NOW)["consumed"] == 1
+
+    # 价格继续下探到更深止损下方 → 第 3 轮：这条必须真下单（不许被判 duplicate）
+    life.price(16.50)
+    counts = W.run_watch(life.broker, now=LIFE_NOW)
+
+    assert counts["placed"] == 1
+    assert life.broker.duplicates == []
+    assert [s["volume"] for s in life.broker.sold] == [500, 1000]   # 桩账户可卖量恒 1000
+
+
 def test_illegal_volume_discard_records_event(life, monkeypatch):
     """可卖量按板块手数合规后为 0 → 规则作废，且留 watch_discard 事件（此前只有 print）。"""
     monkeypatch.setattr(W, "round_sell_qty", lambda code, raw, avail: 0)

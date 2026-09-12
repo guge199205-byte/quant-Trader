@@ -260,6 +260,35 @@ def test_discard_event_follows_persist_rule(legacy, dry):
         assert [r["stop_loss"] for r in kept] == [19.3, None]   # sl 侧已丢，tp 侧留着
 
 
+def test_tie_price_equals_prev_close_is_not_flipped(legacy):
+    """边界钉子：现价**恰等于**昨收时不翻转（护栏要求现价严格高于昨收），
+    于是 17.05 按真止损执行 → 开盘减 30%。
+
+    这是**有意**的语义，不是遗漏（review-p03 2026-09-12 边界判定，4 条理由）：
+    相等是「证据缺席点」而非「仍在昨收上方」的证据，护栏做的是语义反转，必须要求
+    正向证据；且两边的失败代价不对称——漏翻的代价是「在距目标位 0.4% 处先减一档」
+    （方向与理由文本『弱市先降一档』不矛盾，16.60 全仓止损仍在下方兜底），假翻的
+    代价是把一条真止损改写成止盈、当日向下退出被退役。保护层的失败方向只能是
+    「卖早了」。
+
+    行情用桥原始价实值：09-11 收 16.98、昨收（09-10）17.22（logs/min_snapshots）。
+    周一无论桥是否已滚出当日K线，只要首轮价 ≤ 16.98（或K线还没滚、现价仍读 16.98）
+    就落在这条路径上；只有 16.98 < 价 < 17.05 才是「不卖」的窗口。
+    """
+    legacy.price("001312.SZ", 16.98, 16.98)          # 周一平开在周五收盘
+
+    counts = W.run_watch(legacy.broker, now=NOW)
+
+    assert counts["placed"] == 1 and counts["discarded"] == 0
+    assert [(s["code"], s["volume"]) for s in legacy.broker.sold] == [("001312.SZ", 300)]
+    pro = _by_code(legacy.rules(), "deepseek-v4-pro", "001312.SZ")
+    tagged = [r for r in pro if r.get("pending_order_id")]
+    assert len(tagged) == 1 and tagged[0]["stop_loss"] == 17.05          # 下单即打标，不消费
+    assert sum(1 for r in pro if r["stop_loss"] == 17.05) == 2           # 两条 17.05 都还在
+    assert _by_code(legacy.rules(), "deepseek-v4-flash", "603213.SH")[0]["stop_loss"] == 13.2
+    assert _by_code(legacy.rules(), "glm-5.3-flash", "000028.SZ")[0]["stop_loss"] == 19.3
+
+
 @pytest.mark.parametrize("switch_on", [True, False], ids=["--dry-run", "执行开关关闭"])
 def test_dry_run_does_not_rewrite_watch_file(legacy, monkeypatch, switch_on):
     """dry-run / 执行开关关闭（自动降级 dry-run）**不得回写条件位文件**。

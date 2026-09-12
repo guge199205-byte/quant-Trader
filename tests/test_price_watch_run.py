@@ -591,11 +591,17 @@ def test_deeper_stop_can_fire_after_shallow_order_filled(life, monkeypatch):
 
 
 class _SameDayGuardBroker(_LifeBroker):
-    """模拟桥的**第二层**去重（plan_executor._execute_one：当日已有同代码同方向
-    「成交」（Status=3）→ 这笔不进柜台，回 200 + status=duplicate + 中文原因）。
+    """模拟桥的**第二层**去重回执（plan_executor._execute_one：当日已有同代码同方向
+    「成交」（Status=3）→ 回 200 + status=duplicate + 中文原因，这笔不进柜台）。
 
-    与 plan 级去重（上面 _DedupBroker）是两回事：那个是「号已用过」，这个是
-    「今天这个方向已经卖过一笔了」——号是新的、单却依然进不了柜台。"""
+    与 plan 级去重（上面 _DedupBroker）是两回事：那个是「号已用过」，这个按源码读是
+    「今天这个方向已经卖过一笔了」——号是新的、单却依然进不了柜台。
+
+    **但实盘证据说这一层没在咬人**（2026-09-12 复盘）：全量成交流水里「同日同代码同
+    方向 ≥2 笔成交」共 5 组（09-01 688183 两笔相隔 7 秒、09-04 600309 三笔、09-08
+    600309 两笔、09-11 600309 四笔、09-11 600817 买入两笔），且生产至今**没有**出现过
+    dup_unresolved 事件。故这里的桩是**防御性建模**（万一桥真回这句，本侧必须能正确
+    处置），不是对周一行为的预测——别拿它当「第二段卖不出去」的依据。"""
 
     def sell(self, sig, date, code, vol, price=None, plan_id=None):
         self.sold.append({"code": code, "volume": vol, "price": price, "plan_id": plan_id})
@@ -604,13 +610,13 @@ class _SameDayGuardBroker(_LifeBroker):
 
 
 def test_same_day_filled_skip_keeps_rule_and_says_why(life, monkeypatch):
-    """桥的「当日已有同方向成交，跳过」落到哨兵侧：条件位保留 + 事件带桥的原话。
+    """桥若回「当日已有同方向成交，跳过」：条件位保留 + 事件带桥的原话。
 
-    001312 的第二段退出（17.05/pct 1.0）与更深的 16.60 在周一都不会兑现：第一笔
-    300 股成交后，桥的这一层会把当天该代码所有同向卖单都跳过（无论哪个 agent、
-    号是不是新的）——第二段要等到下一个交易日才有真单。桥在 Windows 侧、本侧
-    修不了；能做的是**别让日志说错话**：与 409 plan 去重的「单可能已在柜台、
-    成交未记账」不同，这笔根本没进柜台，读错方向会去查一笔不存在的委托。
+    这是**防御性**用例（该回执在生产里从未出现过，见 _SameDayGuardBroker 的实盘
+    证据），钉的是本侧的处置口径：与 409 plan 去重的「单可能已在柜台、成交未记账」
+    不同，这句话的含义是**这笔根本没进柜台**——条件位留着要等下一个交易日，把它
+    读成「已在柜台」会让人去查一笔不存在的委托（批 13e 让桥的原话进 print 与事件
+    就是为了这个区分）。
     """
     monkeypatch.setattr(life, "broker", _SameDayGuardBroker())
     life.write([_life_rule()])

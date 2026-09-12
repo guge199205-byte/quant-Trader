@@ -317,6 +317,10 @@ def _rules_from_decisions(decisions: list) -> list:
             "move_stop": d.get("move_stop"),
             "pct": pct,
             "reason": str(d.get("reason") or ""),
+            # 逐规则取时：**组内 created_ts 唯一**是 (_rule_key)、(plan 号 _watch_plan_id)
+            # 与 flush_watch 差量合并三处的前提——若两条规则拿到同一戳，它们会先塌成
+            # 同一条规则、再共用一个 plan 号（批 13d 的失效形态）。新增批量/回放/迁移
+            # 写点前必须先保证组内唯一（2026-09-12 review-p03 复核结论：不为此加机制）。
             "created_ts": now_cn().isoformat(),
         })
     return mine

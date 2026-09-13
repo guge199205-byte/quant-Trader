@@ -295,6 +295,17 @@ def life(monkeypatch, tmp_path):
     monkeypatch.setattr(W, "WATCH_FILE", wf)
     monkeypatch.setattr(W, "LOG_DIR", tmp_path)
     monkeypatch.setattr(W, "POLL_SLEEP_SEC", 0)
+    # 冻结墙上时钟到同一个 LIFE_NOW：把仍直接取 now_cn() 的点（_notify_skip /
+    # _notify_once 的小时标签、_log_line 的日志文件名、_watch_plan_id 种子）钉死，
+    # 让整轮行为可复现。
+    # 2026-09-13：_execute_sell/_tag_pending 曾各自调 now_cn()，导致
+    # run_watch(now=LIFE_NOW) 冻不住 fired_ts，_stale_outcome 拿两个日期的戳比
+    # 大小 →「隔日同号残留」误判（test_deeper_stop_can_fire_after_shallow_order_
+    # filled 只在写下当天能过，典型定时炸弹）。现已改为 run_watch 的 now 一路
+    # 透传——**这条冻结不再是那组用例的必需品**（实测拆掉它本文件 33 个用例
+    # 全过）；留着只为上述墙上时钟点的确定性。fired_ts 的口径由
+    # test_tag_pending_uses_passed_now_not_wall_clock 单独钉住。
+    monkeypatch.setattr(W, "now_cn", lambda: LIFE_NOW)
     monkeypatch.setattr(live_fills, "PENDING_FILE", tmp_path / "pending.json")
     monkeypatch.setattr(live_fills, "EVENTS_FILE", tmp_path / "events.json")
     monkeypatch.setattr(live_fills, "OUTCOMES_FILE", tmp_path / "outcomes.json")
@@ -346,7 +357,23 @@ def test_placed_order_tags_rule_instead_of_consuming(life):
     assert [p["order_id"] for p in F.load_pending()] == ["T9001"]
     r = life.rules()[0]
     assert r["pending_order_id"] == "T9001" and r["pending_volume"] == 500
-    assert r["fired_ts"]
+    assert r["fired_ts"] == LIFE_NOW.isoformat()   # 刻在本轮基准时刻上，不是墙上时钟
+
+
+def test_tag_pending_uses_passed_now_not_wall_clock():
+    """fired_ts 必须刻在**本轮基准时刻**上，不许自己取墙上时钟。
+
+    2026-09-13：_tag_pending 曾直接调 now_cn()，调用方冻结的 now（run_watch 的
+    基准时刻）冻不住 fired_ts，_stale_outcome 拿两个日期的戳比大小 →「隔日同号
+    残留」误判。本用例故意不冻结 now_cn：若退回旧写法，fired_ts 会刻上真实当天
+    而不是这里传的 base，断言**当场**失败（不再是过了午夜才炸的定时炸弹）。
+    """
+    base = datetime(2026, 9, 12, 10, 0, 0, tzinfo=CN)
+    rule = {"code": LIFE_CODE}
+
+    W._tag_pending(rule, "T1", 100, now=base)
+
+    assert rule["fired_ts"] == base.isoformat()
 
 
 def test_tagged_rule_waits_while_order_in_flight(life):

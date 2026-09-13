@@ -657,7 +657,7 @@ def _recover_duplicate(broker, code: str, vol: int, limit: float) -> dict:
 def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
                   trig: str, avail, dry_run: bool = False,
                   after_hours: bool = False,
-                  trig_level: float | None = None) -> str:
+                  trig_level: float | None = None, now=None) -> str:
     """条件位触发 → 卖出（与盘中执行同一套闸门）。
 
     返回（2026-09-12 P0-3 由 bool 改为字符串——旧的两态表达不了「已下单但
@@ -668,6 +668,13 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
       "discard" 规则使命已了且不必再守（已不在持仓 / 无合法可卖量）→ 可移除，
                 同时落 watch_discard 事件留痕
     """
+    # now：本轮基准时刻，由 run_watch 透传（默认取墙上时钟，与生产调用一致）。
+    # 在函数内统一归一化一次，内部一律用它 —— 此前这里 8 处各自调 now_cn()，
+    # 于是「测试冻结了 now 却冻不住 fired_ts」：_resolve_tagged 的 _stale_outcome
+    # 拿两个不同日期的戳比大小，把当天该消费的条件位判成「隔日同号残留」。
+    # 2026-09-13 实录：test_deeper_stop_can_fire_after_shallow_order_filled 因此
+    # 只在写下当天能过。**取一次、传下去，别再各取各的。**
+    now = now or now_cn()
     code = rule["code"]
     trig_value = trig_level if trig_level is not None else rule.get(trig)
     if avail is None:
@@ -731,7 +738,7 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
         record_event("sell_failed", code,
                      f"[{agent}] {code} {label}卖出下单失败：{str(exc)[:120]}"
                      f"（条件位保留，下一分钟重试；持续失败=持仓当日无保护）")
-        _log_line({"ts": now_cn().isoformat(), "mode": f"watch_{trig}", "agent": agent,
+        _log_line({"ts": now.isoformat(), "mode": f"watch_{trig}", "agent": agent,
                    "code": code, "volume": vol, "price": limit,
                    "trigger": trig_value, "error": str(exc)})
         return "keep"  # 下次重试
@@ -762,7 +769,7 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
                          f"布防（下一轮触发时重新下单）——这笔单从未进过在途表，"
                          f"对账不会为它发事件，故此处必须上告警面（持仓此刻无保护）",
                          side="sell", alert=True, key=f"refire:{code}:{oid}")
-            _log_line({"ts": now_cn().isoformat(), "mode": f"watch_{trig}", "agent": agent,
+            _log_line({"ts": now.isoformat(), "mode": f"watch_{trig}", "agent": agent,
                        "code": code, "volume": vol, "price": limit, "plan_id": plan_id,
                        "trigger": trig_value, "terminal_unfilled": True,
                        "order_id": oid, "status": recovered.get("status"),
@@ -780,8 +787,8 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
             from live_fills import add_pending
 
             add_pending(oid, agent, code, "sell", rvol, rprice,
-                        now_cn().isoformat(), protect=at_ld)
-            _tag_pending(rule, oid, rvol)
+                        now.isoformat(), protect=at_ld)
+            _tag_pending(rule, oid, rvol, now)
         else:
             # 桥的**两处**去重都回 status=duplicate，但含义完全不同，必须让桥的原话
             # 露出来（2026-09-12）：409 plan 级去重（这个 plan 号已执行过）才是
@@ -797,7 +804,7 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
                          f"[{agent}] {code} 卖出被桥判重复（上次已受理）但当日委托里"
                          f"找不到可接管的单：若已在柜台则成交未记账，需人工核对"
                          + (f"（桥回执：{why}）" if why else ""))
-        _log_line({"ts": now_cn().isoformat(), "mode": f"watch_{trig}", "agent": agent,
+        _log_line({"ts": now.isoformat(), "mode": f"watch_{trig}", "agent": agent,
                    "code": code, "volume": vol, "price": limit, "plan_id": plan_id,
                    "trigger": trig_value, "duplicate": True,
                    "recovered_order_id": oid, "result": result})
@@ -813,7 +820,7 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
         record_event("no_order_id", code,
                      f"[{agent}] {code} {label}卖出桥未返回委托号：单可能已在柜台，"
                      f"成交未记账，需人工核对当日委托（限价 ¥{limit}）")
-        _log_line({"ts": now_cn().isoformat(), "mode": f"watch_{trig}", "agent": agent,
+        _log_line({"ts": now.isoformat(), "mode": f"watch_{trig}", "agent": agent,
                    "code": code, "volume": vol, "price": limit, "plan_id": plan_id,
                    "trigger": trig_value, "result": result, "no_order_id": True})
         return "keep"
@@ -835,12 +842,12 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
 
     oid = str(result.get("order_id"))
     add_pending(oid, agent, code, "sell", vol, limit,
-                now_cn().isoformat(), protect=at_ld)
+                now.isoformat(), protect=at_ld)
     # 下单成功 ≠ 卖出完成。规则**保留并打标**，由 _resolve_tagged 等这笔委托的归宿：
     # 满额成交/持仓清零 → 消费；终态未卖完 → 换号重布防；台账缺该号 → 转人工。
     # （2026-09-12 之前这里 return True = 下单即消费，废单后持仓当日裸奔。）
-    _tag_pending(rule, oid, vol)
-    _log_line({"ts": now_cn().isoformat(), "mode": f"watch_{trig}", "agent": agent,
+    _tag_pending(rule, oid, vol, now)
+    _log_line({"ts": now.isoformat(), "mode": f"watch_{trig}", "agent": agent,
                "code": code, "volume": vol, "intent_volume": raw_qty, "price": limit,
                "plan_id": plan_id, "protect": at_ld or None,
                "protect_fallback": fallback or None,
@@ -850,11 +857,15 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
     return "placed"
 
 
-def _tag_pending(rule: dict, order_id: str, volume: int) -> None:
-    """规则打标：这笔条件位卖出已下单，等它的归宿（见 _resolve_tagged）。"""
+def _tag_pending(rule: dict, order_id: str, volume: int, now=None) -> None:
+    """规则打标：这笔条件位卖出已下单，等它的归宿（见 _resolve_tagged）。
+
+    now：本轮基准时刻，由 _execute_sell 透传（`_stale_outcome` 拿它和台账
+    终态 ts 比日期，必须同一时钟）；缺省取墙上时钟，与生产调用一致。
+    """
     rule["pending_order_id"] = str(order_id)
     rule["pending_volume"] = int(volume)
-    rule["fired_ts"] = now_cn().isoformat()
+    rule["fired_ts"] = (now or now_cn()).isoformat()
 
 
 def _notify_skip(rule: dict, msg: str) -> None:
@@ -1092,7 +1103,8 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
                 continue
             act = _execute_sell(broker, agent, r, price, prev, trig,
                                 avail_map.get(r["code"]), dry_run=dry_run,
-                                after_hours=after_hours, trig_level=trig_level)
+                                after_hours=after_hours, trig_level=trig_level,
+                                now=now)
             if act == "discard":
                 counts["discarded"] += 1
             else:

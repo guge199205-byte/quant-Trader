@@ -99,6 +99,7 @@ def compute_order(bars: list, cash: float, pct: float, code: str = "") -> dict:
     # 涨停/跌停/停牌过滤（板块口径 ±10%/±20%/±30%；停牌=无最新 bar 或成交量为 0）
     from ashare_rules import (MIN_LOT_SLACK, at_limit_down, at_limit_up,
                               min_buy_cost, min_buy_qty, round_buy_qty)
+    from live_fills import buy_limit_and_cost          # 限价口径的唯一出处
 
     if at_limit_up(code, chg):
         return {"ok": False, "reason": f"涨停（{chg:+.1f}%），不追"}
@@ -118,14 +119,17 @@ def compute_order(bars: list, cash: float, pct: float, code: str = "") -> dict:
                           f" > 单票预算 ¥{budget:,.0f}（剩余额度×{pct:.0%}）"}
     if raw_vol < 100:
         return {"ok": False, "reason": "资金不足 1 手"}
+    # 限价口径成本：见 live_fills.buy_limit_and_cost（三市场唯一出处）。
+    # 原先这里与美/港股各写一遍，已实测漂移（美/港股那份按现价算）——收敛到一处。
+    limit_price, cost = buy_limit_and_cost(price, raw_vol, "cn")
     return {
         "ok": True,
         "price": price,
         "prev_close": prev_close,
         "chg_pct": round(chg, 2),
         "volume": raw_vol,
-        "limit_price": round(price * 1.01, 2),  # 限价买：现价 +1%
-        "cost": round(raw_vol * price * 1.01, 2),
+        "limit_price": limit_price,   # 限价买：现价 +1%
+        "cost": cost,
     }
 
 

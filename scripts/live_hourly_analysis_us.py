@@ -313,6 +313,7 @@ def execute_us_decisions(broker, agent: str, decisions: list, rows: list,
 
     from us_ledger import (agent_remaining, agent_virtual_cash, ensure_agent,
                            load_ledger, record_buy, record_sell, save_ledger)
+    from live_fills import buy_limit_and_cost          # 限价口径的唯一出处
     from live_hourly_analysis import agent_mode_for, agent_model_for, parse_intraday_decision  # noqa: F401  (格式同源)
 
     ledger = ensure_agent(load_ledger(), agent)
@@ -384,7 +385,9 @@ def execute_us_decisions(broker, agent: str, decisions: list, rows: list,
             if vol <= 0:
                 print(f"  ⏭️ [{agent}] 买入 {code}: 预算 ${budget:,.0f} 不足 1 股，跳过")
                 continue
-            cost = vol * price
+            # 限价口径成本：见 live_fills.buy_limit_and_cost（三市场唯一出处）。
+            # 原按现价算 cost，而实际下单报 price×1.01 → 单票预算与账户现金可被超 1%。
+            limit_price, cost = buy_limit_and_cost(price, vol, "us")
             if cost > cash:
                 print(f"  ⏭️ [{agent}] 买入 {code}: IBKR 账户现金不足 ${cost:,.0f} > ${cash:,.0f}")
                 continue
@@ -396,7 +399,7 @@ def execute_us_decisions(broker, agent: str, decisions: list, rows: list,
                                  "price": price, "reason": "dry-run"})
                 continue
             try:
-                result = broker.buy(None, "", code, vol, price=round(price * 1.01, 2))
+                result = broker.buy(None, "", code, vol, price=limit_price)
                 from live_fills import ack_line
 
                 print("  " + ack_line(f"[{agent}] 买入 {code}", result))

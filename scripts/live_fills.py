@@ -53,6 +53,37 @@ CANCEL_STATUSES = ("cancelled", "withdrawn", "rejected", "expired", "partial_can
 TERMINAL_STATUSES = CANCEL_STATUSES + ("filled",)
 
 
+#: 限价买单的报价缓冲（按市场）：A 股 / 美股 +1%，港股 +0.5%（港股价差更窄）。
+#: 卖出不用缓冲——卖出报低价只会少卖钱，且不产生敞口。
+BUY_LIMIT_BUFFER: dict[str, float] = {"cn": 1.01, "us": 1.01, "hk": 1.005}
+
+
+def buy_limit_and_cost(price: float, volume: int, market: str = "cn") -> tuple[float, float]:
+    """限价买单的（限价, 成本）——**这条口径的唯一出处**。
+
+    为什么单独抽出来（2026-09-13）：此前它在三个文件里各写一遍
+    （`live_trade_picks.compute_order` 的 A 股版、`live_hourly_analysis_us` /
+    `_hk` 的内联版），并已实测漂移——**美/港股那份按现价算成本，而实际下单
+    报的是现价×1.01/×1.005**，于是单票预算与账户现金闸都可被超 1%（美）/0.5%（港）。
+    A 股那份是对的（按限价算成本，另有 MIN_LOT_SLACK=1.02 容差吸收缓冲）。
+
+    **买单在限价内的任意价位都能成交**，所以额度/现金闸必须按**更差的那个价**
+    （即限价）卡，不能用现价。这条规则写在一处，三处调用，就不会再各漂各的。
+    （对照 HKUDS/Vibe-Trading order_guard 的 H3：按 max(报价, 限价) 计额度。）
+
+    Args:
+        price: 现价（撮合基准）。
+        volume: 股数。
+        market: cn / us / hk。
+
+    Returns:
+        (limit_price, cost)：限价与按限价口径的成本。
+    """
+    buf = BUY_LIMIT_BUFFER.get(market, BUY_LIMIT_BUFFER["cn"])
+    limit = round(float(price) * buf, 2)
+    return limit, round(int(volume) * limit, 2)
+
+
 def _load_dotenv() -> None:
     env_path = ROOT / ".env"
     if not env_path.is_file():

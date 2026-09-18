@@ -82,7 +82,7 @@
 **第 2 步:拉代码 + 填密钥**
 
 ```bash
-git clone <你的仓库地址> && cd quant-agent-trader
+git clone <你的仓库地址> && cd quant-Trader
 cp .env.example .env   # 填 OPENAI_API_KEY / GLM_API_KEY 等(至少一个模型,DeepSeek 注册即用)
 ```
 

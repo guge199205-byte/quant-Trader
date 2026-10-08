@@ -30,9 +30,35 @@ from live_ledger import (clear_deferred, load_deferred, load_ledger,  # noqa: E4
 from live_hourly_analysis import (in_trading_window,  # noqa: E402
                                   intraday_exec_enabled, now_cn)
 from live_fills import add_pending, inflight_codes, round_sell_qty  # noqa: E402
-from ashare_rules import at_limit_down, after_hours_eligible, after_hours_window  # noqa: E402
+from live_quotes import klines as lq_klines  # noqa: E402
+from ashare_rules import (aggressive_sell_price, at_limit_down,  # noqa: E402
+                          after_hours_eligible, after_hours_window)
 
 MAX_DEFER_HOURS = 24
+DEFER_EXPIRED_LOG = ROOT / "logs" / "deferred_expired.jsonl"
+
+
+def _record_expired(d: dict, now) -> None:
+    """24h 到期丢弃的延期单落盘留痕。
+
+    丢掉的是「这笔减仓没做成」这件事本身——原先只打一行日志，没人会去看，
+    等于静默失败。落盘后 alert_checks.py 的 deferred_stuck 会把它报成告警。
+    （对照 Vibe-Trading reconcile 的设计原则：歧义必须 classify-and-surface，
+    绝不静默 auto-correct / 静默丢弃。）
+    """
+    import json
+
+    try:
+        DEFER_EXPIRED_LOG.parent.mkdir(exist_ok=True)
+        with DEFER_EXPIRED_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": now.isoformat(),
+                "agent": d.get("agent"), "code": d.get("code"),
+                "side": d.get("side"), "volume": d.get("volume"),
+                "deferred_ts": d.get("ts"), "reason": "expired_24h",
+            }, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        print(f"[{now:%F %T}] ⚠️ 过期延期单留痕写入失败: {exc}")
 
 
 def _after_hours_enabled() -> bool:
@@ -85,6 +111,7 @@ def main() -> int:
         if d.get("ts", "") < stale_cut:
             print(f"[{now:%F %T}] 🗑️ 作废过期延期单 {d.get('side')} "
                   f"{d.get('code')}（>{MAX_DEFER_HOURS}h）")
+            _record_expired(d, now)   # 留痕：这笔减仓确定没执行，由告警报出来
             continue  # 不保留，直接清除
         if d.get("side") != "sell":
             final.append(d)  # 买入延期只留档不重放（资金闸是决策时刻的）
@@ -120,8 +147,10 @@ def main() -> int:
             final.append(d)
             continue
         vol = legal
+        prev = 0.0
         try:
-            klines = broker.get_klines(code, interval="daily")[-3:]
+            klines = lq_klines(code, interval="daily", count=3,
+                               prefer="aidata", broker=broker)
             price = float(klines[-1].get("close") or 0)
             day_chg = 0.0
             if len(klines) >= 2:
@@ -138,13 +167,19 @@ def main() -> int:
             print(f"[{now:%F %T}] ⏭️ {agent} 卖 {code}: 跌停（{day_chg:+.2f}%），保留延期")
             final.append(d)
             continue
-        limit = price if ah else round(price * 0.99, 2)  # 盘后=收盘价撮合
+        # 盘后=收盘价撮合；盘中报价收敛到 ashare_rules 唯一出处（2026-09-21 审查
+        # MEDIUM-5：旧实现自建 round(price*0.99,2)，无跌停下限夹取、不是 HALF_UP，
+        # 与哨兵/整点轮口径可漂移）
+        limit = price if ah else (aggressive_sell_price(code, prev, price)
+                                  or round(price * 0.99, 2))
         try:
             result = broker.sell(None, None, code, vol, price=limit)
             print(f"[{now:%F %T}] ✅ {'盘后重放' if ah else '重放'} {agent} 卖 {code} {vol}股 "
                   f"限价 {limit}: {result}")
+            # 成交推送由 reconcile 补记时发（2026-09-18：提交时刻不推成功文案）
             add_pending(result.get("order_id"), agent, code, "sell", vol,
-                        limit, now.isoformat())
+                        limit, now.isoformat(),
+                        reason=str(d.get("reason") or "延期单重放"))
             ledger = clear_deferred(ledger, agent, "sell", code)
             save_ledger(ledger)
             time.sleep(1)  # 桥限流

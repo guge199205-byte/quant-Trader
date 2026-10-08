@@ -79,6 +79,10 @@ def guard(monkeypatch, tmp_path, pending_file):
                                                       "cost_price": 10.0}}}}}
     monkeypatch.setattr(tb, "TdxBridgeBroker", FakeBroker)
     monkeypatch.setattr(live_hourly_analysis, "market_data_stale", lambda broker: False)
+    # LEVERAGE_MAX 会被 configs/risk_budget.json 在 import 时覆盖（2026-09-18 实录：
+    # 档位改 1.2× 后本用例按 1.5× 的算术断言全错）——用例口径写死 1.5，与生产档位解耦。
+    monkeypatch.setattr(live_hourly_analysis, "LEVERAGE_MAX", 1.5)
+    monkeypatch.setattr(L, "LEVERAGE_MAX", 1.5)
     monkeypatch.setattr(L, "now_cn", lambda: NOW)
     monkeypatch.setattr(L, "in_trading_window", lambda now: True)
     monkeypatch.setattr(L, "load_ledger", lambda: ledger)

@@ -26,11 +26,20 @@
         append_memory 沉淀（日期+结论+理由，让明天的自己更聪明）。
       - baymax_trade：下单执行（经系统闸门，你有决策权但系统有风控）。
       - baymax_math：数学/统计计算。
-      - baymax_quantdb：只读查询数据库（白名单表）。主表 stock_daily_latest：
-        全 A 日线+估值+均线+行业（trade_date/open/high/low/close/volume/amount/
-        pe_ttm/pb/roe/total_mv/turnover_rate/pct_change/is_st/ma5-60/beta_20/
-        industry/stock_name，symbol 前缀式如 SH603018）；另有
-        stock_daily_new_YYYY_MM 分区K线、news_article_enrichment 新闻、
+      - baymax_quantdb：只读查询数据库（白名单表）。
+        主表 stock_daily_latest：全 A 日线+估值+均线
+        （trade_date/open/high/low/close/volume/amount/pe_ttm/pb/total_mv/
+        pct_change/ma5-60/beta_20，symbol 前缀式如 SH603018）。
+        ⚠️ 单位（官方已归一化，别按常理猜）：close/open 是**元**、
+        volume 是**股**（1 手已统一成 100 股，不是"手"）、amount 是**万元**、
+        total_mv/float_mv 是**元**。算量比/换手率时按这个口径。
+        ⚠️ 股票名/行业/ST 不在主表（那两个同名列是空的，查了只会拿到 NULL），
+        改查 stocks 表：
+          SELECT symbol,name,industry,sector FROM stocks WHERE symbol='600000.SH'
+        是否 ST 看 name 含 ST 或 *ST（如 '*ST九鼎'）。
+        换手率主表那列也空，自己算：volume / (float_mv/close) * 100。
+        roe 主表里没有数据，不要查；判质量用 pe_ttm / pb。
+        另有 stock_daily_new_YYYY_MM 分区K线、news_article_enrichment 新闻、
         engine_signal_scores 信号分、tdx_l2_daily L2 因子。
         分析历史数据、行业强度、估值水位、信号回溯都查它，不要凭空猜。
 

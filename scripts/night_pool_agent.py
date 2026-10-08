@@ -467,8 +467,20 @@ def main(argv: list | None = None) -> int:
     bj = now_cn()
     session, target = session_and_target(bj)
     if a.if_missing and (PICKS_DIR / f"{target}_agent_picks.json").is_file():
-        print(f"⏭️ {bj:%F %T} 目标日池已存在（{target}_agent_picks.json），补跑跳过")
-        return 0
+        # 空池 = 研究 agent 失败（如 dsh STREAM_CLOSED 半途断流）落下的空壳，
+        # 不是「已产出」——2026-09-15 实录：02:30 主跑失败落 0 只池，
+        # 03:30 补跑因文件存在直接跳过，当天全系统无候选池。此处按非空才算完成。
+        pool_n = -1
+        try:
+            pool_n = len((json.loads((PICKS_DIR / f"{target}_agent_picks.json")
+                                     .read_text(encoding="utf-8")).get("picks") or []))
+        except (OSError, ValueError, AttributeError):
+            pool_n = -1
+        if pool_n > 0:
+            print(f"⏭️ {bj:%F %T} 目标日池已存在（{target}_agent_picks.json，{pool_n} 只），补跑跳过")
+            return 0
+        print(f"⚠️ {bj:%F %T} 目标日池为空/不可读（{target}_agent_picks.json）"
+              f"——视为未产出，执行补跑")
     ok, why = check_data_fresh(session)
     if not ok:
         print(f"⏸️ {bj:%F %T} {why}")

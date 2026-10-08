@@ -32,13 +32,23 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "agent_tools"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+# 执行损耗 TCA 口径（scripts/exec_cost.py）：三段价字段的唯一出处。纯算术模块，
+# 无依赖、不抛异常——挂在交易链路上是安全的（观测层绝不反噬）。
+import exec_cost  # noqa: E402
+# 委托事件的读侧口径（scripts/order_events.py）：保留窗口/人工 ack/账本自动消解。
+# 同样纯标准库无副作用；写侧只借它的 prune_doc/EVENT_KEEP_H，保证读写两侧
+# 用同一条保留窗口（2026-09-20 前是写侧独有常量，读侧无窗口 → 周末重播两晚）。
+import order_events  # noqa: E402
+
 PENDING_FILE = ROOT / "data" / "live_pending_orders.json"
 # reconcile 跨进程互斥锁（见模块 docstring）；锁文件本身无内容，只看 flock 状态。
 RECONCILE_LOCK_FILE = ROOT / "data" / "live_reconcile.lock"
 # 需要人工知晓的委托事件（挂队/未成交/废单/收盘未了结）：alert.sh 读取并去重上报。
 # 2026-09-11 之前这些只写 logs/*.jsonl，止损没卖出去也零告警。
 EVENTS_FILE = ROOT / "data" / "live_order_events.json"
-EVENT_KEEP_H = 24              # 事件保留窗口（alert.sh 每 5 分钟扫一遍，足够）
+# 事件保留窗口（小时）：唯一出处是 order_events.EVENT_KEEP_H，这里只是别名——
+# 写侧惰性清理与读侧告警必须同一个窗口（改一处即两侧同时生效）。
+EVENT_KEEP_H = order_events.EVENT_KEEP_H
 CLOSE_REMIND_FROM = 14 * 60 + 50   # 收盘前 10 分钟提醒在途单将随日终失效
 
 # 委托终态台账（机器可读）：{order_id: {status, filled, wanted, ts}}。
@@ -84,6 +94,19 @@ def buy_limit_and_cost(price: float, volume: int, market: str = "cn") -> tuple[f
     return limit, round(int(volume) * limit, 2)
 
 
+#: 限价卖单的报价缓冲（按市场）：报现价 −1%。与买入缓冲的方向相反——卖出报低
+#: 价的代价只是少卖 1%，而报高价挂着不成交的代价是**该卖的没卖掉**（止损失效）。
+#: 此前这条 0.99 在 live_llm_trade / live_hourly_analysis 各写一遍（同 2026-09-13
+#: 买入缓冲那次的漂移剧本），2026-09-19 收口到此处。
+SELL_LIMIT_BUFFER: dict[str, float] = {"cn": 0.99, "us": 0.99, "hk": 0.99}
+
+
+def sell_limit(price: float, market: str = "cn") -> float:
+    """限价卖单的限价——**这条口径的唯一出处**（对照 buy_limit_and_cost）。"""
+    buf = SELL_LIMIT_BUFFER.get(market, SELL_LIMIT_BUFFER["cn"])
+    return round(float(price) * buf, 2)
+
+
 def _load_dotenv() -> None:
     env_path = ROOT / ".env"
     if not env_path.is_file():
@@ -126,7 +149,8 @@ def save_pending(entries: list) -> None:
 
 def add_pending(order_id, agent: str, code: str, side: str, volume: int,
                 price: float, ts: str, protect: bool = False,
-                recorded: int = 0) -> bool:
+                recorded: int = 0, reason: str = "",
+                ref_px=None, decided_ts: str = "") -> bool:
     """登记在途委托；返回是否真的登记了（空委托号 → False，只落事件）。
     protect=True 表示这是保护价（跌停价）挂队单：
     排队等买盘是它的正常形态，停滞告警时不可触发重启桥的自愈动作。
@@ -138,6 +162,13 @@ def add_pending(order_id, agent: str, code: str, side: str, volume: int,
     默认 0 只对「尚无成交回报」安全：已记账量若不带着走，reconcile 的增量
     = 桥 filled − 0 会把同一笔成交再记一次（record_sell 量不足时直接删持仓 +
     多记现金，见 live_ledger.record_sell）。
+
+    reason = 该笔委托的决策理由（可选）：成交由 reconcile 迟补时，推送沿用它，
+    保证「成交推送」与下单时的理由一致（2026-09-18 通知口径统一）。
+
+    ref_px / decided_ts = 执行损耗（TCA）上下文（可选）：余量日后由 reconcile
+    补记，届时能看到的三段价只有这条条目——不带着走，这部分成交在 TCA 里永远
+    不可定价（老条目没有这两个键 → fill_confirm 行如实落不可定价，不臆造）。
     """
     if not order_id:
         record_event("untracked_order", code,
@@ -153,6 +184,12 @@ def add_pending(order_id, agent: str, code: str, side: str, volume: int,
     }
     if protect:
         entry["protect"] = True
+    if reason:
+        entry["reason"] = str(reason)[:300]
+    if ref_px is not None:                 # TCA：基准价随单走（见 docstring）
+        entry["ref_px"] = float(ref_px)
+    if decided_ts:                         # TCA：轮级决策时刻（同轮各单共用）
+        entry["decided_ts"] = str(decided_ts)
     # 持锁读-改-写：reconcile 的整表回写（查桥的网络窗口里）会用旧快照覆盖文件，
     # 不持锁的新单会被静默抹掉 → 成交成账外单，且在途闸门也拦不住重复下单
     with _file_lock():
@@ -160,6 +197,50 @@ def add_pending(order_id, agent: str, code: str, side: str, volume: int,
         pend.append(entry)
         save_pending(pend)
     return True
+
+
+def _ledger_hold(agent: str, code: str) -> int | None:
+    """账本里该 agent 当前的持有量；读不到返回 None。
+
+    仅供推送文案判断「卖的是不是全仓（清仓标签）」——None 时 notify_order 自行
+    回退查账本；错标一个词不伤账，绝不为它中断交易路径。
+    """
+    try:
+        from live_ledger import load_ledger
+
+        pos = (((load_ledger().get("agents") or {}).get(agent) or {})
+               .get("positions") or {}).get(code) or {}
+        return int(pos.get("volume") or 0)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _push_fill_notice(*, agent: str, code: str, side: str, filled: int, price: float,
+                      order_id: str = "", held_before: int | None = None,
+                      reason: str = "", source: str = "", remaining: int = 0) -> None:
+    """成交确认后的 QQ 推送（2026-09-18 口径：成功才推送、失败不推成功文案）。
+
+    此前四条下单路径在**提交时刻**就发「清仓/买入」——2026-09-18 实录：300408、
+    600176 两笔卖单提交时推了「清仓」，随后都被柜台判废（rejected，0 成交），
+    人以为已卖出。现在只有真成交（含 reconcile 迟补的成交）才走这里；失败由
+    「委托事件」（unfilled/dup_unresolved…，alert=True）经 alert.sh 推原因。
+
+    绝不回抛：推送失败不能反过来打断账务收口（成交已记账，丢的只是一条通知）。
+    """
+    try:
+        from push_notify import notify_order
+
+        r = str(reason or "")
+        if remaining > 0:
+            part = f"部分成交 {int(filled)} 股，余 {int(remaining)} 股在途跟踪"
+            r = f"{r}；{part}" if r else part
+        notify_order(side=side, symbol=code, volume=int(filled),
+                     price=float(price or 0), agent=agent, reason=r,
+                     order_id=str(order_id or ""), held_before=held_before,
+                     source=source)
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️ live_fills: 成交推送失败（记账已完成，仅通知丢失）: {exc}",
+              file=sys.stderr)
 
 
 def record_inline_fill(agent: str, code: str, side: str, volume: int, price: float,
@@ -197,7 +278,9 @@ def record_inline_fill(agent: str, code: str, side: str, volume: int, price: flo
 
 def settle_place_fill(order_id, agent: str, code: str, side: str, volume: int,
                       price: float, fill: dict | None, *, fill_price: float | None = None,
-                      ts: str | None = None, protect: bool = False) -> dict:
+                      ts: str | None = None, protect: bool = False,
+                      reason: str = "", source: str = "",
+                      ref_px: float | None = None, decided_ts: str = "") -> dict:
     """下单回报的账务收口（四条无人值守下单路径共用，2026-09-12 P0-4）。
 
     背景：`wait_fill` 一见到「有成交」就返回——部分成交（100/300）且委托仍在途时，
@@ -225,7 +308,19 @@ def settle_place_fill(order_id, agent: str, code: str, side: str, volume: int,
     跟踪（窗口=两条语句之间，代价是少跟踪而非重复记账，取舍如此）。docstring
     不许把它说成「完全兜住」。
 
+    **price = 这笔委托的限价**（买入 = 基准+缓冲、卖出 = 基准−缓冲，**两侧同义**）：
+    它被用于（a）桥没回报成交价时的回退记账价、（b）「剩余未成交（限价 ¥X）」告警
+    文案、（c）pending 在途价 → reconcile 回退记账。2026-09-19 发现买入侧曾传
+    **基准价**（三条全错且无症状），买入路径必须传 `o["limit_price"]`，
+    由 tests/test_tca_wiring.py 静态钉住。
+
+    ref_px / decided_ts：执行损耗（TCA）上下文，随 pending 条目带给 reconcile 的
+    fill_confirm 行（见 add_pending）。纯观测字段，不参与任何账务判断。
+
     fill_price：调用方坏 tick 护栏修正后的成交价（覆盖桥回报价）。
+    reason/source：随成交推送（_push_fill_notice）带给 QQ 通知的决策理由与来源；
+    调用方**不再**在提交时刻自行推送（2026-09-18：提交即推「清仓」，而两笔单
+    随后被柜台判废）。失败推送走委托事件（unfilled…）→ alert.sh。
     返回 {"filled", "price", "cost_price", "remaining", "pending", "terminal",
           "untracked"}——untracked=True 表示桥没回委托号（这笔单无法被 reconcile
     跟踪），调用方同样要把 code 计入本轮「不再下单」闸门集。pending 只在**真的
@@ -242,9 +337,13 @@ def settle_place_fill(order_id, agent: str, code: str, side: str, volume: int,
     out = {"filled": 0, "price": px, "cost_price": 0.0, "remaining": wanted,
            "pending": False, "terminal": status if terminal else "", "untracked": not oid}
     if fv > 0:
+        held_before = _ledger_hold(agent, code)   # 记账前的持有量（推送文案用）
         out["cost_price"] = record_inline_fill(agent, code, side, fv, px, oid, ts)
         out["filled"] = fv
         out["remaining"] = max(wanted - fv, 0)
+        _push_fill_notice(agent=agent, code=code, side=side, filled=fv, price=px,
+                          order_id=oid, held_before=held_before, reason=reason,
+                          source=source, remaining=out["remaining"])
     if out["remaining"] <= 0:
         return out
     if terminal:
@@ -264,7 +363,8 @@ def settle_place_fill(order_id, agent: str, code: str, side: str, volume: int,
                 print(f"⚠️ live_fills: fill_abort 流水写入失败（{exc}）", file=sys.stderr)
         return out
     out["pending"] = add_pending(oid, agent, code, side, wanted, price,
-                                 ts or now_cn().isoformat(), protect=protect, recorded=fv)
+                                 ts or now_cn().isoformat(), protect=protect, recorded=fv,
+                                 reason=reason, ref_px=ref_px, decided_ts=decided_ts)
     return out
 
 
@@ -315,19 +415,19 @@ def record_event(kind: str, code: str, msg: str, *, side: str = "",
     """记一条委托事件；返回事件 id（= 去重键）。
 
     同一个 (kind, code, 当日) 只保留一条：重复记录覆盖旧值 → 每分钟跑的执行路径
-    不会刷屏；alert.sh 按 id 去重，只打扰一次。24 小时前的旧事件顺带清掉。
+    不会刷屏；alert.sh 按 id 去重，只打扰一次。超过 EVENT_KEEP_H 的旧事件顺带清掉
+    （清理语义 = order_events.prune_doc，读侧同一窗口；带 resolved_* 的已签收记录
+    也按同一窗口清，人工签收的审计尾巴在 live_order_events_ack.jsonl）。
     """
     now = now or now_cn()
     ev_id = key or f"{kind}:{code}:{now:%Y-%m-%d}"
-    cutoff = now - timedelta(hours=EVENT_KEEP_H)
     with _file_lock():          # 读-改-写要排队：与对账/哨兵并发写事件时不许互相覆盖
         try:
             doc = json.loads(EVENTS_FILE.read_text(encoding="utf-8"))
             doc = doc if isinstance(doc, dict) else {}
         except (OSError, json.JSONDecodeError):
             doc = {}
-        doc = {k: v for k, v in doc.items()
-               if isinstance(v, dict) and (_parse_ts(v.get("ts")) or cutoff) >= cutoff}
+        doc = order_events.prune_doc(doc, now)
         doc[ev_id] = {"ts": now.isoformat(), "kind": kind, "code": code, "side": side,
                       "msg": msg, "alert": bool(alert)}
         try:
@@ -589,33 +689,43 @@ def reconcile(broker, now: datetime | None = None) -> int:
     终态（撤单/废单/满额成交）移除；隔日桥已查不到的单过期清除。
     未了结的终态（没卖出去）与收盘前仍在途的单会记一条事件 → alert.sh 上报。
 
-    读-改-写全程持跨进程锁：哨兵（每分钟）/整点轮/record-only 采样会在同一
+    读-改-写全程持跨进程锁：哨兵（每分钟）/整轮/record-only 采样会在同一
     分钟边界撞车，无锁并发下两边都会基于旧 volume_recorded 补记同一笔成交。
     补记本身幂等：已记账量取 pending 与账本 applied_fills 标记的较大者
     （见 _recorded_baseline），save_ledger 与 save_pending 之间崩溃也不会重复记账。
+
+    成交推送（2026-09-18）：迟补的成交在这里补一条 QQ 通知（含条件位规则的理由），
+    发送放在**锁外**——QQ 网络调用不能占着账本跨进程锁（其他写者会整轮跳过）。
     """
     with _reconcile_lock() as got:
         if not got:
             return 0
-        return _reconcile_locked(broker, now)
+        fills, notices = _reconcile_locked(broker, now)
+    for n in notices:
+        _push_fill_notice(**n)
+    return fills
 
 
-def _reconcile_locked(broker, now: datetime | None = None) -> int:
-    """reconcile 的实际逻辑（调用方需已持有跨进程锁）。"""
+def _reconcile_locked(broker, now: datetime | None = None) -> tuple[int, list]:
+    """reconcile 的实际逻辑（调用方需已持有跨进程锁）。
+
+    返回 (补记笔数, 成交推送列表)——推送由调用方在**释放锁之后**执行。
+    """
     from live_ledger import load_ledger, record_buy, record_sell, save_ledger
     from live_trade_picks import log_line
 
     pend = load_pending()
     if not pend:
-        return 0
+        return 0, []
     try:
         orders = {o.get("order_id"): o for o in broker.get_orders()}
     except Exception:  # noqa: BLE001
-        return 0
+        return 0, []
     now = now or now_cn()
     today = now.strftime("%Y-%m-%d")
     hm = now.hour * 60 + now.minute
     fills, kept = 0, []
+    notices: list = []
     for p in pend:
         tag = f"[{p.get('agent')}] {p.get('code')} {p.get('side')}"
         o = orders.get(p.get("order_id"))
@@ -656,9 +766,12 @@ def _reconcile_locked(broker, now: datetime | None = None) -> int:
             fprice = float(o.get("filled_price") or p.get("price") or 0)
             prev_applied = ledger.get("applied_fills")
             cost_p = 0.0
+            held_before = None
             if p.get("side") != "buy":  # 卖出成交带成本基准（已完成 feed 盈亏用）
-                cost_p = float((((ledger.get("agents") or {}).get(p["agent"]) or {})
-                                .get("positions") or {}).get(p["code"], {}).get("cost_price") or 0)
+                pos = (((ledger.get("agents") or {}).get(p["agent"]) or {})
+                       .get("positions") or {}).get(p["code"], {})
+                cost_p = float(pos.get("cost_price") or 0)
+                held_before = int(pos.get("volume") or 0)   # 记账前持有量（推送文案用）
             if p.get("side") == "buy":
                 ledger = record_buy(ledger, p["agent"], p["code"], delta, fprice,
                                     now.isoformat())
@@ -672,7 +785,24 @@ def _reconcile_locked(broker, now: datetime | None = None) -> int:
             log_line({"ts": now.isoformat(), "mode": "fill_confirm",
                       "agent": p["agent"], "code": p["code"], "side": p.get("side"),
                       "volume": delta, "price": fprice, "cost_price": cost_p,
-                      "order_id": p.get("order_id")})
+                      "order_id": p.get("order_id"),
+                      # TCA：本行的量 = 本次补记的增量（与 volume 同义，不写累计——
+                      # 报告按委托号合并时会按量加权，累计值会被重复计入）。
+                      # 三段价里 limit/ref/decided 只能来自下单时的 pending 条目。
+                      **exec_cost.tape_fields(
+                          side=str(p.get("side") or ""), ref_px=p.get("ref_px"),
+                          limit_px=p.get("price"), fill_px=fprice,
+                          wanted=p.get("volume"), filled=delta,
+                          decided_ts=str(p.get("decided_ts") or ""),
+                          submit_ts=str(p.get("ts") or ""),
+                          fill_ts=now.isoformat(), path="reconcile")})
+            # 成交推送（锁外发，见 reconcile）：迟补的成交、哨兵条件位成交都走这里
+            notices.append({"agent": p["agent"], "code": p["code"],
+                            "side": str(p.get("side") or ""), "filled": delta,
+                            "price": fprice, "order_id": str(p.get("order_id") or ""),
+                            "held_before": held_before,
+                            "reason": str(p.get("reason") or ""), "source": "对账补记",
+                            "remaining": max(wanted - filled, 0)})
             p["volume_recorded"] = filled
             p["filled_price"] = fprice
             fills += 1
@@ -701,4 +831,4 @@ def _reconcile_locked(broker, now: datetime | None = None) -> int:
                          side=str(p.get("side") or ""), now=now)
         kept.append(p)
     save_pending(kept)
-    return fills
+    return fills, notices

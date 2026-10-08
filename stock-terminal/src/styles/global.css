@@ -1,0 +1,1020 @@
+@import './research-next-theme.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* 顶级量化平台 - 现代化视觉系统升级 */
+  --font-family: 'Outfit', 'Inter', "Noto Sans SC", sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', var(--font-mono);
+
+  /* 核心品牌色：电光感升级 */
+  --primary-blue: #2563eb;
+  --primary-blue-glow: rgba(37, 99, 235, 0.4);
+  --electric-indigo: #6366f1;
+  --neon-purple: #a855f7;
+  
+  /* 精致灰度级 */
+  --slate-50: #f8fafc;
+  --slate-100: #f1f5f9;
+  --slate-200: #e2e8f0;
+  --slate-400: #94a3b8;
+  --slate-600: #475569;
+  --slate-800: #1e293b;
+  --slate-900: #0f172a;
+
+  /* 背景系统：软清晨层级 */
+  --bg-main: radial-gradient(100% 100% at top left, #f1f5f9 0%, #e2e8f0 100%);
+  --bg-card: rgba(255, 255, 255, 0.7);
+  --bg-glass: rgba(255, 255, 255, 0.4);
+  
+  /* 边框系统 */
+  --border-glass: 1px solid rgba(255, 255, 255, 0.5);
+  --border-subtle: 1px solid rgba(226, 232, 250, 0.8);
+  --border-glow: 1px solid rgba(99, 102, 241, 0.2);
+
+  /* 增强阴影：分层质感 */
+  --shadow-premium: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 10px 15px -3px rgba(0, 0, 0, 0.03);
+  --shadow-float: 0 20px 25px -5px rgba(0, 0, 0, 0.05), 0 10px 10px -5px rgba(0, 0, 0, 0.02);
+  --shadow-glow: 0 0 15px rgba(99, 102, 241, 0.15);
+
+  /* 交易状态色（红涨绿跌 - 极致对比） */
+  --profit-primary: #ef4444;
+  --profit-glow: rgba(239, 68, 68, 0.2);
+  --loss-primary: #10b981;
+  --loss-glow: rgba(16, 185, 129, 0.2);
+
+  /* 导航系统 */
+  --dock-height: 0px;
+  --app-h: calc(100vh - var(--dock-height));
+  --nav-bg: rgba(248, 250, 252, 0.94);
+  --nav-border: rgba(148, 163, 184, 0.42);
+  --nav-icon: #40516a;
+  --nav-icon-hover: #0f172a;
+  --nav-label: #334155;
+  --nav-active-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(239, 246, 255, 0.58));
+}
+
+/* 高级实用类 */
+.glass-effect {
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  background: var(--bg-card);
+  border: var(--border-glass);
+}
+
+.glow-on-hover:hover {
+  box-shadow: var(--shadow-glow);
+  border-color: rgba(99, 102, 241, 0.4);
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, var(--electric-indigo), var(--neon-purple));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+
+/* 深色模式已移除 - 应用统一使用浅色主题 */
+
+* { box-sizing: border-box; }
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-family);
+  font-weight: 500;
+  -webkit-font-smoothing: antialiased;
+  width: 100%;
+  height: 100%;
+}
+
+html,
+#root {
+  background: transparent !important; /* 保持外层 HTML 透明以支持 Electron 自定义窗口圆角 */
+}
+
+body {
+  color: var(--slate-900);
+  overflow: hidden;
+  background: transparent !important; /* 背景由 .app-root 统一承载 */
+}
+
+/* Windows 10 圆角需要 body 透明 */
+html.platform-win32.os-win10 body {
+  background: transparent !important;
+}
+
+/* 应用程序根容器 - 统一承载窗口背景色 */
+.app-root {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-main);
+  /* 必须在此重新声明：自定义属性在声明所在元素上完成替换，
+     若仅写在 :root 则会固化为 100vh，has-dock 的覆盖将无效 */
+  --dock-height: 0px;
+  --app-h: calc(100vh - var(--dock-height));
+}
+
+/* 有底部 Dock 时：定义 Dock 高度 */
+.app-root.has-dock {
+  --dock-height: 64px;
+}
+
+/* 内容区：全屏铺满整个视口，背景与页面容器浑然一体，Dock 悬浮于其上 */
+.app-main {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-main);
+  overflow: hidden;
+}
+
+.app-main > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.console-windowbar {
+  background: transparent;
+}
+
+.console-windowbar-actions {
+  gap: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.console-window-control {
+  height: 100%; /* 填满标题栏容器高度 */
+  width: 46px; /* 典型的 Windows 控制按钮宽度 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #5f6368;
+  background: transparent;
+  border: none;
+  border-radius: 0; /* 简约直角设计 */
+  transition: background-color 0.15s ease, color 0.15s ease;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.console-window-control:hover {
+  background-color: rgba(0, 0, 0, 0.06);
+  color: #202124;
+}
+
+.console-window-control.is-danger:hover {
+  background-color: #e81123 !important; /* Windows 标准关闭红色 */
+  color: #ffffff !important;
+}
+
+.console-window-control:active {
+  background-color: rgba(0, 0, 0, 0.12);
+}
+
+.console-header-wrap {
+  padding: 68px 24px 18px;
+}
+
+.console-header-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(420px, 1fr) minmax(260px, 320px);
+  gap: 18px;
+  align-items: stretch;
+}
+
+.console-status-pill,
+.console-brand-panel,
+.console-side-panel {
+  position: relative;
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(244, 248, 255, 0.72));
+  backdrop-filter: blur(24px) saturate(165%);
+  box-shadow:
+    0 18px 34px rgba(15, 23, 42, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.console-status-pill {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 18px 18px 20px;
+}
+
+.console-status-pill.is-online {
+  box-shadow:
+    0 18px 34px rgba(15, 23, 42, 0.06),
+    0 0 0 1px rgba(16, 185, 129, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.console-status-pill.is-offline {
+  box-shadow:
+    0 18px 34px rgba(15, 23, 42, 0.06),
+    0 0 0 1px rgba(239, 68, 68, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.console-status-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.76);
+  color: #0f766e;
+}
+
+.console-status-pill.is-offline .console-status-icon {
+  color: #dc2626;
+}
+
+.console-status-ping {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #10b981;
+  box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.12);
+}
+
+.console-status-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.console-status-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+}
+
+.console-status-subtitle {
+  font-size: 11px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.console-metric-chip,
+.console-side-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.72);
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.console-metric-chip {
+  margin-left: auto;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.console-brand-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 18px 24px;
+  overflow: hidden;
+}
+
+.console-brand-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 auto 10px;
+  padding: 0 12px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.console-brand-title-wrap {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 16px;
+  align-items: center;
+}
+
+.console-brand-line {
+  height: 1px;
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0.04), rgba(148, 163, 184, 0.45), rgba(148, 163, 184, 0.04));
+}
+
+.console-brand-copy {
+  text-align: center;
+}
+
+.console-brand-title {
+  margin: 0;
+  font-family: 'Outfit', 'Noto Sans SC', sans-serif;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: #0f172a;
+}
+
+.console-brand-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.console-meta-separator {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.45);
+}
+
+.console-side-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 18px 20px;
+}
+
+.console-side-topline {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.console-clock-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.console-clock-copy {
+  text-align: right;
+}
+
+.console-clock-time {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 28px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.04em;
+}
+
+.console-clock-seconds {
+  font-size: 14px;
+  color: #64748b;
+}
+
+.console-clock-date {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.app-root {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+}
+
+/* 统一圆角方案：仅在最外层 body 设置圆角，内部元素自动被裁剪 */
+html.qm-rounded body {
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+/* Windows 11+ 使用系统原生窗口圆角，禁用 CSS 圆角 */
+html.platform-win32.os-win11.qm-rounded body {
+  border-radius: 0;
+  overflow: visible;
+}
+
+/* Windows 10 及以下：body 完全透明，由 app-root 承载圆角和背景 */
+html.platform-win32.os-win10.qm-rounded body {
+  border-radius: 0;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+html.platform-win32.os-win10.qm-rounded .app-root {
+  width: 100%;
+  height: 100%;
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--bg-main);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+/* Windows 10 下 #root 也需要透明 */
+html.platform-win32.os-win10 #root {
+  background: transparent !important;
+}
+
+/* Windows 10 下 dashboard-layout 也需要透明 */
+html.platform-win32.os-win10 .dashboard-layout {
+  background: transparent !important;
+}
+
+/* Windows 10 下仪表盘模块网格透明 */
+html.platform-win32.os-win10 .module-grid-container {
+  background: transparent !important;
+}
+
+.dashboard-layout {
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  position: relative;
+  z-index: 10;
+  overflow: hidden;
+}
+
+/* 窗口控制相关 */
+.window-drag {
+  -webkit-app-region: drag;
+}
+
+.window-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* 认证卡片圆角裁剪增强：降低 Windows/Electron 合成下的白边概率 */
+.auth-rounded-card.ant-card {
+  overflow: hidden;
+  background: transparent;
+  border: none;
+  -webkit-background-clip: padding-box;
+  background-clip: padding-box;
+  transform: translateZ(0);
+}
+
+.auth-rounded-card .ant-card-body {
+  overflow: hidden;
+  border-radius: inherit;
+  -webkit-background-clip: padding-box;
+  background-clip: padding-box;
+}
+
+/* Monaco 初始化早期兜底：防止内部 inputarea 在样式未就绪前短暂显形 */
+.monaco-editor textarea.inputarea {
+  opacity: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+  resize: none !important;
+}
+
+/* Unified Card Style - Colorized Glassmorphism Base */
+.panel-card {
+  width:100%;
+  height:100%;
+  border-radius:24px;
+  padding:24px;
+  display:flex;
+  flex-direction:column;
+  backdrop-filter: blur(24px) saturate(160%);
+  /* Background and border are now delegated to Card component for colorization */
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 10px 15px -3px rgba(0, 0, 0, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+.panel-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.05), 0 10px 10px -5px rgba(0, 0, 0, 0.02), inset 0 1px 0 rgba(255, 255, 255, 1);
+}
+
+/* Expanded modal panel should keep stable color and avoid whole-card gray hover shift */
+.panel-card.panel-card-expanded:hover {
+  transform: none;
+  box-shadow: var(--shadow-card);
+  background: var(--bg-card);
+}
+.panel-title {
+  margin:0 0 8px;
+  font-size:16px;
+  font-weight:600;
+  letter-spacing:.5px;
+  text-align: center;
+  color: var(--text-primary);
+}
+.panel-body {
+  flex:1;
+  overflow:hidden;
+  font-size:13px;
+  line-height:1.55;
+  color: var(--text-secondary);
+}
+
+/* Card Variants */
+.fund-overview-card {
+  background: var(--bg-card-fund-overview);
+}
+
+/* Fund Overview Specifics */
+.fund-value { font-size:48px; font-weight:600; letter-spacing:1px; margin-top:4px; color: var(--text-primary); }
+.fund-change { font-size:18px; margin-left:8px; }
+.fund-change.up { color: var(--text-positive); }
+.fund-change.down { color: var(--text-negative); }
+.fund-metrics { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:4px 18px; margin-top:8px; font-size:13px; }
+
+/* Market List */
+.market-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; font-size:13px; }
+.market-list li { 
+  padding:4px 8px; 
+  border-radius:10px; 
+  display: flex; 
+  justify-content: space-between; 
+  align-items: center; 
+}
+.market-list li span:first-child {
+  font-weight: 700; /* 加粗左侧名称 */
+  color: var(--text-primary);
+}
+.market-list li:nth-child(odd){ background: var(--bg-list-item-odd); }
+.market-value { font-weight: 700; }
+.trend-up { color: var(--text-positive); }
+.trend-down { color: var(--text-negative); }
+
+/* Trade Records */
+.trade-records { display:flex; flex-direction:column; gap:4px; font-size:12px; }
+.trade-row { display:grid; grid-template-columns: 42px 40px 1fr 50px 60px; gap:6px; padding:4px 8px; border-radius:10px; background: var(--bg-trade-row); }
+.t-action.buy { color: var(--text-positive); }
+.t-action.sell { color: var(--text-negative); }
+.trade-time { color: var(--text-secondary); }
+
+/* Chart & Alert Placeholders */
+.chart-placeholder { display:grid; grid-template-columns: repeat(3,1fr); gap:12px; height:100%; }
+.chart-box { background: var(--bg-chart-box); border: var(--border-chart-box); backdrop-filter: blur(8px); display:flex; align-items:center; justify-content:center; font-size:12px; border-radius:12px; }
+.alert-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:13px; }
+.alert-list li { background: var(--bg-alert-list-item); padding:6px 10px; border-radius:10px; }
+
+/* Placeholder Panel */
+.placeholder-panel { display:flex; align-items:center; justify-content:center; height:100%; flex-direction:column; gap:12px; opacity:.55; }
+.placeholder-panel h2 { margin:0; font-size:42px; letter-spacing:2px; font-weight:600; }
+.placeholder-panel p { margin:0; font-size:14px; }
+
+/* Animations */
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-4px); }
+}
+.animate-float { animation: float 4s ease-in-out infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.status-indicator { animation: pulse 2s infinite; }
+
+
+/* 底部 Dock 导航栏 - macOS 风格悬浮毛玻璃胶囊 Dock */
+.bottom-dock {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: var(--dock-height);
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px 8px;
+  box-sizing: border-box;
+  background: transparent;
+  z-index: 1050;
+  pointer-events: none;
+}
+
+/* macOS 风格悬浮毛玻璃胶囊容器 */
+.bottom-dock-inner {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 52px;
+  max-width: 100%;
+  padding: 0 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 
+    0 12px 32px -4px rgba(15, 23, 42, 0.12),
+    0 4px 12px -2px rgba(15, 23, 42, 0.06),
+    0 0 0 1px rgba(0, 0, 0, 0.03),
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.95);
+  transition: box-shadow 0.25s ease, transform 0.25s ease;
+}
+
+.bottom-dock-inner:hover {
+  box-shadow: 
+    0 16px 40px -4px rgba(15, 23, 42, 0.16),
+    0 6px 16px -2px rgba(15, 23, 42, 0.08),
+    0 0 0 1px rgba(0, 0, 0, 0.04),
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+.bottom-dock-inner::-webkit-scrollbar {
+  display: none;
+}
+
+.dock-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.dock-divider {
+  width: 1px;
+  align-self: center;
+  height: 24px;
+  margin: 0 5px;
+  background: linear-gradient(180deg, rgba(148, 163, 184, 0.08), rgba(148, 163, 184, 0.4), rgba(148, 163, 184, 0.08));
+}
+
+.dock-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 52px;
+  height: 44px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.dock-item:hover {
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  transform: translateY(-3px) scale(1.08);
+  border-color: rgba(255, 255, 255, 0.9);
+}
+
+.dock-item.active {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: rgba(59, 130, 246, 0.25);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.12), inset 0 1px 1px rgba(255, 255, 255, 0.9);
+}
+
+.dock-icon {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
+  color: #64748b;
+  transition: color 0.18s ease, transform 0.18s ease;
+}
+
+.dock-item:hover .dock-icon {
+  color: #0f172a;
+}
+
+.dock-item.active .dock-icon {
+  color: #2563eb;
+  stroke-width: 2.25;
+}
+
+.dock-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  color: #64748b;
+  white-space: nowrap;
+  transition: color 0.18s ease;
+}
+
+.dock-item:hover .dock-label {
+  color: #0f172a;
+}
+
+.dock-item.active .dock-label {
+  color: #2563eb;
+  font-weight: 700;
+}
+
+/* macOS 风格活跃状态指示小圆点 */
+.dock-active-dot {
+  position: absolute;
+  bottom: 2px;
+  width: 3.5px;
+  height: 3.5px;
+  border-radius: 50%;
+  background: #2563eb;
+  box-shadow: 0 0 4px rgba(37, 99, 235, 0.6);
+}
+
+.dock-item:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.45);
+  outline-offset: -2px;
+}
+
+@media (max-width: 1280px) {
+  .console-header-grid {
+    grid-template-columns: minmax(220px, 280px) minmax(360px, 1fr) minmax(220px, 280px);
+  }
+
+  .bottom-dock-inner {
+    justify-content: center;
+    padding: 0 4px;
+  }
+
+  .dock-item {
+    min-width: 48px;
+    width: 48px;
+  }
+}
+
+@media (max-width: 1080px) {
+  .console-header-wrap {
+    padding: 64px 16px 16px;
+  }
+
+  .console-header-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .console-brand-title-wrap {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .console-brand-line {
+    display: none;
+  }
+
+  .console-side-topline,
+  .console-clock-row {
+    justify-content: flex-start;
+  }
+
+  .console-clock-copy {
+    text-align: left;
+  }
+
+  .console-clock-time {
+    justify-content: flex-start;
+  }
+}
+
+/* 滚动条样式 - 浅色背景 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--text-tertiary);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* 策略监控和信息通知模块的滚动条样式 */
+.overflow-y-auto::-webkit-scrollbar-track {
+  background: var(--bg-tertiary);
+}
+
+.overflow-y-auto::-webkit-scrollbar-thumb {
+  background: var(--border-secondary);
+}
+
+.overflow-y-auto::-webkit-scrollbar-thumb:hover {
+  background: var(--border-primary);
+}
+
+/* 风险控制模块滚动条样式 */
+.risk-config-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.risk-config-container::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 3px;
+}
+
+.risk-config-container::-webkit-scrollbar-thumb {
+  background-color: var(--neutral-light);
+  border-radius: 3px;
+  transition: background-color 0.3s;
+}
+
+.risk-config-container::-webkit-scrollbar-thumb:hover {
+  background-color: var(--neutral);
+}
+
+/* 确保滚动容器内的内容平滑滚动 */
+
+/* 自定义滚动条样式 - 强制显示 */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--neutral-light) transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+  display: block;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: var(--neutral-light);
+  border-radius: 3px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: var(--neutral);
+}
+
+/* ǿ��С�ֺ��ı�ʹ�ô�Ҫ����ջ������������ */
+.text-xs, 
+.text-\[11px\], 
+.text-\[10px\],
+.ant-select-selector,
+.ant-select-selection-search-input,
+.ant-select-item-option-content {
+  font-family: var(--font-secondary) !important;
+}
+
+/* Admin Menu Modern Style */
+.admin-menu-modern {
+  border-right: none !important;
+  background: transparent !important;
+}
+
+.admin-menu-modern .ant-menu-item {
+  border-radius: 12px;
+  margin: 4px 8px;
+  padding-left: 16px !important;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.admin-menu-modern .ant-menu-item:hover {
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.08), rgba(99, 102, 241, 0.02));
+}
+
+.admin-menu-modern .ant-menu-item-selected {
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.12), rgba(99, 102, 241, 0.04)) !important;
+  color: #4f46e5 !important;
+  font-weight: 600;
+}
+
+.admin-menu-modern .ant-menu-submenu-title {
+  border-radius: 12px;
+  margin: 4px 8px;
+  padding-left: 16px !important;
+}
+
+.admin-menu-modern .ant-menu-submenu-title:hover {
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.06), rgba(99, 102, 241, 0.01));
+}
+
+.admin-menu-modern .ant-menu-sub {
+  background: transparent !important;
+}
+
+.admin-menu-modern .ant-menu-sub .ant-menu-item {
+  padding-left: 40px !important;
+  font-size: 13px;
+}
+
+.admin-menu-modern .ant-menu-item-divider {
+  margin: 8px 16px;
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+/* ==================== 后台管理页输入框统一高度(32px)与圆角(8px) ==================== */
+.admin-page input.ant-input,
+.admin-page .ant-input-affix-wrapper,
+.admin-page .ant-input-number,
+.admin-page .ant-picker {
+  height: 32px;
+  border-radius: 8px;
+}
+
+.admin-page .ant-input-affix-wrapper .ant-input {
+  height: 30px;
+}
+
+.admin-page .ant-input-number-input {
+  height: 30px;
+}
+
+.admin-page .ant-select .ant-select-selector {
+  height: 32px !important;
+  border-radius: 8px !important;
+}
+
+.admin-page .ant-select .ant-select-selector .ant-select-selection-item,
+.admin-page .ant-select .ant-select-selector .ant-select-selection-placeholder {
+  line-height: 30px !important;
+}
+
+.admin-page .ant-select .ant-select-selector .ant-select-selection-search-input {
+  height: 30px !important;
+}
+
+.admin-page .ant-picker-input > input {
+  height: 30px;
+}
+
+.admin-page textarea.ant-input {
+  border-radius: 8px;
+}
+
+/* 后台所有输入控件统一圆角（覆盖组件内联 6px，保证全局一致 8px） */
+.admin-page input.ant-input,
+.admin-page .ant-input-affix-wrapper,
+.admin-page .ant-input-number,
+.admin-page .ant-picker,
+.admin-page textarea.ant-input,
+.admin-page .ant-select .ant-select-selector {
+  border-radius: 8px !important;
+}
+
+/* 后台弹窗/抽屉（渲染到 body，脱离 .admin-page）内的输入框同样保持 8px 圆角 */
+.ant-modal .ant-input,
+.ant-modal .ant-input-affix-wrapper,
+.ant-modal .ant-input-number,
+.ant-modal .ant-picker,
+.ant-modal textarea.ant-input,
+.ant-modal .ant-select .ant-select-selector,
+.ant-drawer .ant-input,
+.ant-drawer .ant-input-affix-wrapper,
+.ant-drawer .ant-input-number,
+.ant-drawer .ant-picker,
+.ant-drawer textarea.ant-input,
+.ant-drawer .ant-select .ant-select-selector {
+  border-radius: 8px !important;
+}

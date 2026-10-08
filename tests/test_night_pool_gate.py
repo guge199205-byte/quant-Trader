@@ -93,7 +93,9 @@ def test_retry_if_missing_skips_when_target_file_exists(monkeypatch, tmp_path, s
     monkeypatch.setattr(N, "now_cn", lambda: _at(2026, 9, 11))
     monkeypatch.setattr(N, "latest_dt", lambda: "20260910")
     monkeypatch.setattr(N, "PICKS_DIR", tmp_path)
-    (tmp_path / "20260911_agent_picks.json").write_text("{}", encoding="utf-8")
+    # 非空池才算「已产出」（2026-09-15 语义修订：空池=研究失败空壳，必须补跑）
+    (tmp_path / "20260911_agent_picks.json").write_text(
+        json.dumps({"picks": [{"code": "600000.SH"}]}), encoding="utf-8")
 
     assert N.main(["--if-missing"]) == 0
     assert stub_run == []                                  # 补跑幂等：已有目标日池就不重产
@@ -101,6 +103,19 @@ def test_retry_if_missing_skips_when_target_file_exists(monkeypatch, tmp_path, s
 
     # 同条件下主跑（不带 --if-missing）照常重产：刷新当日新闻窗口
     assert N.main([]) == 0 and len(stub_run) == 1
+
+
+def test_retry_if_missing_reruns_when_target_file_empty(monkeypatch, tmp_path, stub_run, capsys):
+    # 2026-09-15 实录：02:30 主跑失败落 0 只池，03:30 补跑必须重跑而不是跳过
+    monkeypatch.setattr(N, "now_cn", lambda: _at(2026, 9, 11))
+    monkeypatch.setattr(N, "latest_dt", lambda: "20260910")
+    monkeypatch.setattr(N, "PICKS_DIR", tmp_path)
+    (tmp_path / "20260911_agent_picks.json").write_text(
+        json.dumps({"picks": []}), encoding="utf-8")
+
+    assert N.main(["--if-missing"]) == 0
+    assert len(stub_run) == 1                              # 空池 → 视为未产出，执行补跑
+    assert "视为未产出" in capsys.readouterr().out
 
 
 def test_retry_if_missing_runs_when_target_file_absent(monkeypatch, tmp_path, stub_run):

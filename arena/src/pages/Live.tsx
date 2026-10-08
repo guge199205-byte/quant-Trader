@@ -43,6 +43,8 @@ import { fmtMoney, fmtPct, fmtPrice, pnlClass } from '../utils/format';
 import { stockLabel, stockName } from '../utils/symbols';
 import { toLiveAdjust, toLiveFill } from '../utils/liveFills';
 import { displayAgentName, rankPerformers } from '../utils/agents';
+import { dayHit, dayOf, dayOptions } from '../utils/dayFilter';
+import { deriveBuyTimes } from '../utils/buyTime';
 import './Live.css';
 
 const BENCH_COLOR = '#10a37f';
@@ -339,6 +341,19 @@ export default function Live() {
     }
   };
   const [completedCount, setCompletedCount] = useState(0);
+  // 「日期」筛选：已完成 / 成交 / 持仓 三 tab 共用（'all' = 全部日期，不筛）
+  const [dateFilter, setDateFilter] = useState<string>('all');
+  const [completedDates, setCompletedDates] = useState<string[]>([]); // 已完成 feed 回传的候选平仓日期
+  // 候选日期回传只在内容变化时落 state（每轮渲染都是新数组，直接 set 会反复重渲）。
+  // 不做「切市场即清空」：父 effect 在子 effect 之后执行，会把 feed 刚回传的新日期擦掉，
+  // 内容串没再变就永不重发（子先父后的 effect 顺序竞争）；旧值由 feed 重新回传覆盖。
+  const onCompletedDates = useCallback((days: string[]) => {
+    setCompletedDates((prev) =>
+      prev.length === days.length && prev.every((d, i) => d === days[i]) ? prev : days,
+    );
+  }, []);
+  /** 北京时间的今天（日期下拉的「当年」判断用） */
+  const todayCn = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
 
   // 总控聚合（三市场一次拉取）
   const overview = usePolling(() => fetchOverview(), [], 30000, 0);
@@ -579,8 +594,36 @@ export default function Live() {
 
   // ---------- 实盘账户（A股：通达信桥 /live/account；港股：富途 /api/futu/account 直连 OpenD） ----------
   const liveAcct = usePolling(() => fetchLiveAccountFor(market), [market], 30000, 0);
-  const livePositions = (liveAcct.data?.positions ?? []).filter(
-    (p) => Number(p.total_volume) > 0,
+  const livePositions = useMemo(() => {
+    const list = (liveAcct.data?.positions ?? []).filter((p) => Number(p.total_volume) > 0);
+    // 港股富途：桥回报不带买入时刻（富途映射器 buy_time 恒为空）→ 用订单历史（已轮询的
+    // liveTrades）FIFO 回填建仓时间，让「持仓」tab 的日期筛选可用；历史窗口外推不出
+    // 仍为空（按「买入日未知」展示，不参与筛选）。
+    if (market !== 'hk') return list;
+    const derived = deriveBuyTimes(liveTrades.data ?? []);
+    if (!Object.keys(derived).length) return list;
+    return list.map((p) => (p.buy_time ? p : { ...p, buy_time: derived[p.stock_code] ?? '' }));
+  }, [liveAcct.data, market, liveTrades.data]);
+  /** 实盘持仓展示集：cn 分账时按选中模型收窄（hk 单一共享账户无分账，不按模型筛），
+   *  大仓位在前。『持仓』tab 渲染与「日期」候选共用同一出处（见 renderList / dateOptions）。 */
+  const livePosView = useMemo(() => {
+    const ag =
+      market === 'cn' && selectedModel !== 'all'
+        ? (liveLedger.data?.agents?.[selectedModel] ?? null)
+        : null;
+    const mine = ag ? new Set(ag.positions.map((lp) => lp.code)) : null;
+    const shown = (mine ? livePositions.filter((p) => mine.has(p.stock_code)) : livePositions)
+      .slice()
+      .sort((a, b) => Number(b.position_value) - Number(a.position_value));
+    return { ag, shown };
+  }, [market, selectedModel, liveLedger.data, livePositions]);
+  /** 实盘持仓按「日期」收窄（买入日）：持仓卡列表与计数共用一处 */
+  const livePosDated = useMemo(
+    () =>
+      dateFilter === 'all'
+        ? livePosView.shown
+        : livePosView.shown.filter((p) => dayHit(p.buy_time, dateFilter)),
+    [livePosView, dateFilter],
   );
   // 通达信账户的 quantmind 落库快照：桥实时通道读不通时的兜底持仓来源（带快照时刻）
   const realTdxAcct = usePolling(
@@ -615,6 +658,13 @@ export default function Live() {
     [lastSimSnapshot],
   );
   const simCash = Number(lastSimSnapshot?.positions?.CASH ?? 0);
+  /** 「持仓」tab 计数：与 renderList 分支同口径（实盘卡按日期收窄；通达信快照 /
+   *  模拟盘回放无买入日，整体展示不参与日期筛选）。角标与 filter-bar 计数共用。 */
+  const posCount = useMemo(() => {
+    if ((market === 'cn' || market === 'hk') && livePositions.length > 0) return livePosDated.length;
+    if (market === 'cn' && tdxPos.length > 0) return tdxPos.length;
+    return simEntries.length;
+  }, [market, livePositions, livePosDated, simEntries, tdxPos]);
   // 实盘分账账本（每 agent ¥10 万虚拟子账户，按模型显示各自持仓）
   // （hook 上移：空仓虚线判定在 lines memo 里要用）
 
@@ -690,11 +740,15 @@ export default function Live() {
   const liveCardRows = [...liveTradesFiltered, ...liveAdjustFiltered].sort((a, b) =>
     a.ts < b.ts ? 1 : -1,
   );
+  // 日期筛选（'all' = 不筛）只作用于这三个 tab 的列表展示；净值图悬停成交、
+  // 对话流里的成交标记仍用全量，不受影响。
+  const liveTradesDated = liveTradesFiltered.filter((e) => dayHit(e.ts, dateFilter));
+  const liveCardRowsDated = dateFilter === 'all' ? liveCardRows : liveCardRows.filter((e) => dayHit(e.ts, dateFilter));
   /** 实盘成交按日期分组（今日 → 9/1 …），日期头分组展示历史 */
   const liveGroups = useMemo(() => {
     const today = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
     const out: { label: string; rows: LiveCardRow[] }[] = [];
-    for (const e of liveCardRows) {
+    for (const e of liveCardRowsDated) {
       const d = String(e.ts).slice(0, 10);
       const last = out[out.length - 1];
       if (last && last.rows[0] && String(last.rows[0].ts).slice(0, 10) === d) {
@@ -707,7 +761,7 @@ export default function Live() {
       }
     }
     return out;
-  }, [liveCardRows]);
+  }, [liveCardRowsDated]);
   const heldSymbols = useMemo(() => {
     const set = new Set<string>();
     for (const rec of marketPositions.data ?? []) {
@@ -775,6 +829,21 @@ export default function Live() {
   const tradeEventsFiltered = tradeEvents.filter(
     (e) => selectedModel === 'all' || e.agent === selectedModel,
   );
+  const tradeEventsDated = tradeEventsFiltered.filter((e) => dayHit(e.date, dateFilter));
+
+  /** 「日期」下拉候选：按当前 tab 取各自数据源（成交=实盘+模拟成交日，持仓=实盘买入日，
+   *  已完成=feed 回传的平仓日）；含当前选中值，切 tab / 切市场后筛选不悬空。 */
+  const dateOptions = useMemo(() => {
+    const pool: (string | null | undefined)[] = [];
+    if (tab === 'trades') {
+      pool.push(...liveCardRows.map((e) => e.ts), ...tradeEventsFiltered.map((e) => e.date));
+    } else if (tab === 'positions') {
+      pool.push(...livePosView.shown.map((p) => p.buy_time)); // 快照兜底 / 模拟盘持仓无买入日
+    } else if (tab === 'completed') {
+      pool.push(...completedDates);
+    }
+    return dayOptions(pool, dateFilter);
+  }, [tab, liveCardRows, tradeEventsFiltered, livePosView, completedDates, dateFilter]);
 
   // ---------- 顶部价格条（基准 + 最高/最低表演者） ----------
   const benchStats = useMemo(() => {
@@ -825,19 +894,18 @@ export default function Live() {
     }
 
     if (tab === 'positions') {
-      // 实盘持仓置顶展示（A股通达信桥 / 港股富途，同 shape）；按选中模型筛选（'all' = 全部）
-      // 港股富途是单一共享账户，无 A 股分账（每模型 ¥10 万子账户）体系 → 不按模型筛
+      // 实盘持仓置顶展示（A股通达信桥 / 港股富途，同 shape）；展示集见 livePosView
+      // （cn 分账按选中模型收窄；hk 单一共享账户不按模型筛）
       if ((market === 'cn' || market === 'hk') && livePositions.length > 0) {
-        const ag =
-          market === 'cn' && selectedModel !== 'all'
-            ? (liveLedger.data?.agents?.[selectedModel] ?? null)
-            : null;
-        const mineCodes = ag ? new Set(ag.positions.map((lp) => lp.code)) : null;
-        // 大仓位在前：复盘先看占用最大的票（与总控 QMT 表同序）
-        const shownPositions = (mineCodes
-          ? livePositions.filter((p) => mineCodes.has(p.stock_code))
-          : livePositions
-        ).slice().sort((a, b) => Number(b.position_value) - Number(a.position_value));
+        const { ag } = livePosView;
+        // 「日期」筛选 = 按买入日（持仓卡「买入 MM-DD」）收窄实盘持仓；'all' 不筛。
+        // 买入日未知的行（回填后仍推不出的：成交日志/订单历史窗口外）不参与筛选，明示数量。
+        const shownPositions = livePosDated;
+        const unknownPos =
+          dateFilter === 'all'
+            ? 0
+            : livePosView.shown.filter((p) => !dayOf(p.buy_time)).length;
+        const unknownNote = unknownPos > 0 ? ` · 另有 ${unknownPos} 只买入日未知，未参与筛选` : '';
         const shownValue = shownPositions.reduce((s, p) => s + Number(p.position_value ?? 0), 0);
         const shownPnl = shownPositions.reduce((s, p) => s + Number(p.pnl ?? 0), 0);
         return (
@@ -848,12 +916,17 @@ export default function Live() {
                 {ag
                   ? `${shownPositions.length} 只 · 额度已用 ¥${ag.used.toLocaleString('en-US')} / ¥${ag.quota.toLocaleString('en-US')}`
                   : `${shownPositions.length} 只 · 市值 ${fmtMoney(shownValue, meta.currency)} · 浮盈 ${shownPnl >= 0 ? '+' : ''}${fmtMoney(shownPnl, meta.currency)} · 总资产 ${fmtMoney(liveAcct.data?.asset ?? 0, meta.currency)}`}
+                {dateFilter !== 'all' && unknownNote}
               </span>
               <LiveClock />
             </div>
             {shownPositions.length === 0 && (
               <div className="empty-state" style={{ padding: '12px 0' }}>
-                {ag ? '该模型名下暂无实盘持仓' : '暂无持仓'}
+                {dateFilter !== 'all'
+                  ? `该日期（${dateFilter.slice(5)}）无买入的实盘持仓${unknownPos > 0 ? `（另有 ${unknownPos} 只买入日未知，未参与筛选）` : ''}`
+                  : ag
+                    ? '该模型名下暂无实盘持仓'
+                    : '暂无持仓'}
               </div>
             )}
             {shownPositions.map((p) => (
@@ -880,7 +953,10 @@ export default function Live() {
               <>
                 <div className="pos-section-title" style={{ marginTop: 14 }}>
                   模拟盘持仓
-                  <span className="pos-section-sub">{simEntries.length} 只（仅非零）</span>
+                  <span className="pos-section-sub">
+                    {simEntries.length} 只（仅非零）
+                    {dateFilter !== 'all' && ' · 快照回放无买入日，不受日期筛选'}
+                  </span>
                 </div>
                 <div className="pos-row">
                   <span className="pos-sym">现金 CASH</span>
@@ -921,6 +997,7 @@ export default function Live() {
             <div className="mdp-note" style={{ marginBottom: 10 }}>
               桥实时账户通道未返回持仓，以下为 quantmind 落库的最近一帧账户快照（{snapTs}），
               明细字段比桥少（无买入时刻/浮盈，成本价来自快照）。
+              {dateFilter !== 'all' && ' 快照无买入日期，不受日期筛选。'}
             </div>
             {tdxPos.map((p) => {
               const qty = Number(p.volume);
@@ -958,6 +1035,7 @@ export default function Live() {
               实盘账户无持仓可展示（通达信桥实时通道未返回，最近快照也为空），
               以下为模拟盘回放快照
               {lastSimSnapshot.date ? ` · ${String(lastSimSnapshot.date).slice(0, 10)}` : ''}。
+              {dateFilter !== 'all' && '（快照回放无买入日期，不受日期筛选）'}
             </div>
           )}
           <div className="pos-row">
@@ -1020,13 +1098,19 @@ export default function Live() {
           currency={meta.currency}
           stockNames={stockNames.data ?? {}}
           onCount={setCompletedCount}
+          date={dateFilter}
+          onDates={onCompletedDates}
         />
       );
     }
 
     // TRADES —— 原始成交详细卡片（选中模型的全部成交；A股置顶今日实盘成交）
-    if (!tradeEventsFiltered.length && liveTradesFiltered.length === 0 && liveAdjustFiltered.length === 0) {
-      return <div className="empty-state">暂无成交</div>;
+    if (!tradeEventsDated.length && !liveCardRowsDated.length) {
+      return (
+        <div className="empty-state">
+          {dateFilter !== 'all' ? `该日期（${dateFilter.slice(5)}）暂无成交` : '暂无成交'}
+        </div>
+      );
     }
     return (
       <>
@@ -1099,10 +1183,13 @@ export default function Live() {
                 })}
               </div>
             ))}
-            <div className="pos-section-title" style={{ marginTop: 10 }}>模拟盘成交</div>
+            {/* 模拟盘成交标题只在有行时出现（日期筛选下常有一整天全是实盘成交） */}
+            {tradeEventsDated.length > 0 && (
+              <div className="pos-section-title" style={{ marginTop: 10 }}>模拟盘成交</div>
+            )}
           </>
         )}
-        {tradeEventsFiltered.map((e, i) => (
+        {tradeEventsDated.map((e, i) => (
           <div className="trade-card" key={`${e.date}-${i}`}>
             <div className="trade-card-head">
               <span className={`trade-side ${e.side}`}>{e.side === 'buy' ? '买入' : '卖出'}</span>
@@ -1141,15 +1228,16 @@ export default function Live() {
   // 「刷新后图表先是乱的」（X 轴 08-03…08-27 那串）。phase 已归零，等待只剩一次请求。
   const chartPending = market === 'cn' && liveEquity.loading && !liveEqRef.current;
 
-  // tab 角标：一眼看出哪块有内容（0 也显示，省得点进去才发现是空的）
+  // tab 角标：一眼看出哪块有内容（0 也显示，省得点进去才发现是空的）；
+  // 日期筛选生效时随之收窄（与筛完实际看到的条数一致）
   const tabBadges: Partial<Record<Tab, number>> = {
     completed: completedCount,
-    trades: tradeEventsFiltered.length + liveTradesFiltered.length,
+    trades: tradeEventsDated.length + liveTradesDated.length,
     chat:
       selectedModel === 'all'
         ? (chatAll.data ?? []).reduce((n, a) => n + a.lines.length, 0)
         : (logs.data ?? []).length,
-    positions: livePositions.length || tdxPos.length || simEntries.length,
+    positions: posCount,
   };
 
   return (
@@ -1362,6 +1450,25 @@ export default function Live() {
                   <option key="market-research" value="market-research">市场研究（研究总控）</option>
                 )}
               </select>
+              {(tab === 'completed' || tab === 'trades' || tab === 'positions') && dateOptions.length > 0 && (
+                /* 「日期」筛选：翻历史记录。候选=当前数据源出现过的日期；该数据源没有任何
+                   日期（如港股持仓无买入时刻）时整只下拉隐藏，不摆一个筛不出东西的控件。
+                   当年条目只显 MM-DD（与卡片一致），跨年条目带年份。 */
+                <select
+                  className="filter-select filter-date"
+                  aria-label="按日期筛选"
+                  title="按日期筛选（历史记录）"
+                  value={dateFilter}
+                  onChange={(e) => setDateFilter(e.target.value)}
+                >
+                  <option value="all">全部日期</option>
+                  {dateOptions.map((d) => (
+                    <option key={d} value={d}>
+                      {d.slice(0, 4) === todayCn.slice(0, 4) ? d.slice(5) : d}
+                    </option>
+                  ))}
+                </select>
+              )}
               {tab === 'chat' && (
                 <>
                   <button
@@ -1414,13 +1521,13 @@ export default function Live() {
               {tab === 'completed'
                 ? completedCount
                 : tab === 'trades'
-                  ? tradeEventsFiltered.length
+                  ? tradeEventsDated.length + liveTradesDated.length
                   : tab === 'chat'
                     ? selectedModel === 'all'
                       ? (chatAll.data ?? []).reduce((n, a) => n + a.lines.length, 0)
                       : (logs.data ?? []).length
                     : tab === 'positions'
-                      ? livePositions.length || tdxPos.length || simEntries.length
+                      ? posCount
                       : ''}
             </span>
           </div>

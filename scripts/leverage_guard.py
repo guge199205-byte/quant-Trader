@@ -27,7 +27,59 @@ from live_ledger import (agent_virtual_cash, find_holder,  # noqa: E402
 from live_hourly_analysis import (LEVERAGE_MAX, in_trading_window,  # noqa: E402
                                   intraday_exec_enabled, now_cn)
 from live_fills import add_pending, load_pending, round_sell_qty  # noqa: E402
+from live_quotes import klines as lq_klines, quote as lq_quote  # noqa: E402
 from ashare_rules import at_limit_down  # noqa: E402
+
+
+def _degraded_check(now) -> int:
+    """桥断/行情停更时的降级杠杆巡检（2026-09-15）：估算 + QQ 告警，不下任何单。
+
+    数据 = 账户快照（≤4h，含未分账持仓）→ 否则本地台账 + AiData 现价。
+    口径为「估算」，消息与日志均注明；桥恢复后按真实口径复核。
+    """
+    from live_account_cache import (ledger_positions, load_snapshot,
+                                    notify_throttled, snapshot_positions)
+
+    agents = (load_ledger().get("agents") or {})
+    snap = load_snapshot()
+    if snap:
+        pos_map = snapshot_positions(snap)
+        cash_all = float((snap.get("asset") or {}).get("cash") or 0)
+        src = f"账户快照（{snap.get('age_min', '?')} 分钟前）"
+    else:
+        pos_map = ledger_positions()
+        cash_all = sum(float((a or {}).get("virtual_cash") or 0) for a in agents.values())
+        src = "本地台账（不含未分账持仓）"
+    if not pos_map:
+        print(f"[{now:%F %T}] 降级监控：无快照也无台账持仓，跳过")
+        return 0
+
+    prices = {}
+    for code in pos_map:
+        prices[code] = float(lq_quote(code, prefer="aidata").get("close") or 0)
+
+    def _lev(codes, cash):
+        value = sum(prices.get(c, 0.0) * pos_map[c]["volume"] for c in codes)
+        equity = cash + value
+        return (value / equity if equity > 0 else 0.0), value, equity
+
+    msgs = [f"口径：{src} + AiData 现价（估算）"]
+    lev_all, v_all, e_all = _lev(list(pos_map), cash_all)
+    if lev_all > LEVERAGE_MAX:
+        msgs.append(f"全账户杠杆 {lev_all:.2f}×（市值 ¥{v_all:,.0f} / 权益 ¥{e_all:,.0f}）"
+                    f"超 {LEVERAGE_MAX}×")
+    for agent, rec in sorted(agents.items()):
+        codes = [c for c in (rec.get("positions") or {}) if c in pos_map]
+        if not codes:
+            continue
+        lev, v, _e = _lev(codes, float(rec.get("virtual_cash") or 0))
+        if lev > LEVERAGE_MAX:
+            msgs.append(f"[{agent}] 分账杠杆 {lev:.2f}×（市值 ¥{v:,.0f}）超限")
+    print(f"[{now:%F %T}] 降级监控：" + "；".join(msgs))
+    if len(msgs) > 1:
+        notify_throttled("leverage", "🧯 桥断降级 · 杠杆超限 ⚠️",
+                         "\n".join(msgs) + "\n桥在线前只能告警，恢复后应尽快处置并复核")
+    return 0
 
 
 def main() -> int:
@@ -42,8 +94,8 @@ def main() -> int:
 
     broker = TdxBridgeBroker()
     if market_data_stale(broker):
-        print(f"[{now:%F %T}] ⚠️ 行情停更，强平守护暂缓")
-        return 0
+        print(f"[{now:%F %T}] ⚠️ 行情停更（或桥不可达），转降级监控")
+        return _degraded_check(now)
 
     ledger = load_ledger()
     agents = ledger.get("agents") or {}
@@ -56,14 +108,14 @@ def main() -> int:
         for p in (broker._account_query().get("positions") or []):
             available[p["stock_code"]] = int(p.get("available_volume") or 0)
     except Exception as exc:  # noqa: BLE001
-        print(f"[{now:%F %T}] ⚠️ 账户查询失败，守护跳过: {exc}")
-        return 0
+        print(f"[{now:%F %T}] ️ 账户查询失败，转降级监控: {exc}")
+        return _degraded_check(now)
     for agent, rec in agents.items():
         for code in (rec.get("positions") or {}):
             if code in quotes:
                 continue
             try:
-                q = broker.get_quote(code, "")
+                q = lq_quote(code, prefer="aidata", broker=broker)
                 px = float((q or {}).get("close") or 0)
                 quotes[code] = px
             except Exception:  # noqa: BLE001
@@ -101,7 +153,8 @@ def main() -> int:
             continue
         day_chg = 0.0
         try:
-            klines = broker.get_klines(code, interval="daily")[-2:]
+            klines = lq_klines(code, interval="daily", count=2,
+                               prefer="aidata", broker=broker)
             if len(klines) >= 2 and float(klines[-2].get("close") or 0) > 0:
                 day_chg = (float(klines[-1].get("close") or 0)
                            - float(klines[-2].get("close") or 0)) \
@@ -131,8 +184,10 @@ def main() -> int:
             result = broker.sell(None, None, code, want, price=limit)
             print(f"[{now:%F %T}] 🔴 强平守护 {agent} 卖 {code} {want}股 "
                   f"限价 {limit}（杠杆 {value / equity:.2f}× > {LEVERAGE_MAX}×）: {result}")
+            # 成交推送由 reconcile 补记时发（2026-09-18：提交时刻不推成功文案）
             add_pending(result.get("order_id"), agent, code, "sell", want,
-                        limit, now.isoformat())
+                        limit, now.isoformat(),
+                        reason=f"杠杆 {value / equity:.2f}× 超标强平")
             time.sleep(1)  # 桥限流
         except Exception as exc:  # noqa: BLE001
             print(f"[{now:%F %T}] ❌ 强平守护 {agent} 卖 {code} 失败: {exc}")

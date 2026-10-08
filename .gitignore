@@ -104,6 +104,8 @@ arena/node_modules/
 arena/dist/
 data/benchmark_nasdaq100.json
 dsh/proxy/dsh.htpasswd
+# dsh 浏览器鉴权 cookie（含 10 年有效的签名凭据，由 scripts/dsh_auth_cookie.py 生成）
+dsh/proxy/dsh-cookies.conf
 
 # 运行时交易缓存（不入库，随镜像/卷持久化）
 trade_cache.sqlite
@@ -133,6 +135,9 @@ data/live_watch.json
 # 平时不存在，但一次重叠的 git add -A 就会捞到半写快照）
 data/live_watch.json.lock
 data/live_watch.json.tmp
+# 条件位连续废单熔断 sidecar（live_price_watch 唯一读写；运行时状态，含当日 streak）
+data/live_watch_halt.json
+data/live_watch_halt.json.tmp
 data/live_pending_orders.json.tmp
 data/live_order_events.json.tmp
 data/live_order_outcomes.json.tmp

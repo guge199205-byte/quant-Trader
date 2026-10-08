@@ -1,0 +1,38 @@
+{
+  "name": "stock-terminal-local",
+  "private": true,
+  "version": "1.0.0",
+  "description": "老版个股终端独立本地版（不参与主仓库提交）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 8099",
+    "start": "npm install && npm run dev",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@tailwindcss/aspect-ratio": "^0.4.2",
+    "@tailwindcss/forms": "^0.5.11",
+    "@tailwindcss/typography": "^0.5.20",
+    "antd": "^5.18.0",
+    "autoprefixer": "^10.5.4",
+    "axios": "^1.7.2",
+    "dayjs": "^1.11.13",
+    "echarts": "^6.0.0",
+    "echarts-for-react": "^3.0.6",
+    "framer-motion": "^11.2.10",
+    "lucide-react": "^0.390.0",
+    "postcss": "^8.5.26",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.9.4",
+    "tailwindcss": "^3.4.4",
+    "tailwindcss-animate": "^1.0.7"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.4.5",
+    "vite": "^6.3.5"
+  }
+}

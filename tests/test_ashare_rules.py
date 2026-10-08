@@ -113,8 +113,10 @@ def test_rules_brief_mentions_2026_rules():
 
 
 def test_protect_sell_price_is_limit_down():
-    """卖出保护价 = 跌停价（quantmind 真账户实测：报跌停价成交在盘口买一，
-    既保证有买盘即成、又不会因报低价而卖在低价）。"""
+    """protect_sell_price = 跌停价（价格**硬下限**，用于夹取/跌停排队）。
+
+    注意它不是「可报出的卖价」——连续竞价有效竞价范围是 [基准价×98%, 涨停价]，
+    报跌停价会废单（2026-09-21 002074 实录 42 笔）。可卖报价用 aggressive_sell_price。"""
     assert R.protect_sell_price("600309.SH", 75.00) == 67.50   # 主板 ±10%
     assert R.protect_sell_price("688183.SH", 20.00) == 16.00   # 科创板 ±20%
     assert R.protect_sell_price("300750.SZ", 100.00) == 80.00  # 创业板 ±20%
@@ -122,3 +124,43 @@ def test_protect_sell_price_is_limit_down():
     assert R.protect_sell_price("600309.SH", 10.005) == 9.00   # 四舍五入到分
     assert R.protect_sell_price("600309.SH", 0) is None        # 无昨收 → None（调用方降级）
     assert R.protect_sell_price("600309.SH", None) is None
+
+
+def test_aggressive_sell_price_is_market_minus_one_percent():
+    """卖出可报单价 = 现价×0.99（HALF_UP 到分），落在 98% 有效竞价范围之内。"""
+    # 主板：跌停 67.50 远低于现价 → 取现价-1%
+    assert R.aggressive_sell_price("600309.SH", 75.00, 76.00) == 75.24
+    # 创业板 ±20%：跌停 80.00 同样不约束
+    assert R.aggressive_sell_price("300750.SZ", 100.00, 99.00) == 98.01
+
+
+def test_aggressive_sell_price_floor_binds_near_limit_down():
+    """近跌停：现价-1% 会低于跌停价 → 取跌停价（此时基准价贴近跌停，仍在带内）。"""
+    # 001312.SZ：昨收 17.22（跌停 15.50），现价 15.60 → 15.60×0.99=15.44 < 15.50
+    assert R.aggressive_sell_price("001312.SZ", 17.22, 15.60) == 15.50
+    # 跌停价同时是合法下沿：不低于现价的 98%
+    assert R.aggressive_sell_price("001312.SZ", 17.22, 15.60) >= round(15.60 * 0.98, 2)
+
+
+def test_aggressive_sell_price_002074_regression():
+    """2026-09-21 实盘回归：002074 止损触发（市价 26.26）旧口径报跌停价 23.53 全废。
+
+    新口径 = 26.26×0.99 = 26.00：既 ≠ 跌停价，又在 [0.98×现价, 涨停] 之内。"""
+    px = R.aggressive_sell_price("002074.SZ", 26.14, 26.26)
+    assert px == 26.00
+    assert R.protect_sell_price("002074.SZ", 26.14) == 23.53   # 旧口径（会废单）
+    assert px != 23.53
+    assert px >= round(26.26 * 0.98, 2)   # 25.73 — 落在有效竞价范围（下沿）内
+
+
+def test_aggressive_sell_price_missing_inputs():
+    """昨收缺失 → 纯现价口径（无限价夹取）；现价缺失/非法 → None（调用方降级）。
+
+    2026-09-21 审查 MEDIUM-3：旧契约在现价缺失时退回跌停价——那正是当天 42 笔
+    废单的报价，等于把「最激进可成交价」退化成已知废单价。现在一律 None，
+    调用方（哨兵/整点轮/清仓）各自走同口径兜底，不得凭空造价。"""
+    assert R.aggressive_sell_price("600309.SH", None, 10.00) == 9.90
+    assert R.aggressive_sell_price("600309.SH", 75.00, None) is None
+    assert R.aggressive_sell_price("600309.SH", 75.00, 0) is None
+    assert R.aggressive_sell_price("600309.SH", 75.00, float("nan")) is None
+    assert R.aggressive_sell_price("600309.SH", None, None) is None

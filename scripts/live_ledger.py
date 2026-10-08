@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""实盘分账记账本：每 agent ¥10 万虚拟子账户（券商真实账户只有一个，分账只是记账）。
+"""实盘分账记账本（A股，**薄封装**）。
+
+算法全部收敛在 `scripts/account_protocol.py`（QIFI 式协议层）；
+本模块只做"绑定"：台账文件路径 + 额度（¥10 万）+ 本市场 IO + A 股特有的坏价闸。
 
 规则（2026-08-31 用户确认）：
   - 每个 agent 初始额度 AGENT_QUOTA = ¥100,000，累计买入成本不得超过该额度
@@ -8,17 +11,28 @@
   - 2026-08-31 已买的 5 只（约 ¥92 万）属于总账户，不入分账
   - 持有同一股票的 agent 用 find_holder 查找（轮候分配下每只只归属一个 agent）
 
+迁移说明见 docs/ACCOUNT_PROTOCOL_PLAN.md：本模块原与 hk/us_ledger 各自复制一份
+实现（已实测漂移）。现三市场共用协议层，一致性由 tests/test_account_protocol.py
+的 golden 基线 + 三市场一致性断言守住。
+
 用法：
   python scripts/live_ledger.py            # 打印当前分账状态
-  python -m pytest scripts/test_live_ledger.py
+  python -m pytest tests/test_live_roundtrips.py tests/test_account_protocol.py
 """
 import json
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import account_protocol as _p  # noqa: E402
+
 LEDGER_FILE = Path(__file__).resolve().parent.parent / "logs" / "live_ledger.json"
+ROUNDTRIP_LOG = Path(__file__).resolve().parent.parent / "logs" / "live_roundtrips.jsonl"
 AGENT_QUOTA = 100_000.0
 
 
+# ---------- IO（绑定层） ----------
 def load_ledger() -> dict:
     """读账本；文件不存在/损坏时返回空账本（不抛异常）。"""
     if not LEDGER_FILE.is_file():
@@ -30,88 +44,19 @@ def load_ledger() -> dict:
 
 
 def save_ledger(ledger: dict) -> None:
-    """原子写账本：先写 tmp 再 rename，避免半写文件。"""
+    """原子写账本：先写 tmp 再 rename，避免半写文件。
+
+    同时把累积的回合记录落盘（协议层统一实现，三市场共用 live_roundtrips.jsonl，
+    靠记录里的 market 字段区分）。**落盘成功才从账本里清掉**，失败留待下次重试。
+    """
+    ledger = _p.flush_roundtrips(ledger, ROUNDTRIP_LOG)
     LEDGER_FILE.parent.mkdir(exist_ok=True)
     tmp = LEDGER_FILE.with_name(LEDGER_FILE.name + ".tmp")
     tmp.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(LEDGER_FILE)
 
 
-def _positions(ledger: dict, agent: str) -> dict:
-    return ((ledger.get("agents") or {}).get(agent) or {}).get("positions") or {}
-
-
-def agent_used(ledger: dict, agent: str) -> float:
-    """该 agent 名下持仓成本合计（used 额度）。"""
-    return round(
-        sum(float(p["volume"]) * float(p["cost_price"]) for p in _positions(ledger, agent).values()),
-        2,
-    )
-
-
-def agent_remaining(ledger: dict, agent: str) -> float:
-    """剩余可买额度 = quota - used。"""
-    return round(AGENT_QUOTA - agent_used(ledger, agent), 2)
-
-
-def record_buy(ledger: dict, agent: str, code: str, volume: int,
-               cost_price: float, ts: str) -> dict:
-    """买入记账（不可变，返回新账本）：加仓时按加权平均更新成本。
-    同时扣减该 agent 虚拟现金（初始 ¥10 万，虚拟子账户口径）。"""
-    agents = {**ledger.get("agents", {})}
-    rec = dict(agents.get(agent) or {})
-    pos = dict(rec.get("positions") or {})
-    prev = pos.get(code)
-    if prev:
-        new_vol = prev["volume"] + volume
-        new_cost = (prev["volume"] * prev["cost_price"] + volume * cost_price) / new_vol
-        pos[code] = {"volume": new_vol, "cost_price": round(new_cost, 4),
-                     "buy_ts": prev["buy_ts"], "last_ts": ts}
-    else:
-        pos[code] = {"volume": volume, "cost_price": round(float(cost_price), 4),
-                     "buy_ts": ts, "last_ts": ts}
-    cash = float(rec.get("virtual_cash") or AGENT_QUOTA) - volume * float(cost_price)
-    rec["positions"] = pos
-    rec["virtual_cash"] = round(cash, 2)
-    agents[agent] = rec
-    return {**ledger, "agents": agents}
-
-
-def record_sell(ledger: dict, agent: str, code: str, volume: int,
-                sell_price: float, ts: str) -> dict:
-    """卖出记账（不可变）：扣减数量，减到 0 移除；虚拟现金加回卖出金额；
-    不存在的持仓原样返回。"""
-    pos = dict(_positions(ledger, agent))
-    if code not in pos:
-        return ledger
-    remaining = pos[code]["volume"] - volume
-    if remaining <= 0:
-        del pos[code]
-    else:
-        pos[code] = {**pos[code], "volume": remaining, "last_ts": ts}
-    agents = {**ledger.get("agents", {})}
-    rec = dict(agents.get(agent) or {})
-    rec["positions"] = pos
-    cash = float(rec.get("virtual_cash") or AGENT_QUOTA) + volume * float(sell_price)
-    rec["virtual_cash"] = round(cash, 2)
-    agents[agent] = rec
-    return {**ledger, "agents": agents}
-
-
-def agent_virtual_cash(ledger: dict, agent: str) -> float:
-    """该 agent 虚拟现金（初始 ¥10 万；买入扣、卖出加）。"""
-    return float(((ledger.get("agents") or {}).get(agent) or {}).get("virtual_cash")
-                 or AGENT_QUOTA)
-
-
-def find_holder(ledger: dict, code: str) -> str | None:
-    """谁持有该股票（轮候分配下每只只归属一个 agent；找不到返回 None）。"""
-    for agent, rec in (ledger.get("agents") or {}).items():
-        if (rec.get("positions") or {}).get(code):
-            return agent
-    return None
-
-
+# ---------- A 股特有：坏价闸 ----------
 def sane_fill_price(fp: float, ref: float) -> tuple[float, bool]:
     """成交/行情价护栏：|fp/ref-1| > 40% 视为坏 tick（全市场最大涨跌停 ±30%，
     留余量）。越界返回 (ref, True) 供 approx 记账，正常返回 (fp, False)。
@@ -125,34 +70,45 @@ def sane_fill_price(fp: float, ref: float) -> tuple[float, bool]:
     return round(ref, 2), True
 
 
-# ---------- 延期单（拒单补执行）：桥行情断开被拒的决策，恢复后自动重放 ----------
+# ---------- 协议层委托（本市场只钉额度与市场标识） ----------
+_positions = _p.positions
+agent_used = _p.agent_used
+position_cost = _p.position_cost   # 单票成本（单票集中度闸取数，2026-09-18）
+find_holder = _p.find_holder
+load_deferred = _p.load_deferred
+_holding_days = _p.holding_days
+_roundtrip_row = _p.roundtrip_row
 
-def load_deferred(ledger: dict) -> list:
-    """待重放订单：在途、被拒（行情断开/桥不可达）的买卖意图。"""
-    return list(ledger.get("deferred") or [])
+
+def agent_remaining(ledger: dict, agent: str) -> float:
+    return _p.agent_remaining(ledger, agent, AGENT_QUOTA)
+
+
+def agent_virtual_cash(ledger: dict, agent: str) -> float:
+    return _p.agent_virtual_cash(ledger, agent, AGENT_QUOTA)
+
+
+def record_buy(ledger: dict, agent: str, code: str, volume: int,
+               cost_price: float, ts: str) -> dict:
+    return _p.record_buy(ledger, agent, code, volume, cost_price, ts, quota=AGENT_QUOTA)
+
+
+def record_sell(ledger: dict, agent: str, code: str, volume: int,
+                sell_price: float, ts: str, exit_reason: str | None = None) -> dict:
+    return _p.record_sell(ledger, agent, code, volume, sell_price, ts,
+                          exit_reason, quota=AGENT_QUOTA, market="A")
 
 
 def save_deferred(ledger: dict, agent: str, side: str, code: str, volume: int,
                   reason: str, ts: str) -> dict:
-    """登记一笔延期单（不可变，返回新账本）。同 agent+code+side 只保留最新一笔，
-    防止断链期间每轮重复堆积。"""
-    item = {"agent": agent, "side": side, "code": code, "volume": int(volume),
-            "reason": reason, "ts": ts}
-    deferred = [d for d in load_deferred(ledger)
-                if not (d.get("agent") == agent and d.get("code") == code
-                        and d.get("side") == side)]
-    deferred.append(item)
-    return {**ledger, "deferred": deferred}
+    return _p.save_deferred(ledger, agent, side, code, volume, reason, ts)
 
 
 def clear_deferred(ledger: dict, agent: str, side: str, code: str) -> dict:
-    """清除一条延期单（成功后调用，防重复下单）。"""
-    deferred = [d for d in load_deferred(ledger)
-                if not (d.get("agent") == agent and d.get("code") == code
-                        and d.get("side") == side)]
-    return {**ledger, "deferred": deferred}
+    return _p.clear_deferred(ledger, agent, side, code)
 
 
+# ---------- 延期单登记（A 股断链关键字判定 + IO，属绑定层） ----------
 def defer_on_exc(agent: str, side: str, code: str, volume: int,
                  exc: Exception, ts: str) -> bool:
     """桥断链/拒单时登记延期单（命中断链关键字才登记），返回是否登记。

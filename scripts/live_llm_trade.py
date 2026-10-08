@@ -54,16 +54,26 @@ from live_ledger import (  # noqa: E402
     agent_virtual_cash,
     find_holder,
     load_ledger,
+    position_cost,
     record_sell,
     sane_fill_price,
     save_ledger,
 )
 from live_fills import (inflight_codes, note_pct_unparsed, reconcile,  # noqa: E402
-                        round_sell_qty, settle_place_fill, wait_fill)
-from ashare_rules import at_limit_down, board_of  # noqa: E402
+                        round_sell_qty, sell_limit, settle_place_fill, wait_fill)
+# 执行损耗 TCA 口径（三段价字段的唯一出处；纯算术、不抛异常）
+import exec_cost  # noqa: E402
+from ashare_rules import at_limit_down, board_of, in_continuous_auction  # noqa: E402
 from llm_json import extract_json  # noqa: E402
 from live_prompt_context import (PCT_DIRTY, PCT_GIVEN, parse_pct,  # noqa: E402
                                  sell_fraction)
+from live_quotes import (klines as lq_klines,  # noqa: E402
+                         klines_batch as lq_klines_batch,
+                         quote as lq_quote)
+# 影子代价账：被拦下的买入意图落池，事后按远期超额给每条规则定价。
+# 纯观测层（写入失败只留一行 stderr，绝不抛），见 scripts/ghost_ledger.py。
+import gate_rules  # noqa: E402
+import ghost_ledger  # noqa: E402
 
 # 杠杆硬约束（与 live_hourly_analysis 同口径）
 LEVERAGE_MAX = 1.5
@@ -72,6 +82,9 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 PICKS_JSON = ROOT / ".." / "projects" / "quantmind" / "data" / "reports" / "stock_picks"
 PER_STOCK_PCT = 0.2   # 单票买入 ≤ 剩余额度 20%
 MAX_NEW_BUYS = 3      # 新开仓上限：单轮 + 当日累计（风险预算 max_new_buys 覆盖）
+# 单票**累计持仓**上限：同票成本 ≤ 该比例×权益（风险预算 per_stock_pos_pct 覆盖；
+# 2026-09-18 机构级——per_stock_pct 只管单笔，同一标的跨轮加仓此前不封顶）
+MAX_POS_PCT = 0.25
 # 取池多拿只数：入口过滤（ST/黑名单/风险）剔除后按原排序补齐，池子不白白变小
 POOL_FILTER_OVERFETCH = 10
 
@@ -91,17 +104,22 @@ def _apply_risk_budget() -> None:
     2026-09-08 前本文件硬编码 1.5/20% 且**没有新开仓上限**——预算定档"防守"
     （1.0/10%/1 只）时，09:35 主入口仍按宽松档下单，风险预算只兑现了一半。
     口径与 live_hourly_analysis 共用 risk_budget_agent.load_limits。
+    2026-09-18 起档位不可信时 load_limits 回退买入侧防守参数（fail-safe），
+    此处无需额外处理。
     """
-    global LEVERAGE_MAX, PER_STOCK_PCT, MAX_NEW_BUYS
+    global LEVERAGE_MAX, PER_STOCK_PCT, MAX_NEW_BUYS, MAX_POS_PCT
     try:
         from risk_budget_agent import load_limits
 
         lim = load_limits()
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001  load_limits 自身全路径已兜底；此处防模块级损坏
+        print(f"⚠️ 风险预算档位加载失败（{str(exc)[:100]}）"
+              "——按模块默认档运行（调用方默认；评审 LOW：不静默）")
         return
     LEVERAGE_MAX = lim.get("leverage_max", LEVERAGE_MAX)
     PER_STOCK_PCT = lim.get("per_stock_pct", PER_STOCK_PCT)
     MAX_NEW_BUYS = lim.get("max_new_buys", MAX_NEW_BUYS)
+    MAX_POS_PCT = lim.get("per_stock_pos_pct", MAX_POS_PCT)
 
 
 _apply_risk_budget()
@@ -111,7 +129,7 @@ def _quote_guarded_price(broker, code: str, fp: float) -> tuple[float, bool]:
     """用实时行情护栏校验价格：K 线脏数据/桥回报坏价（偏离实时价>40%）时
     回退实时价并 approx 标记；取不到行情原样返回。"""
     try:
-        quote = broker.get_quote(code, "")
+        quote = lq_quote(code, prefer="aidata", broker=broker)
         ref = float((quote or {}).get("close") or 0)
     except Exception:  # noqa: BLE001
         return fp, False
@@ -209,13 +227,14 @@ def holding_rows(broker, positions: list) -> list[dict]:
         volume = float(p.get("total_volume") or 0)
         if not price:
             try:
-                quote = broker.get_quote(code, "")
+                quote = lq_quote(code, prefer="aidata", broker=broker)
                 price = float((quote or {}).get("close") or 0)
             except Exception:  # noqa: BLE001
                 price = 0
         day_chg = None
         try:
-            klines = broker.get_klines(code, interval="daily")
+            klines = lq_klines(code, interval="daily", count=2,
+                               prefer="aidata", broker=broker)
             if len(klines) >= 2:
                 prev = float(klines[-2]["close"])
                 if prev:
@@ -242,7 +261,13 @@ DECISION_SCHEMA = (
 
 def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
                  direction: dict, quota_remaining: float,
-                 pool: list | None = None) -> str:
+                 pool: list | None = None, extra_context: str = "") -> str:
+    """09:35 主入口的提示词。
+
+    extra_context：额外上下文块（P1 影子 A/B 的处理臂：盘面状态+新闻分子，
+    与整点轮同源同序——插在【今日大盘方向】后、【候选池】前）。空串（默认）
+    时输出与旧行为逐字节一致（tests/test_shadow_context_ab 钉住）。
+    """
     from live_prompt_context import budget_filter_note
 
     lines = [
@@ -274,6 +299,8 @@ def build_prompt(agent: str, holdings: list[dict], pool_rows: list[str],
               f"{direction.get('direction', '—')}"
               f"{'（总分 ' + str(direction.get('total_score')) + '/11）' if direction.get('total_score') is not None else ''}",
               ""]
+    if extra_context:
+        lines += [extra_context, ""]
     if pool_rows:
         lines += ["【候选池】（最新研究池：总分/融合分/备注；池内没有方向标签——"
                   "买卖由你按 分数+大盘+板块+新闻分子 综合判断，HOLD/BUY 侧标签一律不作为依据）",
@@ -584,7 +611,25 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=20, help="候选池上限（默认 20）")
     ap.add_argument("--catch-up", action="store_true",
                     help="当日补跑：今天没成功且一单都没动过才执行（须配合 --execute）")
+    ap.add_argument("--shadow-context", action="store_true", dest="shadow_context",
+                    help="P1 影子 A/B：同快照对照 现状提示词 vs +盘面/新闻分子，"
+                         "只记录不下单（建议 cron 北京 09:40）")
+    ap.add_argument("--shadow-force", action="store_true", dest="shadow_force",
+                    help="影子模式跳过采样窗口（仅手动冒烟；记录带 forced 标记，周报排除）")
     args = ap.parse_args()
+
+    # P1 影子 A/B 参数校验（只记录不下单；与执行类参数互斥，显式拒绝防误用）
+    if args.shadow_force and not args.shadow_context:
+        print("⏭️ --shadow-force 只在 --shadow-context 下有意义，拒绝"
+              "（防止误以为在冒烟影子、实际走了实盘路径）")
+        return 2
+    if args.shadow_context:
+        if args.execute:
+            print("⏭️ --shadow-context 只做 A/B 记录、绝不下单，不能与 --execute 同用")
+            return 2
+        if args.catch_up:
+            print("⏭️ --shadow-context 与 --catch-up 是无意义组合，拒绝")
+            return 2
 
     # 交易日历闸门：法定节假日休市不分析（cron 1-5 覆盖不到法定假日）
     from trading_cal import is_trading_day, why_not
@@ -593,6 +638,14 @@ def main() -> int:
     if not is_trading_day(today):
         print(f"⏭️ {now_cn():%F %T} 非交易日（{why_not(today)}），跳过模型自主调仓")
         return 0
+
+    if args.shadow_context:
+        try:
+            return _run_shadow(args)
+        except Exception:  # noqa: BLE001 影子异常也不许裸崩（评审 MEDIUM）
+            print("❌ 影子 A/B 异常中断：")
+            traceback.print_exc()
+            return 1
 
     if args.catch_up:
         if not args.execute:
@@ -639,6 +692,279 @@ def main() -> int:
         return 1
 
 
+def _agent_context(agent: str, ledger: dict, holdings: list, pool: list,
+                   direction: dict, pool_note: str, extra_context: str = "",
+                   announce: bool = True, ghost_source: str = "") -> dict:
+    """单 agent 的决策输入快照 + 提示词（09:35 主入口与 P1 影子 A/B 共用）。
+
+    唯一出处：提示词拼装只在这里（+ build_prompt）；主入口与影子各拼一份必然
+    漂移（本项目三次"同规则复制多份"教训）。announce=False 供影子预演 A/B
+    两版时免重复打印。my_holdings 的裁剪规则见下（2026-09-08 事故）。
+    ghost_source：影子账的 source 戳（含 .dry 后缀表示演练轮）；空串 = 不记
+    （影子 A/B 预演走的就是空串——模拟轮事件进生产账会把剔除样本翻倍）。
+    """
+    # 账本 positions 是 {code: {volume, cost_price, ...}} 字典（live_ledger 内部结构）。
+    # 空账本 = 无持仓。2026-09-08 事故：曾有 `if mine else holdings` 兜底把共享桥
+    # 账户全量持仓当"你名下"喂给空账本 agent → pro 卖了 flash 的生益电子。
+    mine = set((ledger.get("agents") or {}).get(agent, {}).get("positions", {}))
+    my_holdings = [h for h in holdings if h["code"] in mine]
+    remaining = agent_remaining(ledger, agent)
+    # 按资金量裁候选（2026-09-09）：单票预算 = 剩余额度×单票比例，且不超虚拟现金。
+    # 买不起的（最小 100/200 股一手都超预算）整行不推给模型——池子是研究产物，
+    # 与 agent 的资金量无关，不裁的话模型会反复点买不起的票、白白浪费一轮决策。
+    from live_prompt_context import filter_affordable
+
+    budget = min(remaining * PER_STOCK_PCT, agent_virtual_cash(ledger, agent))
+    pool_for_agent, too_pricey = filter_affordable(pool, budget)
+    if too_pricey and announce:
+        print(f"  💸 [{agent}] 单票预算 ¥{budget:,.0f}，候选池剔除 {len(too_pricey)} 只买不起的："
+              + "、".join(f"{c}{n}(最小{q}股 ¥{v:,.0f})"
+                          for c, n, v, q in too_pricey))
+    if too_pricey and ghost_source:
+        # 影子代价账（kind=unseen）：这批票模型**压根没看见**，不是"被否决的决策"。
+        # P2 已确认剔除名单里常有池内高分票（09-17 剔 11 只含 rank 1/2/3/4/6/8）——
+        # 它的远期超额回答的是**资金规模**问题，与分数门限无关。
+        # 记录条件只看 ghost_source（与打印条件 announce 解耦）：影子 A/B 预演
+        # 不记（模拟轮事件进生产账会把剔除样本翻倍），演练轮记但带 .dry 戳。
+        # 池快照有自己的时刻（此刻），不借用决策产出的 now：两者本就差一次 LLM 调用。
+        _pool_now = now_cn()
+        for _c, _n, _v, _q in too_pricey:
+            ghost_ledger.veto(agent, _c, gate_rules.BUDGET_UNAFFORDABLE, _pool_now,
+                              name=_n, ref_px=(_v / _q) if _q else None,
+                              reason=f"单票预算 ¥{budget:,.0f} < 最小 {_q} 股 ¥{_v:,.0f}",
+                              extra={"min_cost": _v, "min_qty": _q,
+                                     "n_dropped": len(too_pricey)},
+                              source=ghost_source)
+    prompt = build_prompt(agent, my_holdings, pool_rows(pool_for_agent), direction,
+                          remaining, pool=pool_for_agent, extra_context=extra_context)
+    if pool_note:
+        prompt = f"{pool_note}\n{prompt}"   # 池来源首部注入（P1-3，进对话流/日志）
+    return {"holdings": my_holdings, "remaining": remaining, "budget": budget,
+            "pool": pool_for_agent, "too_pricey": too_pricey, "prompt": prompt}
+
+
+# ---------- P1 影子 A/B（2026-09-18） ----------
+SHADOW_DIR = ROOT / "logs" / "shadow_context"
+SHADOW_LOCK = ROOT / "logs" / "shadow_context.lock"
+#: 影子采样窗口（北京，分钟）：09:20 起（新闻 09:25 期前后）到收盘后 5 分钟。
+#: 窗外默认不采（盘后 market_state=休市、新闻分子已滞后，采了是脏数据）；
+#: --shadow-force 仅手动冒烟，记录带 forced 标记、周报统计排除。
+SHADOW_WINDOW = (9 * 60 + 20, 15 * 60 + 5)
+_SHADOW_LOCK_FH: list = []
+
+
+def _acquire_shadow_lock() -> bool:
+    """影子实例锁：与主入口锁分开（影子绝不影响、也不会被主入口挡住）。"""
+    import fcntl
+
+    try:
+        fh = open(SHADOW_LOCK, "a+")
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    _SHADOW_LOCK_FH.append(fh)  # 保持引用防 GC 释放锁
+    return True
+
+
+def _news_age_min() -> float | None:
+    """新闻分子年龄（分钟，负值钳 0）；缺失/坏 JSON/非 dict → None。仅供影子记录标注。
+
+    评审 MEDIUM（2026-09-18）：旧版对"语法合法但顶层非 dict"的 latest.json 抛
+    AttributeError，而调用链（_run_shadow → main）无兜底——一份坏文件能炸掉整次
+    采样（已付的 LLM 费全丢）。
+    """
+    try:
+        d = json.loads((ROOT / "data" / "news_brief" / "latest.json")
+                       .read_text(encoding="utf-8"))
+        if not isinstance(d, dict):
+            return None
+        ts = datetime.fromisoformat(str(d.get("ts")))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=CN_TZ)
+        return round(max(0.0, (now_cn() - ts).total_seconds() / 60), 1)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def build_daily_context_blocks(broker) -> tuple[str, dict]:
+    """P1 每日上下文块（与整点轮同源）：盘面状态 + 新闻分子 → (文本, meta)。
+
+    盘面块来自 market_state.build_market_state（确定性注入、5 分钟缓存）；
+    新闻块来自 live_prompt_context.load_news_brief（>180 分钟自动带滞后标注）。
+    实验里"B 臂没加成"必须可见 → meta 如实记录各块有无与新闻年龄。
+    """
+    parts: list[str] = []
+    try:
+        from market_state import build_market_state
+
+        state_text = build_market_state(broker) or ""
+    except Exception as exc:  # noqa: BLE001 块生成失败不阻塞（如实记录为空）
+        print(f"⚠️ 盘面状态块生成失败：{str(exc)[:100]}")
+        state_text = ""
+    if state_text:
+        parts.append(state_text)
+    try:
+        from live_prompt_context import load_news_brief
+
+        news_text = load_news_brief() or ""
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️ 新闻分子块生成失败：{str(exc)[:100]}")
+        news_text = ""
+    if news_text:
+        parts.append(news_text)
+    return "\n".join(parts), {"market_state": bool(state_text),
+                              "news_present": bool(news_text),
+                              "news_age_min": _news_age_min()}
+
+
+def _shadow_arm(decisions, usage, fail: str) -> dict:
+    """记录一条调用臂：决策（理由截断 80 字）+ usage + 失败原因。
+
+    pct 三态（given/missing/dirty）必须保留（评审 MEDIUM）：parse_decision 刻意
+    区分"未表达比例"与"脏值停手"，记录里塌成同一个 0.0 会让报告低估 effect。
+    """
+    rows = None
+    if decisions is not None:
+        rows = [{"action": str(d.get("action")), "code": str(d.get("code")),
+                 "pct": d.get("pct"), "pct_given": bool(d.get("pct_given", True)),
+                 "pct_bad_raw": str(d.get("pct_bad_raw") or ""),
+                 "reason": str(d.get("reason") or "")[:80]}
+                for d in decisions if isinstance(d, dict)]
+    return {"decisions": rows, "fail": fail or "", "usage": usage}
+
+
+def _live_lock_held() -> bool:
+    """主入口锁是否被占（影子重试档用：主入口没跑完不采，避免抢 LLM/AiData 配额）。
+
+    评审 HIGH-2（2026-09-18）：主入口一轮可远超 5 分钟（09-18 实录持锁到 10:21），
+    固定时刻的峰值影子会与真实下单轮并发。cron 改为 5 分钟重试档，由本探测把关。
+    """
+    import fcntl
+
+    try:
+        fh = open(LOCK_FILE, "a+")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    else:
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        return False
+    finally:
+        fh.close()
+
+
+def _shadow_sampled_today(day_iso: str) -> str:
+    """当日已有**正式**（非 forced）影子记录 → 返回其 ts，否则 ""。
+
+    cron 用 5 分钟重试档等主入口锁释放——幂等由这里保证（否则每次重试都追加
+    一行，报告的"天数"会被灌水，评审 H-2/MEDIUM-2）。
+    """
+    try:
+        text = (SHADOW_DIR / f"{day_iso}.jsonl").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and not rec.get("forced"):
+            return str(rec.get("ts") or "?")
+    return ""
+
+
+def _run_shadow(args) -> int:
+    """P1 影子 A/B 主流程：同一输入快照下跑 A1/A2/B 三臂，只记录不下单。
+
+    实验设计（判据见 scripts/shadow_context_report.py）：A1/A2 同提示词重跑 =
+    temperature=0.3 的采样噪声基线；B = 现状提示词 + 盘面状态 + 新闻分子。
+    noise=diff(A1,A2) 对照 effect=diff(A1,B)，避免把随机波动当信息的影响。
+    影子不得改实盘决策面：不下单、不写执行状态/对话流/熔断记录（行情源自身的
+    观测落盘——如 sentiment_zt.jsonl——与主入口同源同质，不在此列）。
+    """
+    from agent_tools.brokers.base import BrokerError
+
+    now = now_cn()
+    hm = now.hour * 60 + now.minute
+    forced = bool(getattr(args, "shadow_force", False))
+    if not forced and not (SHADOW_WINDOW[0] <= hm <= SHADOW_WINDOW[1]):
+        print(f"⏭️ {now:%F %T} 不在影子采样窗口（09:20-15:05），跳过"
+              "（--shadow-force 仅手动冒烟，记录带 forced 标记）")
+        return 0
+    if not forced and _live_lock_held():
+        print("⏭️ 主入口仍在跑（live_llm_trade.lock 被占），本档跳过等下一次采样"
+              "（避免与真实下单轮抢 LLM/AiData 配额）")
+        return 0
+    if not forced:
+        sampled = _shadow_sampled_today(now.date().isoformat())
+        if sampled:
+            print(f"⏭️ 当日已有影子记录（{sampled}），跳过")
+            return 0
+    if not _acquire_shadow_lock():
+        print("⏭️ 已有影子实例在跑，跳过")
+        return 0
+    try:
+        broker, acct = _query_account_with_retry()
+    except BrokerError as exc:
+        print(f"❌ 影子模式：桥账户查询失败（{str(exc)[:120]}）")
+        return 1
+    positions = [p for p in (acct.get("positions") or [])
+                 if float(p.get("total_volume") or 0) > 0]
+    holdings = holding_rows(broker, positions)
+    pool, direction, pool_info = load_pool_meta(getattr(args, "top", 20))
+    if not pool:
+        print("❌ 影子模式：无候选池，无法构建输入快照")
+        return 1
+    from picks_source import prompt_line
+
+    pool_note = prompt_line(pool_info)
+    agents = [a.strip() for a in str(getattr(args, "agents", "")).split(",")
+              if a.strip()] or enabled_agents()
+    ledger = load_ledger()
+    blocks, meta = build_daily_context_blocks(broker)
+    rec = {"date": now.date().isoformat(), "ts": now.isoformat(),
+           "mode": "shadow_context_ab", "forced": forced,
+           "blocks_text": blocks, **meta, "agents": {}}
+    ok_agents = 0
+    for agent in agents:
+        # 评审 MEDIUM（2026-09-18）：单 agent 异常不许带走整次采样（9 次 LLM 的钱
+        # 与其余 agent 的产出要保住）——异常记进该 agent 记录继续。
+        try:
+            snap_a = _agent_context(agent, ledger, holdings, pool, direction, pool_note,
+                                    announce=False)
+            snap_b = _agent_context(agent, ledger, holdings, pool, direction, pool_note,
+                                    extra_context=blocks)
+            pa, pb = snap_a["prompt"], snap_b["prompt"]
+            da1, _c1, ua1, fa1 = decide_with_retry(pa, agent)
+            da2, _c2, ua2, fa2 = decide_with_retry(pa, agent)
+            db, _c3, ub, fb = decide_with_retry(pb, agent)
+            rec["agents"][agent] = {
+                "prompt_len_a": len(pa), "prompt_len_b": len(pb),
+                "a1": _shadow_arm(da1, ua1, fa1),
+                "a2": _shadow_arm(da2, ua2, fa2),
+                "b": _shadow_arm(db, ub, fb)}
+            ok_agents += 1
+            print(f"  🧪 [{agent}] A1/A2/B 三臂完成（prompt {len(pa)}→{len(pb)} 字符，"
+                  f"fail: {fa1 or '-'}/{fa2 or '-'}/{fb or '-'}）")
+        except Exception as exc:  # noqa: BLE001 单 agent 失败不带走其余
+            print(f"  ❌ [{agent}] 影子三臂异常：{str(exc)[:120]}")
+            rec["agents"][agent] = {"error": str(exc)[:200]}
+    try:
+        SHADOW_DIR.mkdir(parents=True, exist_ok=True)
+        with open(SHADOW_DIR / f"{rec['date']}.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except (OSError, TypeError) as exc:
+        print(f"❌ 影子记录写入失败：{exc}")
+        return 1
+    print(f"✅ 影子 A/B 记录 → {SHADOW_DIR / (rec['date'] + '.jsonl')}"
+          f"（{ok_agents}/{len(agents)} agent × 3 臂；未下任何单、未写执行状态/"
+          f"对话流/熔断）")
+    return 0 if ok_agents else 1
+
+
 def _run(args) -> int:
     from agent_tools.brokers.base import BrokerError
 
@@ -651,11 +977,23 @@ def _run(args) -> int:
 
     mark(started_ts=now_cn().isoformat(), orders_attempted=False, ok=None, note="")
 
+    # 影子代价账的 source 戳（与 mark 同一纪律）：演练轮到不了柜台，"被拦下的
+    # 意图"在演练轮里没有机会成本，但它仍证明"这条闸今天动过"——不藏也不混，
+    # 加上 .dry 后缀，报告里单列一档。执行段再叠一层 .exec（同一规则在决策段
+    # 还是执行段拦下的，读法不同：前者是模型意图，后者是钱到位了被拦）。
+    ghost_src = "live_llm_trade" if args.execute else "live_llm_trade.dry"
+    ghost_src_exec = ghost_src + ".exec"
+
     try:
         broker, acct = _query_account_with_retry()
     except BrokerError as exc:
         # 2026-09-07/09-09 实录：09:25-10:26 桥断线 → 裸崩退出，全天 0 笔交易且零告警
         print(f"❌ 桥账户查询重试 {ACCT_QUERY_ATTEMPTS} 次仍失败：{exc}")
+        from push_notify import notify
+
+        notify("调仓轮取消 ⚠️",
+               f"桥账户查询重试 {ACCT_QUERY_ATTEMPTS} 次仍失败：{str(exc)[:120]}\n"
+               "本轮调仓未执行 —— Windows 交易端大概率已掉线")
         mark(ok=False, note="bridge_account_query")
         return 1
     asset = float((acct.get("asset") or {}).get("asset") or 0)
@@ -685,12 +1023,10 @@ def _run(args) -> int:
     ok = 0
     partial_notes: list[str] = []   # 局部失败（不影响整体收尾判定）
     for agent in agents:
-        # 账本 positions 是 {code: {volume, cost_price, ...}} 字典（live_ledger 内部结构）
-        mine = set((ledger.get("agents") or {}).get(agent, {}).get("positions", {}))
-        # 空账本 = 无持仓。2026-09-08 事故：曾有 `if mine else holdings` 兜底把
-        # 共享桥账户全量持仓当"你名下"喂给空账本 agent → pro 卖了 flash 的生益电子
-        my_holdings = [h for h in holdings if h["code"] in mine]
-        remaining = agent_remaining(ledger, agent)
+        # 输入快照 + 提示词：与 P1 影子 A/B（_run_shadow）共用 _agent_context（防漂移）
+        snap = _agent_context(agent, ledger, holdings, pool, direction, pool_note,
+                              ghost_source=ghost_src)
+        my_holdings, prompt = snap["holdings"], snap["prompt"]
         # 循环熔断（第二道防线）：当日已实现亏损/日内权益回撤超限 → 该 agent 当日禁买。
         # 卖出照常放行（降风险不受限）；dry-run 只评估不落盘。
         from live_breaker import check_and_trip
@@ -709,20 +1045,6 @@ def _run(args) -> int:
         # 标的边界用的名称表：候选池 + 本 agent 持仓（ST/退市识别，见 symbol_policy）
         nm_by_code = {p["code"]: p.get("name") for p in pool}
         nm_by_code.update({h["code"]: h.get("name") for h in my_holdings})
-        # 按资金量裁候选（2026-09-09）：单票预算 = 剩余额度×单票比例，且不超虚拟现金。
-        # 买不起的（最小 100/200 股一手都超预算）整行不推给模型——池子是研究产物，
-        # 与 agent 的资金量无关，不裁的话模型会反复点买不起的票、白白浪费一轮决策。
-        from live_prompt_context import filter_affordable
-
-        budget = min(remaining * PER_STOCK_PCT, agent_virtual_cash(ledger, agent))
-        pool_for_agent, too_pricey = filter_affordable(pool, budget)
-        if too_pricey:
-            print(f"  💸 [{agent}] 单票预算 ¥{budget:,.0f}，候选池剔除 {len(too_pricey)} 只买不起的："
-                  + "、".join(f"{c}{n}(最小{q}股 ¥{v:,.0f})"
-                              for c, n, v, q in too_pricey))
-        prompt = build_prompt(agent, my_holdings, pool_rows(pool_for_agent), direction,
-                              remaining, pool=pool_for_agent)
-        prompt = f"{pool_note}\n{prompt}"   # 池来源首部注入（P1-3，进对话流/日志）
         # 决策：LLM + 解析，失败重试 1 次（2026-09-12 P0-5）
         decisions, content, usage, fail_reason = decide_with_retry(prompt, agent)
         if decisions is None:
@@ -733,8 +1055,36 @@ def _run(args) -> int:
         if not decisions:
             print(f"⏭️ [{agent}] 空决策（合法 no-op，本轮不动）")
             continue
+        # 决策时效打戳 + 过闸（2026-09-18）：打戳在解析后（=产出时刻）；执行端
+        # drop_stale_decisions 丢弃 >DECISION_MAX_AGE_MIN 的决策（含卖出——持仓由
+        # 条件位/下一轮兜底）。本路径 decide→execute 同轮，闸主要在慢执行时生效。
+        from live_hourly_analysis import drop_stale_decisions
+
+        # 本轮决策的时间基准**取一次传到底**（同 9f40630 的教训）：打戳、记分卡
+        # 入库、展示行三处共用同一个 now，事后不会出现"同一轮半秒内两个时刻"
+        now = now_cn()
+        for d in decisions:
+            d.setdefault("decided_at", now.isoformat())
+        decisions = drop_stale_decisions(decisions, agent,
+                                         persist=bool(getattr(args, "execute", False)))
+        if not decisions:
+            continue
+        # 决策远期记分卡入池（P2，2026-09-18）：09:35 是每天第一笔真实调仓，此前
+        # **整条路径不落记分卡** → 决策池只看得见整点轮，"模型分数门限"这类问题
+        # 连度量都没有样本。带 pool_view = 该 agent 实际看到的池（剔除买不起的之后），
+        # 供事后分辨"低分买入"与"资金买不起高分票"（两者方向相反）。
+        try:
+            from decision_track import ingest_decisions
+
+            ingest_decisions(agent, decisions, now.isoformat(),
+                             held_codes={h["code"] for h in my_holdings},
+                             source="live_llm_trade",
+                             pool_view={"shown": snap["pool"], "dropped": snap["too_pricey"],
+                                        "full": pool, "file": pool_info.get("file", "")})
+        except Exception as exc:  # noqa: BLE001  统计失败不得影响交易主链路
+            print(f"  ⚠️ [{agent}] 决策记分卡入池失败（不影响交易）: {exc}")
         # 决策展示 + 校验
-        sells, buys, summary = [], [], [f"（模型自主调仓决策，{now_cn():%F %T}）"]
+        sells, buys, summary = [], [], [f"（模型自主调仓决策，{now:%F %T}）"]
         # 在途卖单闸门：LLM 决策耗时以分钟计，期间分钟哨兵可能刚止损卖出同一代码。
         # 决策校验前重新读盘（口径统一在 live_fills.inflight_codes）；执行前
         # reconcile 之后还会再刷新一次（见下方 sell 执行段）。
@@ -784,21 +1134,31 @@ def _run(args) -> int:
                       f"({frac:.0%}{'' if d.get('pct_given', True) else '，未给比例按清仓'}): "
                       f"{d['reason']}")
             elif d["action"] == "buy":
+                nm = (h or {}).get("name") or nm_by_code.get(code)
                 if code in pending_buy:
                     print(f"  ⏭️ [{agent}] 买入 {code}: 已有在途买单未确认，跳过")
+                    ghost_ledger.veto(agent, code, gate_rules.INFLIGHT_DUP_BUY, now,
+                                      reason="已有在途买单未确认", pct=d.get("pct"),
+                                      name=nm, source=ghost_src)
                     continue
                 if d.get("pct_bad_raw"):
                     print(f"  ⏭️ {note_pct_unparsed(agent, code, d['pct_bad_raw'], 'buy', persist=bool(args.execute))}")
+                    ghost_ledger.veto(agent, code, gate_rules.PCT_INVALID, now,
+                                      reason=f"比例不可解析：{d['pct_bad_raw']}",
+                                      name=nm, source=ghost_src)
                     continue
                 if d["pct"] <= 0:
                     why = ("明说 pct=0" if d.get("pct_given", True)
                            else "未表达买入比例（pct）")
                     print(f"  ⏭️ [{agent}] 买入 {code}: {why}，跳过（买入必须有明确比例）")
+                    ghost_ledger.veto(agent, code, gate_rules.PCT_ZERO, now, reason=why,
+                                      pct=d.get("pct"), name=nm, source=ghost_src)
                     continue
-                bd = check_buy(code, d["pct"], bool(h), new_buys, opened_today, gate,
-                               name=(h or {}).get("name") or nm_by_code.get(code))
+                bd = check_buy(code, d["pct"], bool(h), new_buys, opened_today, gate, name=nm)
                 if not bd.ok:
                     print(f"  ⏭️ [{agent}] 买入 {code}: {bd.reason}，跳过")
+                    ghost_ledger.veto(agent, code, bd.rule, now, reason=bd.reason,
+                                      pct=d.get("pct"), name=nm, source=ghost_src)
                     continue
                 new_buys = bd.new_buys
                 buys.append((code, bd.pct, d["reason"]))
@@ -835,18 +1195,35 @@ def _run(args) -> int:
         # reconcile 后刷新在途集：上一班超时挂队的卖单 / 分钟哨兵的止损单都在里面
         pending_sell = inflight_codes("sell")
         pending_buy = inflight_codes("buy")
-        from agent_tools.datasources import tdx_aidata
-
+        # 2026-09-18 执行时段闸门（与整点轮同口径）：数据源退避可把执行段拖到
+        # 收盘后，收盘后的委托会被柜台判废（600176 实录）——非连续竞价时段不下单。
+        # 决策已记录、状态照常落盘，只跳过买卖执行。
+        # 2026-09-21 审查 HIGH-1：本闸门必须排在用户指令闸门**之前**——此前
+        # apply_forced_sells 在闸门之前执行，收盘/午休时段的 QQ 清仓照样发出真单
+        # （live_hourly_analysis 的顺序是对的，只有这里反了）。
+        if not in_continuous_auction(now_cn()):
+            print(f"  ⏭️ [{agent}] 非连续竞价时段（现 {now_cn():%H:%M}），"
+                  f"本轮执行段跳过（决策已记录，不下单）")
+            sells, buys = [], []
+        bars_map = lq_klines_batch([c for c, _, _ in sells + buys],
+                                   interval="daily", count=5,
+                                   prefer="aidata", broker=broker)
+        # 2026-09-14 用户 QQ 指令闸门：强制清仓先于一切；停买冻结买入段
         try:
-            bars_map = tdx_aidata.get_klines_batch(
-                [c for c, _, _ in sells + buys], interval="daily", count=5)
-        except Exception:  # noqa: BLE001
-            bars_map = {}
+            from agent_commands import apply_forced_sells, has_halt_buy
+
+            apply_forced_sells(broker, agent, now_cn())
+            if has_halt_buy(agent):
+                print(f"  ⏸️ [{agent}] 用户指令：暂停买入，本轮只处理卖出/持有")
+                buys = []
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️ [{agent}] 用户指令闸门异常（继续）: {exc}")
         for code, vol, _ in sells:
             if code in pending_sell:
                 print(f"  ⏭️ [{agent}] 卖出 {code}: 执行前已有在途卖单未确认，本轮不下单")
                 continue
-            bars = bars_map.get(code) or broker.get_klines(code, interval="daily")[-5:]
+            bars = bars_map.get(code) or lq_klines(code, interval="daily", count=5,
+                                                   prefer="aidata", broker=broker)
             if len(bars) < 2:
                 print(f"  ⚠️ [{agent}] 卖出 {code}: 行情不足，跳过")
                 continue
@@ -858,12 +1235,14 @@ def _run(args) -> int:
                 print(f"  ⚠️ [{agent}] 卖出 {code}: K线价与实时价偏差>40%（脏数据），"
                       f"按实时价 {price} 计算限价")
             try:
-                result = broker.sell(None, None, code, vol, price=round(price * 0.99, 2))
+                limit = sell_limit(price)     # 卖价缓冲的唯一出处（live_fills）
+                result = broker.sell(None, None, code, vol, price=limit)
+                submit_ts = now_cn().isoformat()
                 from live_fills import ack_line
 
                 print("  " + ack_line(f"[{agent}] 卖出 {code}", result))
-                limit = round(price * 0.99, 2)
                 fill = wait_fill(broker, result.get("order_id", ""))
+                fill_ts = now_cn().isoformat()
                 fv = int((fill or {}).get("filled_volume") or 0)
                 fp, approx = float((fill or {}).get("filled_price") or limit), False
                 if fv > 0:
@@ -873,8 +1252,11 @@ def _run(args) -> int:
                               f"按实时价 {fp} 记账（approx）")
                 # 记账 + 余量跟踪统一收口（2026-09-12 P0-4）：部分成交剩余的量挂
                 # pending 继续跟踪，不再「记完已成交的就走」→ 余下成交成账外单
+                # 成交推送由 settle 内统一发（2026-09-18：提交时刻不推，成功才推）
                 rec = settle_place_fill(result.get("order_id"), agent, code, "sell",
-                                        vol, limit, fill, fill_price=fp)
+                                        vol, limit, fill, fill_price=fp,
+                                        source="调仓", ref_px=price,
+                                        decided_ts=now.isoformat())
                 if rec["filled"] > 0:
                     log_line({"ts": now_cn().isoformat(), "mode": "execute",
                               "agent": agent, "code": code, "side": "sell",
@@ -884,7 +1266,14 @@ def _run(args) -> int:
                               "approx": approx,
                               "fill": {"order_id": (fill or {}).get("order_id"),
                                        "filled_price": rec["price"],
-                                       "filled_volume": rec["filled"]}})
+                                       "filled_volume": rec["filled"]},
+                              # 执行损耗 TCA：三段价 + 三个时刻（口径见 exec_cost）
+                              **exec_cost.tape_fields(
+                                  side="sell", ref_px=price, limit_px=limit,
+                                  fill_px=rec["price"], wanted=vol,
+                                  filled=rec["filled"], decided_ts=now.isoformat(),
+                                  submit_ts=submit_ts, fill_ts=fill_ts,
+                                  path="llm_trade")})
                 if rec["pending"] or rec["untracked"]:
                     pending_sell.add(code)   # 同轮重复决策同一代码时不再下第二单
                     # （untracked：桥没回委托号 → reconcile 追不了，更要挡重复下单）
@@ -920,20 +1309,32 @@ def _run(args) -> int:
             ok += 1
             continue
         ledger = load_ledger()
+        round_added: dict = {}   # 本轮已委托成本（同轮重复决策同码时防叠加，评审 M-3）
         for code, pct, _ in buys:
             if code in pending_buy:
                 print(f"  ⏭️ [{agent}] 买入 {code}: 执行前已有在途买单未确认，本轮不下单")
+                ghost_ledger.veto(agent, code, gate_rules.INFLIGHT_DUP_BUY, now,
+                                  reason="执行前已有在途买单未确认", pct=pct,
+                                  name=nm_by_code.get(code), source=ghost_src_exec)
                 continue
             remaining = agent_remaining(ledger, agent)
-            bars = bars_map.get(code) or broker.get_klines(code, interval="daily")[-5:]
+            bars = bars_map.get(code) or lq_klines(code, interval="daily", count=5,
+                                                   prefer="aidata", broker=broker)
             o = compute_order(bars, remaining, pct, code)
             if not o["ok"]:
                 print(f"  ⏭️ [{agent}] 买入 {code}: {o['reason']}")
+                ghost_ledger.veto(agent, code, o["rule"], now, reason=o["reason"],
+                                  pct=pct, ref_px=o.get("price"),
+                                  name=nm_by_code.get(code), source=ghost_src_exec)
                 continue
             _opx, bad_kl = _quote_guarded_price(broker, code, o["price"])
             if bad_kl:
                 print(f"  ⏭️ [{agent}] 买入 {code}: K线价 {o['price']} 与实时价偏差>40%"
                       f"（脏数据），跳过防超量下单（2026-09-08 福恩股份事故）")
+                ghost_ledger.veto(agent, code, gate_rules.DATA_DIRTY_QUOTE, now,
+                                  reason=f"K线价 {o['price']} 与实时价偏差>40%", pct=pct,
+                                  ref_px=o.get("price"), name=nm_by_code.get(code),
+                                  source=ghost_src_exec)
                 continue
             # 分账额度红线：子 agent 买入不能超自己 ¥10 万虚拟子账户的现金
             # （remaining 是额度口径、cash 是桥总账户真实现金，都拦不住已实现
@@ -942,6 +1343,11 @@ def _run(args) -> int:
             if o["cost"] > vcash:
                 print(f"  ⏭️ [{agent}] 买入 {code}: 子账户虚拟现金不足 "
                       f"¥{o['cost']:,.0f} > ¥{vcash:,.0f}（分账额度不透支，跳过）")
+                ghost_ledger.veto(agent, code, gate_rules.CASH_VCASH, now,
+                                  reason=f"虚拟现金 ¥{vcash:,.0f} < 成本 ¥{o['cost']:,.0f}",
+                                  pct=pct, ref_px=o.get("price"),
+                                  name=nm_by_code.get(code), source=ghost_src_exec,
+                                  extra={"cost": round(o["cost"], 2)})
                 continue
             # 杠杆硬约束：加仓后持仓成本 ≤ 权益×1.5（现金为负时才可能超）
             pos_cost = agent_used(ledger, agent)
@@ -949,18 +1355,47 @@ def _run(args) -> int:
             if equity > 0 and (pos_cost + o["cost"]) > LEVERAGE_MAX * equity:
                 print(f"  ⏭️ [{agent}] 买入 {code}: 加仓后杠杆超 {LEVERAGE_MAX}×权益"
                       f"（{pos_cost + o['cost']:,.0f} > {LEVERAGE_MAX * equity:,.0f}），跳过")
+                ghost_ledger.veto(agent, code, gate_rules.LEV_OVER, now,
+                                  reason=f"加仓后 {pos_cost + o['cost']:,.0f} > "
+                                         f"{LEVERAGE_MAX}×权益 {LEVERAGE_MAX * equity:,.0f}",
+                                  pct=pct, ref_px=o.get("price"),
+                                  name=nm_by_code.get(code), source=ghost_src_exec,
+                                  extra={"cost": round(o["cost"], 2)})
+                continue
+            # 单票集中度闸（2026-09-18 机构级）：同票成本 + 本单成本 ≤ MAX_POS_PCT×权益。
+            # per_stock_pct 只管"单笔占剩余额度"，同一标的跨轮加仓此前不封顶。
+            # round_added：账本快照在循环外，同轮已成交的加仓不计进去会绕闸（评审 M-3）。
+            from buy_gate import position_cap_reason
+
+            cap_reason = position_cap_reason(
+                position_cost(ledger, agent, code) + round_added.get(code, 0.0),
+                o["cost"], equity, MAX_POS_PCT)
+            if cap_reason:
+                print(f"  ⏭️ [{agent}] 买入 {code}: 单票集中度超限（{cap_reason}），跳过")
+                ghost_ledger.veto(agent, code, gate_rules.CAP_POSITION, now,
+                                  reason=cap_reason, pct=pct, ref_px=o.get("price"),
+                                  name=nm_by_code.get(code), source=ghost_src_exec,
+                                  extra={"cost": round(o["cost"], 2)})
                 continue
             if o["cost"] > cash:
                 print(f"  ⏭️ [{agent}] 买入 {code}: 账户现金不足 ¥{o['cost']:,.0f} > ¥{cash:,.0f}")
+                ghost_ledger.veto(agent, code, gate_rules.CASH_INSUFFICIENT, now,
+                                  reason=f"账户现金 ¥{cash:,.0f} < 成本 ¥{o['cost']:,.0f}",
+                                  pct=pct, ref_px=o.get("price"),
+                                  name=nm_by_code.get(code), source=ghost_src_exec,
+                                  extra={"cost": round(o["cost"], 2)})
                 continue
             cash -= o["cost"]
+            round_added[code] = round_added.get(code, 0.0) + o["cost"]  # 见闸门注释
             try:
                 result = broker.buy(None, None, code, o["volume"], price=o["limit_price"])
+                submit_ts = now_cn().isoformat()
                 from live_fills import ack_line
 
                 print("  " + ack_line(f"[{agent}] 买入 {code} {o['volume']}股 "
                                       f"限价 ¥{o['limit_price']:.2f}", result))
                 fill = wait_fill(broker, result.get("order_id", ""))
+                fill_ts = now_cn().isoformat()
                 fv = int((fill or {}).get("filled_volume") or 0)
                 fp, approx = float((fill or {}).get("filled_price") or o["price"]), False
                 if fv > 0:
@@ -968,8 +1403,11 @@ def _run(args) -> int:
                     if approx:
                         print(f"  ⚠️ [{agent}] 买入 {code}: 桥回报成交价偏离实时价>40%，"
                               f"按实时价 {fp} 记账（approx）")
+                # 成交推送由 settle 内统一发（2026-09-18：提交时刻不推，成功才推）
                 rec = settle_place_fill(result.get("order_id"), agent, code, "buy",
-                                        o["volume"], o["price"], fill, fill_price=fp)
+                                        o["volume"], o["limit_price"], fill, fill_price=fp,
+                                        reason=str(o.get("reason") or ""), source="调仓",
+                                        ref_px=o["price"], decided_ts=now.isoformat())
                 if rec["filled"] > 0:
                     log_line({"ts": now_cn().isoformat(), "mode": "execute",
                               "agent": agent, "code": code, "side": "buy",
@@ -977,7 +1415,14 @@ def _run(args) -> int:
                               "remaining": rec["remaining"], "approx": approx,
                               "fill": {"order_id": (fill or {}).get("order_id"),
                                        "filled_price": rec["price"],
-                                       "filled_volume": rec["filled"]}})
+                                       "filled_volume": rec["filled"]},
+                              # 执行损耗 TCA：三段价 + 三个时刻（口径见 exec_cost）
+                              **exec_cost.tape_fields(
+                                  side="buy", ref_px=o["price"],
+                                  limit_px=o["limit_price"], fill_px=rec["price"],
+                                  wanted=o["volume"], filled=rec["filled"],
+                                  decided_ts=now.isoformat(), submit_ts=submit_ts,
+                                  fill_ts=fill_ts, path="llm_trade")})
                 if rec["pending"] or rec["untracked"]:
                     pending_buy.add(code)    # 同轮重复决策同一代码时不再下第二单
                     # （untracked：桥没回委托号 → reconcile 追不了，更要挡重复下单）
@@ -988,6 +1433,13 @@ def _run(args) -> int:
                               "result": result})
             except Exception as exc:  # noqa: BLE001
                 print(f"  ❌ [{agent}] 买入 {code} 失败: {exc}")
+                # 真金白银的机会损失：桥/柜台拒单也会进影子账（kind=veto），
+                # 事后按同期超额定价——断链一小时的代价从此有数，不只是一行 ❌。
+                ghost_ledger.veto(agent, code, gate_rules.EXEC_SUBMIT_FAILED, now,
+                                  reason=f"下单失败：{type(exc).__name__}: {exc}",
+                                  pct=pct, ref_px=o.get("price"),
+                                  name=nm_by_code.get(code), source=ghost_src_exec,
+                                  extra={"cost": round(o["cost"], 2)})
                 from live_ledger import defer_on_exc
 
                 if defer_on_exc(agent, "buy", code, o["volume"], exc,

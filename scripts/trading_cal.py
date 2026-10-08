@@ -147,6 +147,34 @@ def prev_trading_day(d: date | None = None, *, inclusive: bool = False) -> date:
     return d
 
 
+# 当日日K 从开盘起才有意义（集合竞价阶段的 bar 尚未生成）；收盘后今天的 bar 已定稿。
+_OPEN_MIN = 9 * 60 + 30
+_CLOSE_MIN = 15 * 60
+
+
+def expected_bar_date(now: datetime | None = None) -> str:
+    """此刻最新一根**日K** 应该是什么日期（YYYYMMDD）—— 新鲜度判据的锚点。
+
+    锚点不是「今天」：它取决于**日期与时刻两个输入**。休市日、开盘前，今天的 bar
+    本就不该存在，锚点得回退到上一个交易日；否则整个假日都在假报「停更」——
+    仓里三份新鲜度实现（live_hourly_analysis.market_data_stale、技能脚本
+    tdx_realtime、桥侧 client.py）此前都各自拿「今天」当锚点，故收敛到这里。
+
+    保守方向：算出的锚点只会**不晚于**真实应出的 bar 日期，于是「最后一根 <
+    锚点」更难成立 —— 这个函数只会消掉假停更，不会新增。调用方仍应保持
+    fail-open（取不到行情 → 视为新鲜），别让桥抖动变成阻塞交易。
+    """
+    n = now or datetime.now()
+    if n.tzinfo is not None:                  # 本机时区是 JST：带 tz 的一律换算到北京时间
+        from zoneinfo import ZoneInfo
+
+        n = n.astimezone(ZoneInfo("Asia/Shanghai"))
+    d = n.date()
+    if is_trading_day(d) and n.hour * 60 + n.minute >= _OPEN_MIN:
+        return d.strftime("%Y%m%d")
+    return prev_trading_day(d).strftime("%Y%m%d")
+
+
 def days_to_next_trading_day(d: date | None = None) -> int:
     """距下一交易日的自然日数（1=复市就在明天 → 「休市最后一晚」）。
 

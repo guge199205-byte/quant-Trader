@@ -61,3 +61,26 @@ class TestDataSources:
         ds = get_datasource("local")
         days = ds.get_trading_days(market="hk")
         assert len(days) > 100
+
+
+class TestLocalFunctionDateValidation:
+    """`get_price_local_function` 调了一个**不存在的** `_validate_date`。
+
+    它在 `try/except ValueError` 里，而 `NameError` 不是 `ValueError` 的子类 →
+    异常直接穿出函数，调用方拿到的是 traceback 而不是 `{"error": ...}`。同类
+    （同一份 merged.jsonl、同一个 YYYY-MM-DD 口径）的 `get_price_local_daily`
+    用的是 `_validate_date_daily`，这里本意也是它。
+    """
+
+    def test_bad_date_returns_a_structured_error(self):
+        from agent_tools.tool_get_price_local import get_price_local_function
+
+        out = get_price_local_function("600519.SH", "2026/09/22")
+        assert out["error"] == "date must be in YYYY-MM-DD format"
+
+    def test_valid_date_does_not_raise_nameerror(self):
+        from agent_tools.tool_get_price_local import get_price_local_function
+
+        out = get_price_local_function("600519.SH", "2026-09-22")
+        # 数据可能不在（那也是一种结构化答复）；唯独不该是 NameError
+        assert out.get("error") != "name '_validate_date' is not defined"

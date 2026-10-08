@@ -224,14 +224,25 @@ def _sentiment(now=None) -> tuple[int | None, int | None, str]:
 
 LEVELS = {
     "calm": {"leverage_max": 1.5, "per_stock_pct": 0.2, "max_new_buys": 3,
-             "leverage_trim_to": 1.3, "label": "平静"},
+             "leverage_trim_to": 1.3, "per_stock_pos_pct": 0.30, "label": "平静"},
     "caution": {"leverage_max": 1.2, "per_stock_pct": 0.15, "max_new_buys": 2,
-                "leverage_trim_to": 1.15, "label": "谨慎"},
+                "leverage_trim_to": 1.15, "per_stock_pos_pct": 0.25, "label": "谨慎"},
     "defensive": {"leverage_max": 1.0, "per_stock_pct": 0.10, "max_new_buys": 1,
-                  "leverage_trim_to": 1.0, "label": "防守"},
+                  "leverage_trim_to": 1.0, "per_stock_pos_pct": 0.15, "label": "防守"},
 }
+#: per_stock_pos_pct = 单票**累计持仓**上限（同票成本 ≤ 该比例×权益，2026-09-18）。
+#: per_stock_pct 只管"单笔占剩余额度"，同一标的跨轮加仓此前不封顶——由它补上。
 
-LIMIT_KEYS = ("leverage_max", "per_stock_pct", "max_new_buys", "leverage_trim_to")
+LIMIT_KEYS = ("leverage_max", "per_stock_pct", "max_new_buys", "leverage_trim_to",
+              "per_stock_pos_pct")
+
+#: 档位不可信时的回退：**只含买入侧参数**。三档 LEVELS 的这三个键恒 ≥ 本回退，
+#: 因此"过期强制回退 / 缺键补齐"在买入侧只会收紧、绝不放松。
+#: 有意不含 leverage_max / leverage_trim_to——强减是风险动作，数据故障不应触发
+#: 强平；且压低 leverage_max 而 trim_to 保持原值会组合出"减到仍超限"的强平循环。
+#: 过期分支的杠杆键取文件原值（与改动前行为一致）：不因故障放宽、也不制造卖出。
+#: （2026-09-18 代码评审 H-1 修正：初版曾让过期分支的杠杆上限回落 1.5，方向错误。）
+FALLBACK_LIMITS = {"per_stock_pct": 0.10, "max_new_buys": 1, "per_stock_pos_pct": 0.15}
 
 
 def budget_stale_reason(doc: dict, today: date) -> str:
@@ -254,18 +265,23 @@ def budget_stale_reason(doc: dict, today: date) -> str:
 
 
 def _warn_budget_issue(reason: str, path: Path) -> None:
-    """档位不可用/过期只提醒不改行为（P2，2026-09-12）：fail-open 维持——风控读不到
-    新鲜档位也不阻断交易路径，但必须让人看见「今天用的是旧档位 / 调用方默认档」。
-    定档链路静默故障时，档位偏松 = 风控半失效，此前没有任何暴露面。
+    """档位不可用/过期 → 提醒 + **回退买入侧防守参数**（2026-09-18 fail-safe 化）。
+
+    此前是"只提醒不改行为"（fail-open）：读不到档位就按调用方硬编码默认
+    （1.5×/20%）跑——比预算档松，等于风控半失效（09-18 上午即实录一次
+    "档位日期早于应定档日，照常 fail-open"）。现与 decide_level 同方向：
+    风控数据不可信 → 收紧。回退只含买入侧（见 FALLBACK_LIMITS），
+    杠杆/强减参数不因数据故障变化——强平是风险动作，不应由数据故障触发。
     同日一条事件（record_event 覆盖语义），kind 沿用 risk_budget_stale。"""
     if not reason:
         return
-    print(f"⚠️ 风险预算异常：{reason}｜不阻断交易路径（fail-open），请检查 {path}")
+    print(f"⚠️ 风险预算异常：{reason}｜已回退买入侧防守参数（单票 10% / 新开仓 1 只 / "
+          f"单票持仓 ≤15%）；杠杆/强减不因数据故障改变口径（不触发强平）；请检查 {path}")
     try:
         from live_fills import record_event  # 局部导入：本模块也要能脱离实盘栈单跑
 
         record_event("risk_budget_stale", "",
-                     f"风险预算异常：{reason}（照常 fail-open，不阻断）")
+                     f"风险预算异常：{reason}（已回退买入侧防守参数，fail-safe）")
     except Exception as exc:  # noqa: BLE001 事件面故障不许反过来打断风控读取
         print(f"  ⚠️ 风险预算事件落盘失败（{str(exc)[:80]}）")
 
@@ -276,13 +292,15 @@ def load_limits(path: Path | None = None) -> dict:
     2026-09-08 前的漏洞：只有 live_hourly_analysis 读这份预算，09:35 主入口
     （live_llm_trade）硬编码 1.5/20% 且没有新开仓上限——预算定档"防守"时
     主入口仍按宽松档下单，风险预算只兑现了一半。统一从本函数取。
-    文件缺失/损坏/结构异常/非 UTF-8 字节 → {}（调用方保持各自默认，不阻断），
-    **且一律留痕**
-    （2026-09-12 审查 LOW：旧实现在解析失败分支直接 `return {}`，告警调用永不执行；
-    `doc.get` 又先于 isinstance 兜底，非 dict 直接抛异常被调用点静默吞掉——
-    「定档链路静默故障」当时只覆盖了日期过期一种形态。读不到档位 = 当天按调用方
-    硬编码默认跑（1.5/20%，比预算档松），同样必须让人看见）。
-    档位过期（定档链路静默故障）→ 只打印 + 事件提醒，**不改返回行为**。
+
+    失效姿态（2026-09-18 **契约变更**，同日评审 H-1/MEDIUM 修正）：
+      - 文件缺失/损坏/结构异常 → 返回 `FALLBACK_LIMITS`（买入侧防守参数）并留痕；
+      - 档位过期 → 买入侧三键回退 FALLBACK，杠杆/强减键取文件原值；
+      - 文件缺键（写读版本漂移）→ 缺的买入侧键按 FALLBACK 补齐，缺的杠杆类键
+        留给调用方默认；
+      - 所有失效形态下**买入侧只收紧不放松**（三档 LEVELS 均 ≥ FALLBACK），
+        且不制造强平动作（见 FALLBACK_LIMITS 注释）。
+    与 decide_level 同方向：风控数据不可信 → 收紧。
     """
     p = path or OUT
     try:
@@ -293,30 +311,30 @@ def load_limits(path: Path | None = None) -> dict:
         # 漏捕会让它穿出本函数、退回静默（2026-09-12 复审 LOW）
         _warn_budget_issue(
             f"档位文件不是合法的 UTF-8 文本（{str(exc)[:80]}）"
-            "——当天按调用方默认档运行，可能比预算档松", p)
-        return {}
+            "——档位不可信，回退买入侧防守参数", p)
+        return dict(FALLBACK_LIMITS)
     except OSError as exc:
         _warn_budget_issue(
             f"档位文件不存在或不可读（{exc.__class__.__name__}: {str(exc)[:80]}）"
-            "——当天按调用方默认档运行，可能比预算档松", p)
-        return {}
+            "——档位不可信，回退买入侧防守参数", p)
+        return dict(FALLBACK_LIMITS)
     try:
         doc = json.loads(raw)
     except ValueError as exc:
         _warn_budget_issue(
             f"档位文件不是合法 JSON（{str(exc)[:80]}）"
-            "——当天按调用方默认档运行，可能比预算档松", p)
-        return {}
+            "——档位不可信，回退买入侧防守参数", p)
+        return dict(FALLBACK_LIMITS)
     if not isinstance(doc, dict):
         _warn_budget_issue(
             f"档位文件结构异常（顶层是 {type(doc).__name__}）"
-            "——当天按调用方默认档运行，可能比预算档松", p)
-        return {}
+            "——档位不可信，回退买入侧防守参数", p)
+        return dict(FALLBACK_LIMITS)
     problem = ""
     lv = doc.get("budget")
     if not isinstance(lv, dict):
         problem = (f"档位文件的 budget 字段缺失或结构异常（{type(lv).__name__}）"
-                   "——当天按调用方默认档运行，可能比预算档松")
+                   "——档位不可信，回退买入侧防守参数")
         lv = {}
     out: dict = {}
     for k in LIMIT_KEYS:
@@ -329,8 +347,29 @@ def load_limits(path: Path | None = None) -> dict:
             continue
     if not problem and not out:
         problem = ("档位文件没有任何可用的档位字段（budget 为空或字段均不可解析）"
-                   "——当天按调用方默认档运行，可能比预算档松")
-    _warn_budget_issue(problem or budget_stale_reason(doc, _bj_now().date()), p)
+                   "——档位不可信，回退买入侧防守参数")
+    if problem:
+        _warn_budget_issue(problem, p)
+        return dict(FALLBACK_LIMITS)
+    stale = budget_stale_reason(doc, _bj_now().date())
+    if stale:
+        # 过期 = 整套档位不可信：买入侧三键强制回退防守；杠杆/强减键**取文件原值**
+        # （不是买入侧刹车，见 FALLBACK_LIMITS 注释——取原值与改动前行为一致）。
+        tightened = {**out, **FALLBACK_LIMITS}
+        _warn_budget_issue(stale, p)
+        return tightened
+    missing = [k for k in LIMIT_KEYS if k not in out]
+    if missing:
+        # 写读键集不一致（文件由旧版写入方产生，如新键上线但 cron 尚未重启）：
+        # 缺的**买入侧**键按防守回退补齐；缺的杠杆类键留给调用方默认（同上，
+        # 不在数据故障形态下改强减口径）。2026-09-18 评审 MEDIUM：初版对缺键
+        # 直接 `continue`，成功路径返回部分字典 → 新键静默不生效。
+        filled = {**out,
+                  **{k: v for k, v in FALLBACK_LIMITS.items() if k in missing}}
+        _warn_budget_issue(
+            f"档位文件缺少键 {missing}（写读版本漂移）"
+            "——缺失的买入侧键已按防守回退补齐", p)
+        return filled
     return out
 
 
@@ -402,8 +441,7 @@ def main() -> int:
     doc = {"date": today, "level": effective, "label": lvl["label"],
            "inputs": {"vol20": vol, "drawdown20": dd, "limit_up": zt, "max_ladder": ladder,
                       "sentiment_source": senti_src or "无可用情绪数据"},
-           "budget": {k: lvl[k] for k in ("leverage_max", "per_stock_pct", "max_new_buys",
-                                          "leverage_trim_to")},
+           "budget": {k: lvl[k] for k in LIMIT_KEYS},   # 唯一出处：写读两侧同一键集
            "reasons": reasons,
            "note": "确定性规则内核 v1；状态恢复即自动放松（隔日生效），同日只收紧一次"}
     # v2：LLM 解释档位含义（数值以确定性为准，解释失败不影响）

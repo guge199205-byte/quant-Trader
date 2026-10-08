@@ -62,3 +62,40 @@ def test_limit_up_down_and_suspension_still_take_priority():
     halted = [{"close": 10.0, "open": 10.0, "volume": 1000},
               {"close": 10.0, "open": 10.0, "volume": 0}]
     assert "停牌" in T.compute_order(halted, 100000.0, 0.2, "600309.SH")["reason"]
+
+
+# ------------------------------------ 规则标识（影子代价账，2026-09-19）
+# 拒单原因（中文句子）给人看；影子账按稳定 id 分组算"这条闸花了多少钱"。
+# 同 buy_gate.BuyDecision.rule：改文案不能让历史样本断档。
+
+def test_rejection_carries_stable_rule_id():
+    import gate_rules as GR
+
+    cases = [
+        (_bars(300.0), "600309.SH", GR.BUDGET_BELOW_MIN_LOT),      # 买不起一手
+        (_bars(11.0, 10.0), "600309.SH", GR.LIMIT_UP),
+        (_bars(9.0, 10.0), "600309.SH", GR.LIMIT_DOWN),
+        ([{"close": 10.0, "open": 10.0, "volume": 1000},
+          {"close": 10.0, "open": 10.0, "volume": 0}], "600309.SH", GR.SYMBOL_HALTED),
+        ([], "600309.SH", GR.DATA_NO_QUOTE),                       # K线不足
+    ]
+    for bars, code, want in cases:
+        o = T.compute_order(bars, 100000.0, 0.2, code)
+        assert o["ok"] is False and o["rule"] == want, (bars, o)
+
+
+def test_dirty_price_is_data_no_quote():
+    """价格非有限数（桥返回 NaN/字符串）→ data.no_quote，不是"资金不足"。"""
+    import gate_rules as GR
+
+    nan_bars = [{"close": 10.0, "open": 10.0, "volume": 1000},
+                {"close": float("nan"), "open": 10.0, "volume": 1000}]
+    o = T.compute_order(nan_bars, 100000.0, 0.2, "600309.SH")
+
+    assert o["ok"] is False and o["rule"] == GR.DATA_NO_QUOTE
+
+
+def test_approved_order_has_no_rule_id():
+    o = T.compute_order(_bars(10.0), 100000.0, 0.2, "600309.SH")
+
+    assert o["ok"] is True and "rule" not in o

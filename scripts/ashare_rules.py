@@ -15,6 +15,7 @@
 - 新股上市初期涨跌幅特殊（科创板/创业板前 5 日无涨跌幅、主板首日另计）——本模块不追踪
   上市日，全新股的闸门可能不准，由人工/复盘注意。
 """
+import math
 from datetime import date, datetime, time as _time
 
 AH_START, AH_END = _time(15, 5), _time(15, 30)   # 盘后固定价格交易窗口
@@ -114,22 +115,64 @@ def at_limit_down(code: str, day_chg: float | None, name: str | None = None) -> 
 
 def protect_sell_price(code: str, pre_close: float | None,
                        name: str | None = None) -> float | None:
-    """卖出保护价 = 当日跌停价（昨收 × (1−幅度)，四舍五入到分）。
+    """卖出价格**硬下限** = 当日跌停价（昨收 × (1−幅度)，四舍五入到分）。
 
-    quantmind 真账户实测（2026-09-11）：**报跌停价成交在盘口买一**
-    （挂 2.21 成交 2.34）——挂单价只是"愿卖的最低"，成交仍按盘口最优价，
-    所以保护价既保证「有买盘就一定卖得掉」，又不会真按跌停价卖。
-    止损语义下这是当日最激进可报价：跌停封死时排队等待（无买盘本来也卖不掉）。
+    注意（2026-09-21 修正）：跌停价是「合法带的下界」而非「可报价」——
+    连续竞价的有效竞价范围是 [基准价×98%, 涨停价]，报跌停价（−10%）属**越界申报**
+    → 柜台废单（当日 002074 按跌停价报的 42 笔真单全废）。要真能成交的报单价
+    用 aggressive_sell_price()；本函数只用于「不许报低于跌停价」的夹取和
+    跌停排队场景（此时基准价本身贴近跌停价，报跌停价才合法）。
 
-    昨收缺失/非法返回 None（调用方降级到原限价口径并留痕，不臆造价格）。
+    原 2026-09-11「挂 2.21 成交 2.34」的实测结论只对**当时那只票的工况**成立
+    （近跌停/竞价口径），不能推广成「报跌停价永远合法」——已在 09-21 被证伪。
+
+    昨收缺失/非法返回 None（调用方降级，不臆造价格）。
     """
     try:
         prev = float(pre_close)
     except (TypeError, ValueError):
         return None
-    if prev <= 0:
+    if not math.isfinite(prev) or prev <= 0:   # NaN/Inf 不得当昨收（Inf 会让 quantize 抛）
         return None
     return limit_price(prev, price_limit_pct(code, name), "down")
+
+
+def aggressive_sell_price(code: str, pre_close: float | None, ref_price: float | None,
+                          name: str | None = None) -> float | None:
+    """连续竞价卖出**可成交且合法**的最激进报价 = max(跌停价, 现价 × 0.99)。
+
+    有效竞价范围（沪深交易所连续竞价）：卖出申报不得低于「卖出基准价格」的 98%
+    （基准价 = 盘口买一/最新价一类即时价）。报跌停价（−10%）只有在该票已贴近
+    跌停时才落在带内，其余时候是**废单**——2026-09-21 002074 实录：止损位触发，
+    市价 26.26 报跌停价 23.53（比市价低 10.4%），42 笔真单全 rejected、0 成交，
+    还形成「触发→废单→重布防→再触发」每 2 分钟一笔的死循环。
+
+    取现价×0.99 而非贴着 98% 下沿：留 1% 余量给「报价→柜台」在途的基准价波动
+    （下沿报价遇到基准价上抬即越界），且本仓 LLM 卖出链路长期用 0.99 口径
+    （2026-09-21 002202 限价 18.01 成交 18.18）。近跌停时现价×0.99 会低于跌停价
+    → 此时取跌停价（基准价已贴近跌停价，跌停价仍在 98% 带内，合法）。
+
+    现价取不到/非法（None/0/NaN）→ None（调用方降级：本轮不下单或走同口径兜底）。
+    **绝不退回跌停价**——那正是 2026-09-21 那 42 笔废单的报价（审查 MEDIUM-3：
+    现价缺失而昨收存在时旧实现 return floor，契约上把「最激进可成交价」退化成
+    已知废单价）。跌停价只作为**下限夹取**参与（见下），不单独成价。
+    """
+    floor = protect_sell_price(code, pre_close, name)
+    try:
+        ref = float(ref_price)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        ref = 0.0
+    # 非有限值不得进报价链（2026-09-21 审查 MEDIUM-5）：NaN 会让 ref<=0 判假 → 报出
+    # NaN 单；+Inf 会让 quantize 抛 InvalidOperation，且调用点在 run_watch 的 per-rule
+    # 循环里**无捕获** → 整轮哨兵崩、cron 每分钟重跑同错。
+    if not math.isfinite(ref) or ref <= 0:
+        return None
+    quote = limit_price(ref, 1.0, "down")   # 现价 −1%，与全仓同一套 HALF_UP 到分
+    if quote is None or quote <= 0:         # 0 价会被桥当「无价」→ 市价单语义，禁止
+        return None
+    if floor is not None and quote < floor:
+        quote = floor
+    return quote
 
 
 def at_limit_up(code: str, day_chg: float | None, name: str | None = None) -> bool:
@@ -188,6 +231,20 @@ def after_hours_window(now: datetime) -> bool:
     if now.weekday() >= 5:
         return False
     return AH_START <= now.time() <= AH_END
+
+
+def in_continuous_auction(now: datetime) -> bool:
+    """连续竞价时段（北京 9:30-11:30 / 13:00-14:57）——实盘下单的执行窗口。
+
+    2026-09-18 实录：整点轮被数据源退避拖到收盘后执行，16:08 的卖出委托被柜台
+    判废（fill_abort rejected）。非本窗口一律不下单：
+      - 14:57-15:00 是收盘集合竞价（价格由竞价撮合，哨兵/整点轮都不下实单）；
+      - 11:30-13:00 午休、开盘前、收盘后：委托要么被拒要么无意义。
+    """
+    if now.weekday() >= 5:
+        return False
+    m = now.hour * 60 + now.minute
+    return (9 * 60 + 30 <= m < 11 * 60 + 30) or (13 * 60 <= m < 14 * 60 + 57)
 
 
 def after_hours_eligible(code: str) -> bool:

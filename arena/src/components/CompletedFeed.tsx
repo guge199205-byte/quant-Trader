@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import {
   ClosedTradeDetail,
   FutuClosedRow,
@@ -13,6 +13,7 @@ import {
 import { usePolling } from '../hooks/usePolling';
 import { logoOf, shortName } from './ModelCard';
 import { stockLabel } from '../utils/symbols';
+import { availableDays, dayHit } from '../utils/dayFilter';
 import { fmtMoneySigned, fmtPrice } from '../utils/format';
 import './CompletedFeed.css';
 
@@ -22,6 +23,8 @@ interface Props {
   currency: string;
   stockNames?: Record<string, string>; // symbol → 中文名（缺失时回退显示代码）
   onCount?: (n: number) => void; // 平仓消息条数回调（供父级 filter-bar 计数）
+  date?: string; // 日期筛选：'all' 或 YYYY-MM-DD（按平仓日期 exit_date 收窄）
+  onDates?: (days: string[]) => void; // 数据内出现的平仓日期回传（降序，供父级「日期」下拉）
 }
 
 interface AgentTrades {
@@ -55,7 +58,15 @@ const holdText = (days: number | null): string => {
 const fmtQty = (v: number): string => v.toLocaleString('en-US', { maximumFractionDigits: 2 });
 
 /** COMPLETED —— nof1 风格"completed a trade"平仓消息流（当前市场全部模型，最新在前）。 */
-export default function CompletedFeed({ agents, market, currency, stockNames = {}, onCount }: Props) {
+export default function CompletedFeed({
+  agents,
+  market,
+  currency,
+  stockNames = {},
+  onCount,
+  date = 'all',
+  onDates,
+}: Props) {
   const isHk = market === 'hk';
   // A股实盘口径：已完成 = /api/live/closed 真实清仓事件（模拟盘平仓文件已停更）
   const isCnLive = market === 'cn';
@@ -149,8 +160,26 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
   }, [feeds.data, cnClosed.data, isCnLive, agents]);
 
   const hkItems = hkFeed.data ?? [];
-  const count = isHk ? hkItems.length : items.length;
-  onCount?.(count);
+
+  // 日期候选：只随数据/模型变化（不受已选日期影响），经 effect 回传父级——渲染期
+  // 直接回调会触发「渲染中更新别的组件」告警；按内容串判重避免每轮轮询空转。
+  const allDays = useMemo(
+    () => availableDays((isHk ? hkItems : items).map((t) => t.exit_date)),
+    [isHk, hkItems, items],
+  );
+  const daysKey = allDays.join(',');
+  useEffect(() => {
+    onDates?.(daysKey ? daysKey.split(',') : []);
+  }, [daysKey, onDates]);
+
+  // 日期筛选（'all' = 不筛）；无 exit_date 的行（富途已平仓行等）只在「全部日期」下显示
+  const shownItems = date === 'all' ? items : items.filter((t) => dayHit(t.exit_date, date));
+  const shownHk = date === 'all' ? hkItems : hkItems.filter((t) => dayHit(t.exit_date, date));
+  const count = isHk ? shownHk.length : shownItems.length;
+  // 回传经 effect（渲染期直接 setState 父组件会触发 React「渲染中更新」告警）
+  useEffect(() => {
+    onCount?.(count);
+  }, [count, onCount]);
 
   if (!agents.length && !isHk) return <div className="empty-state">该市场暂无 Agent</div>;
 
@@ -166,9 +195,16 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
         <div className="empty-state">暂无已平仓交易（富途模拟账户：无完全平仓持仓或卖出成交）</div>
       );
     }
+    if (!shownHk.length) {
+      return (
+        <div className="empty-state">
+          该日期暂无平仓记录（富途「已平仓持仓」行无成交时间，只在「全部日期」下显示）
+        </div>
+      );
+    }
     return (
       <div className="completed-feed">
-        {hkItems.map((t, i) => {
+        {shownHk.map((t, i) => {
           const pnl = t.realized_pl;
           return (
             <div className="feed-card" key={`${t.code}-${t.exit_date}-${i}`}>
@@ -229,10 +265,12 @@ export default function CompletedFeed({ agents, market, currency, stockNames = {
         {isCnLive ? '暂无已平仓交易（实盘清仓成交会自动出现在这里）' : '暂无已平仓交易'}
       </div>
     );
+  if (!shownItems.length)
+    return <div className="empty-state">该日期暂无平仓记录（切回「全部日期」看全部）</div>;
 
   return (
     <div className="completed-feed">
-      {items.map((t, i) => {
+      {shownItems.map((t, i) => {
         const pnl = t.pnl ?? 0;
         const entryNotional = t.qty * t.entry_price;
         return (

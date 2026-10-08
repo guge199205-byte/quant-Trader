@@ -1,0 +1,47 @@
+
+/* 
+  字体逻辑已统一迁移至 electron/src/styles/global.css 
+  通过变量 --font-family 进行全局控制
+*/
+
+/* 确保根节点应用统一字体变量 */
+html, body, #root {
+    font-family: var(--font-family) !important;
+    font-weight: 500; /* 提升全局字重，解决“纤细”感 */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* 添加自定义滚动条样式 */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #e0e0e0;
+    border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #c0c0c0;
+}
+
+/* 优化日期选择器图标样式 */
+.premium-date-picker::-webkit-calendar-picker-indicator {
+    background-color: #0f172a !important;
+    padding: 6px;
+    cursor: pointer;
+    border-radius: 6px;
+    filter: invert(1) brightness(1.5);
+    transition: all 0.2s ease-in-out;
+    opacity: 1 !important;
+}
+
+.premium-date-picker::-webkit-calendar-picker-indicator:hover {
+    background-color: #312e81 !important;
+    transform: scale(1.1);
+}

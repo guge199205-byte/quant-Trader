@@ -2,9 +2,31 @@
 # 容器内使用 baymax.docker.cordis.yml（MCP 地址指向 mcp-us 容器）
 FROM node:22-slim
 
-RUN npm install -g --no-audit --no-fund @deepseek-ai/dsh
+# ⚠️ harness 版本必须显式钉住，不要裸装 latest：
+#   本容器服务 8093 实盘智能体前端，自动跳版本 = 未经验证就换实盘前端内核。
+#   升级流程见 docs/AGENT_WORK_OBSERVABILITY.md §4：先在宿主并行装新版 →
+#   对 baymax.cordis.yml 跑 --dump-config **与真实 boot 双重验证**（dump 通过≠能跑）→
+#   再改这里的版本号并在非交易日重建。
+ARG DSH_VERSION=0.1.5-rc.1
+ARG PNPM_VERSION=11.24.0
+RUN npm install -g --no-audit --no-fund @deepseek-ai/dsh@${DSH_VERSION}
+# pnpm：`dsh plugin add` 会把参数转给 profile 目录下的 pnpm，镜像里没有就无法装插件
+# （2026-09-13 实录：容器内 agent 要临时 bootstrap 一份本地 pnpm 才能装 @xmanrui/dsh-im）。
+# 与宿主保持一致钉版本，别裸装 latest。
+RUN npm install -g --no-audit --no-fund pnpm@${PNPM_VERSION}
+
+# python3：灵枢桥（@furongjun1999/dsh-memory）用 `python -m md_cg.*` 跑子进程，
+# node:22-slim 没有 python。实测其 md_cg 只 import 标准库（sqlite3/json/hashlib/…），
+# 所以裸 python3 即可，无需 pip 包。
+# ⚠️ 它 spawn 的是 `python` 而非 `python3` → 必须一并装 python-is-python3 提供该名字，
+#    否则会退化成 `spawn python ENOENT` 并以 30s 间隔永久重试（插件作者称为「假激活」）。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python-is-python3 \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY dsh/baymax.docker.cordis.yml /app/dsh/baymax.docker.cordis.yml
 
+# 注意：compose 的 command 会用 baymax.cordis.yml 覆盖这里的 CMD（走 bind-mount 的 dsh/）。
+# 保留 CMD 只为镜像可独立运行；改补丁路径请同步 compose 与这里，别只改一处。
 CMD ["dsh", "--profile", "web", "--patch", "/app/dsh/baymax.docker.cordis.yml", "--port", "3081", "--no-open"]

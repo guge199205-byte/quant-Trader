@@ -2,163 +2,163 @@
  "R1_volume_stall": {
   "name": "放量滞涨（量>2×5日均量 且日涨0~3%）",
   "direction": "次日5日偏空",
-  "win_rate": 0.504,
-  "avg_ret": 2.084,
-  "n": 113,
-  "updated": "2026-09-06",
-  "status": "proposed",
-  "note": "价格代理，待事件数据升级；WF 窗口不足，无法验证 OOS；WF 窗口不足，无法验证 OOS",
-  "vs_base_pp": -3.0,
+  "win_rate": 0.384,
+  "avg_ret": 1.554,
+  "n": 99,
+  "updated": "2026-09-27",
+  "status": "verified",
+  "note": "价格代理，待事件数据升级；WF 窗口不足，无法验证 OOS；WF 窗口不足，无法验证 OOS；WF 窗口不足，无法验证 OOS；WF 窗口不足，无法验证 OOS",
+  "vs_base_pp": -15.8,
   "wf": {
    "windows": [
     {
      "win": 0,
-     "n": 13,
-     "diff_pp": -4.4
+     "n": 15,
+     "diff_pp": -27.5
     },
     {
      "win": 1,
-     "n": 28,
-     "diff_pp": -13.5
+     "n": 26,
+     "diff_pp": -29.3
     },
     {
      "win": 2,
-     "n": 24,
-     "diff_pp": -11.6
+     "n": 18,
+     "diff_pp": -21.8
     },
     {
      "win": 3,
      "n": 16,
-     "diff_pp": 10.1
+     "diff_pp": 5.8
     },
     {
      "win": 4,
-     "n": 14,
-     "diff_pp": 13.7
+     "n": 7,
+     "diff_pp": -11.3
     },
     {
      "win": 5,
-     "n": 12,
-     "diff_pp": -5.4
+     "n": 11,
+     "diff_pp": 1.0
     },
     {
      "win": 6,
      "n": 6,
-     "diff_pp": 16.9
+     "diff_pp": -9.7
     }
    ],
-   "is_diff_pp": -1.9,
-   "oos_diff_pp": 16.9,
-   "stable_ratio": 0.67,
-   "verdict": "proposed",
+   "is_diff_pp": -13.9,
+   "oos_diff_pp": -9.7,
+   "stable_ratio": 0.75,
+   "verdict": "verified",
    "note": ""
   }
  },
  "R2_shrink_pullback": {
   "name": "缩量回踩（连跌3日 末日量<0.7×均量）",
   "direction": "次日5日偏多",
-  "win_rate": 0.525,
-  "avg_ret": 1.942,
-  "n": 552,
-  "updated": "2026-09-06",
-  "status": "proposed",
+  "win_rate": 0.507,
+  "avg_ret": 1.868,
+  "n": 578,
+  "updated": "2026-09-27",
+  "status": "contradicted",
   "note": "价格代理",
-  "vs_base_pp": -0.9,
+  "vs_base_pp": -3.5,
   "wf": {
    "windows": [
     {
      "win": 0,
-     "n": 83,
-     "diff_pp": -7.6
+     "n": 66,
+     "diff_pp": -20.8
     },
     {
      "win": 1,
-     "n": 120,
-     "diff_pp": -11.7
+     "n": 134,
+     "diff_pp": -1.6
     },
     {
      "win": 2,
-     "n": 82,
-     "diff_pp": 9.6
+     "n": 97,
+     "diff_pp": 6.8
     },
     {
      "win": 3,
-     "n": 77,
-     "diff_pp": 6.0
+     "n": 60,
+     "diff_pp": -11.2
     },
     {
      "win": 4,
-     "n": 82,
-     "diff_pp": 0.8
+     "n": 52,
+     "diff_pp": 3.6
     },
     {
      "win": 5,
-     "n": 68,
-     "diff_pp": -8.8
+     "n": 104,
+     "diff_pp": -7.9
     },
     {
      "win": 6,
-     "n": 40,
-     "diff_pp": 22.7
+     "n": 65,
+     "diff_pp": 8.0
     }
    ],
-   "is_diff_pp": -1.9,
-   "oos_diff_pp": 22.7,
-   "stable_ratio": 0.43,
-   "verdict": "proposed",
+   "is_diff_pp": -5.2,
+   "oos_diff_pp": 8.0,
+   "stable_ratio": 0.57,
+   "verdict": "contradicted",
    "note": ""
   }
  },
  "R3_momentum_chase": {
   "name": "动量追高（5日涨>8%后次5日）",
   "direction": "追高回撤检测",
-  "win_rate": 0.545,
-  "avg_ret": 2.637,
-  "n": 4317,
-  "updated": "2026-09-06",
+  "win_rate": 0.564,
+  "avg_ret": 3.074,
+  "n": 4575,
+  "updated": "2026-09-27",
   "status": "proposed",
   "note": "价格代理",
-  "vs_base_pp": 1.1,
+  "vs_base_pp": 2.2,
   "wf": {
    "windows": [
     {
      "win": 0,
-     "n": 750,
-     "diff_pp": -3.3
+     "n": 666,
+     "diff_pp": -4.2
     },
     {
      "win": 1,
-     "n": 413,
-     "diff_pp": -9.3
+     "n": 388,
+     "diff_pp": -10.1
     },
     {
      "win": 2,
-     "n": 607,
-     "diff_pp": -2.7
+     "n": 643,
+     "diff_pp": 0.6
     },
     {
      "win": 3,
-     "n": 551,
-     "diff_pp": 6.9
+     "n": 847,
+     "diff_pp": 9.0
     },
     {
      "win": 4,
-     "n": 914,
-     "diff_pp": 2.7
+     "n": 1172,
+     "diff_pp": 1.6
     },
     {
      "win": 5,
-     "n": 774,
-     "diff_pp": 4.4
+     "n": 644,
+     "diff_pp": 8.2
     },
     {
      "win": 6,
-     "n": 308,
-     "diff_pp": 4.8
+     "n": 215,
+     "diff_pp": -1.5
     }
    ],
-   "is_diff_pp": -0.2,
-   "oos_diff_pp": 4.8,
+   "is_diff_pp": 0.8,
+   "oos_diff_pp": -1.5,
    "stable_ratio": 0.57,
    "verdict": "proposed",
    "note": ""
@@ -167,13 +167,13 @@
  "R4_big_drop_volume": {
   "name": "放量大阴（量>2×均量 且日跌≥3%）",
   "direction": "次日5日",
-  "win_rate": 0.385,
-  "avg_ret": -0.093,
-  "n": 52,
-  "updated": "2026-09-06",
+  "win_rate": 0.395,
+  "avg_ret": -0.204,
+  "n": 43,
+  "updated": "2026-09-27",
   "status": "proposed",
-  "note": "价格代理；WF 样本不足（n<60 无法滚动验证）；WF 样本不足（n<60 无法滚动验证）",
-  "vs_base_pp": -15.0,
+  "note": "价格代理；WF 样本不足（n<60 无法滚动验证）；WF 样本不足（n<60 无法滚动验证）；WF 样本不足（n<60 无法滚动验证）；WF 样本不足（n<60 无法滚动验证）；WF 样本不足（n<60 无法滚动验证）",
+  "vs_base_pp": -14.7,
   "wf": null
  },
  "A_gtja_158": {
@@ -1349,6 +1349,339 @@
   "win_rate": null,
   "n": null,
   "updated": "2026-09-11",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-14_deepseek-v4-flash_0": {
+  "name": "弱市平价位减1/3 vs 等破硬止损线的5日期望差",
+  "direction": "主动平价减1/3优于持有至破位再减",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-14",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-14_deepseek-v4-flash_1": {
+  "name": "新开仓止损留空的代价量化",
+  "direction": "该类笔5日最大回撤与清仓胜率显著劣于同批有止损新仓",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-14",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-14_deepseek-v4-flash_2": {
+  "name": "强势主线追高 vs 次日回踩低吸的3日期望",
+  "direction": "当日不执行、次日回踩2%内低吸的3日期望优于当日尾盘追入",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-14",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-14_glm-5.3-flash_0": {
+  "name": "弱市（昨日涨跌比<0.2）中，信号分40-45、当日回调<1%低吸的小仓票，次日相对大盘超额收益是否为正",
+  "direction": "正向（跑赢指数）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-14",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-15_deepseek-v4-flash_0": {
+  "name": "破位减持'一次做到位'vs'分批下追'的执行成本差",
+  "direction": "一次性执行占优（预期节省0.5%-1.0%滑点）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-15",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-15_deepseek-v4-flash_1": {
+  "name": "贴成本腿+L2价量背离<-0.4的减仓，限价等反抽 vs 立即市价",
+  "direction": "限价等反抽占优（弱市缩量腿更明显）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-15",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-15_deepseek-v4-pro_0": {
+  "name": "地量(量比<0.05)环境下，薄盘五档失衡（|失衡|>0.5，卖一/买一仅数手）属噪音，不应作为盘中减仓触发",
+  "direction": "信号无效/反向",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-15",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-15_deepseek-v4-pro_1": {
+  "name": "引擎 move_stop 上移后，若下一轮自由文本给出更低防守位，是否反而降低次日被插针扫损概率",
+  "direction": "低防守位侧（缓冲组）扫损率更低",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-15",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-15_glm-5.3-flash_0": {
+  "name": "弱市中持仓浮盈超+5%且出现缩量+价量背离时，当日减仓优于继续持有",
+  "direction": "减仓/锁盈优先",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-15",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-16_deepseek-v4-flash_0": {
+  "name": "贴价止损（距成本<0.5%）在弱市中触发后的处置方式成本对比",
+  "direction": "双确认减半（跌破+5min动能转负）优于立即市价减半",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-16",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-16_deepseek-v4-flash_1": {
+  "name": "执行通道失效日（桥假活/成交回报为空）的破位持仓，次日处置时机",
+  "direction": "开盘30分钟内限价（触发价+0.3%）执行 优于 立即市价 且优于 等尾盘",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-16",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-16_glm-5.3-flash_0": {
+  "name": "止盈条件位触发但执行通道故障的损失可用盘后固定价格交易挽回",
+  "direction": "复测盘后固定价格交易(15:05-15:30)对预案兑现率的影响",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-16",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-17_deepseek-v4-flash_0": {
+  "name": "弱市（5日跌幅>1%）中同一时段(10:30-11:15)集中市价清仓多腿，成交均价系统性低于当日均价",
+  "direction": "分两段(早盘反抽段+尾盘前)+限价挂单优于集中市价",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-17",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-17_deepseek-v4-flash_1": {
+  "name": "逆势相对强度>2pp 的候选（当日不追）在次日回踩前低缩量不破后低吸的5日期望",
+  "direction": "回踩低吸优于当日追高",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-17",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-17_deepseek-v4-pro_0": {
+  "name": "强板块内弱腿的兑现时点：板块上涨而个股逆势跑输≥2pp时，次日反抽中兑现 vs 继续持有等回归",
+  "direction": "反抽中兑现的5日期望优于持有",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-17",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-17_deepseek-v4-pro_1": {
+  "name": "逆风板块内'低波动防御腿'建仓的相对收益",
+  "direction": "5日相对收益为负，应禁止或缩量",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-17",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-17_glm-5.3-flash_0": {
+  "name": "午后13:00-13:30追买当日强势股（日内高位入场），次日为条件负收益",
+  "direction": "看空该类入场收益",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-17",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-18_deepseek-v4-flash_0": {
+  "name": "条件位覆盖率<100%（持仓防守位留空/None）的交易日，次日期望是否系统性劣于覆盖率=100%的日子",
+  "direction": "覆盖率100%组风险调整收益更优（留空=敞口未定义）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-18",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-18_deepseek-v4-flash_1": {
+  "name": "复合条件买入计划中'当日区间已覆盖价格条件但未执行'的样本，其5日前瞻收益 vs 已执行样本",
+  "direction": "若未执行样本平均上涨，则复合条件过严，需放宽量能项；若下跌，则'未执行'实为隐性收益",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-18",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-18_glm-5.3-flash_0": {
+  "name": "观察触发价回踩修复：预案买入观察价触发后1-3日内若未执行，回踩触发价±1%企稳时低吸，短期胜率与盈亏比是否优于直接追入",
+  "direction": "做多",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-18",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-22_deepseek-v4-flash_0": {
+  "name": "条件位“方向标错被引擎丢弃”与次日风控失效的相关性",
+  "direction": "当条件位覆盖率<100% 时，次日该持仓的日内最大回撤与被动止损次数显著高于覆盖率100%日",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-22",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-22_deepseek-v4-flash_1": {
+  "name": "数据源全降级日（≥2 源不可用）禁止新开仓的纪律验证",
+  "direction": "降级日新开仓的 5 日超额显著低于正常日",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-22",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-22_deepseek-v4-pro_0": {
+  "name": "强势日（涨跌比≥3 或 上证5日为正）中持仓腿'不跟涨'（个股当日涨幅显著低于所属板块且L2盘口失衡≤0）的后续5日相对板块中位数的超额为负",
+  "direction": "看空（滞涨腿应优先减仓，而非用'板块顺风'继续持有）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-22",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-22_deepseek-v4-pro_1": {
+  "name": "数据源全降级日（quantdb连接被拒 + L2缺失 ≥2源）'只写预案不开新仓'纪律的5日超额验证",
+  "direction": "中性偏多（验证不开仓为保护性纪律）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-22",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-22_glm-5.3-flash_0": {
+  "name": "主线票在14:30后出现'板块集体走软+指数尾盘翻绿'消息信号，对次日该票开盘与日内收益有负向预测力",
+  "direction": "负向（次日低开概率与日内弱势）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-22",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-23_deepseek-v4-flash_0": {
+  "name": "数据源全降级日（quantdb 连接被拒 + L2 禁用 + 分钟快照停更，≥2 源不可用）新开仓的 5 日超额是否显著低于正常日",
+  "direction": "验证『降级日只写预案不开仓』纪律；预期负超额",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-23",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-23_deepseek-v4-flash_1": {
+  "name": "同一标的相邻 ≤10 分钟两轮结论反向、且改判唯一新证据是排名型信号分（价格/盘口/量能/新闻无变化）时，该笔换手的 T+5 超额为负",
+  "direction": "负超额预期，用于把『无效改判』写进规则",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-23",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-23_deepseek-v4-flash_2": {
+  "name": "以『单分钟净值跳变 >3× 当日持仓加权振幅』作为估值口径断点识别器，断点日的净值变动不可作绩效归因",
+  "direction": "数据质量规则（非交易信号），阈值可用 09-11 后复权虚增 24% 与 09-23 +15.7% 两样本校准",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-23",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-23_deepseek-v4-pro_0": {
+  "name": "被系统『条件位方向判错』触发的机制性卖出，其后5日的收益是否系统性低于『按原防守位继续持有』的对照收益。",
+  "direction": "预期机制性卖出后标的相对对照池有正超额（即卖飞），用于量化语义污染的机会成本。",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-23",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-23_deepseek-v4-pro_1": {
+  "name": "数据源全降级日（quantdb 连接被拒 + L2 缺失，≥2 源不可用）当日新开仓的5日超额，是否显著低于正常日新开仓。",
+  "direction": "预期降级日新开仓5日超额显著为负，支撑『降级日禁止新开仓』纪律。",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-23",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-23_glm-5.3-flash_0": {
+  "name": "个股当日有明确利好新闻但所属板块无共振且成交量低于近期均量，次日跑输板块",
+  "direction": "偏空（利好出货，次日不涨概率高）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-23",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-24_deepseek-v4-flash_0": {
+  "name": "降级日换仓的负面效应",
+  "direction": "验证\"降级日只做减法\"：换仓组 5 日超额应显著低于同信号下只减仓组",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-24",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-24_deepseek-v4-flash_1": {
+  "name": "候选池高分但当日逆势下跌是否诱多",
+  "direction": "统计次日/3 日相对板块超额与胜率，判断是低吸窗口还是诱多",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-24",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-24_deepseek-v4-flash_2": {
+  "name": "含双确认的 watch 触发带被当日区间覆盖后的价值",
+  "direction": "比较该类条目 10 日执行率与执行后 5 日收益，判定双确认是过滤器还是错失器",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-24",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-24_glm-5.3-flash_0": {
+  "name": "大盘三指数齐跌日买入当日逆势上涨且无独立新闻的题材股，T+1日收益显著为负",
+  "direction": "看空（回避/反向信号）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-24",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-28_deepseek-v4-pro_0": {
+  "name": "桥/账户通道全断日（当日无任何决策轮执行）之后的次日开盘首30分钟波动是否显著大于常态",
+  "direction": "波动放大 → 次日开盘不急动，等10:00后信息充分再决策",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-28",
+  "status": "proposed",
+  "source": "review"
+ },
+ "H_2026-09-28_deepseek-v4-pro_1": {
+  "name": "≥2个数据源不可用日（全降级日）开新仓的5日超额是否显著低于正常日",
+  "direction": "降级日新仓超额为负 → 全降级日只做减法（减仓/维持/补条件位）",
+  "win_rate": null,
+  "n": null,
+  "updated": "2026-09-28",
   "status": "proposed",
   "source": "review"
  }

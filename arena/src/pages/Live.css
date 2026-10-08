@@ -567,6 +567,12 @@
   font-family: 'Courier New', monospace;
 }
 
+/* 「日期」筛选下拉：固定窄宽（模型下拉继续占余量），外观同 filter-select */
+.filter-select.filter-date {
+  flex: 0 0 auto;
+  width: 104px;
+}
+
 .filter-count {
   font-size: 10px;
   color: #666;

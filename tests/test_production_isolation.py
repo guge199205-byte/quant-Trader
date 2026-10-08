@@ -25,6 +25,7 @@ import live_price_watch  # noqa: E402
 import live_trade_picks  # noqa: E402
 
 PROD_LEDGER = ROOT / "logs" / "live_ledger.json"
+PROD_POOL = ROOT / "logs" / "decision_pool.jsonl"
 AGENT, CODE = "deepseek-v4-pro", "001312.SZ"
 
 
@@ -52,6 +53,10 @@ def test_no_module_constant_points_into_production_state_dirs(tmp_path):
     新加一个 `FOO_FILE = LOG_DIR / "x"` 忘了进清单时，这条会红——这正是
     SKIP_STATE_FILE 漏网半年的形态。
     """
+    from agent_tools.datasources import tdx_aidata
+
+    import decision_track
+    import ghost_ledger
     import live_breaker
     import live_hourly_analysis
     import live_l2_capture
@@ -60,7 +65,8 @@ def test_no_module_constant_points_into_production_state_dirs(tmp_path):
     prod = [str((ROOT / "logs").resolve()) + "/", str((ROOT / "data").resolve()) + "/"]
     leaked = []
     for mod in (live_fills, live_ledger, live_price_watch, live_trade_picks,
-                live_hourly_analysis, live_llm_trade, live_breaker, live_l2_capture):
+                live_hourly_analysis, live_llm_trade, live_breaker, live_l2_capture,
+                decision_track, ghost_ledger, tdx_aidata):
         for attr, val in vars(mod).items():
             if attr.startswith("__") or not isinstance(val, Path):
                 continue
@@ -87,6 +93,52 @@ def test_redirected_state_paths_are_writable(tmp_path):
         probe.unlink()
 
 
+def test_ingest_decisions_never_writes_real_pool(tmp_path):
+    """真调一轮 ingest_decisions（默认路径）→ 生产决策池字节不变。
+
+    2026-09-18 实录（两位审查同时定级 CRITICAL）：09:35 主入口接入记分卡后，
+    `decision_track.POOL` 不在 conftest 隔离清单里 → 任何跑到实盘入口的用例
+    （test_inflight_gate / test_llm_trade_cap_gate）都会把 fixture 决策**追加进
+    真实 logs/decision_pool.jsonl**（实测连跑两次：138 → 141 行）。伪造行的
+    agent/code/action 全是真实取值，回填期会带上真收益进记分卡与 P2 报告，
+    且 make_id 幂等（同用例重跑不再加行）——越跑越难察觉。
+    """
+    import decision_track
+
+    before = PROD_POOL.read_bytes() if PROD_POOL.is_file() else b""
+    decision_track.ingest_decisions(
+        "regression-agent", [{"action": "buy", "code": "000001.SZ", "pct": 0.1,
+                              "reason": "隔离回归钉"}],
+        "2026-09-18T10:00:00+08:00", source="regression")
+    after = PROD_POOL.read_bytes() if PROD_POOL.is_file() else b""
+
+    assert str(decision_track.POOL).startswith(str(tmp_path)), "POOL 没被隔离"
+    assert after == before, "生产决策池被测试写入"
+    assert (tmp_path / "decision_track" / "POOL").is_file(), "重定向后的池没被写到"
+
+
+def test_ghost_veto_never_writes_real_ledger(tmp_path):
+    """真记一条影子账事件（默认路径）→ 生产影子账字节不变，行只落 tmp。
+
+    影子账与决策池同族（两条买入路径的每个否决点都会写），且幂等键按
+    agent|日|标的|规则：fixture 事件一旦混进真实账，之后**越跑越难察觉**
+    （同用例重跑不再加行，看起来"没写"）。同 2026-09-18 decision_pool 事故形态。
+    """
+    import gate_rules
+    import ghost_ledger
+
+    prod = ROOT / "logs" / "ghost_ledger.jsonl"
+    before = _digest(prod)
+
+    assert ghost_ledger.veto("regression-agent", "000001.SZ", gate_rules.CASH_VCASH,
+                             datetime(2026, 9, 18, 10, 0, tzinfo=live_fills.CN_TZ),
+                             reason="隔离回归钉", pct=0.1, ref_px=12.3)
+
+    assert str(ghost_ledger.GHOST).startswith(str(tmp_path)), "GHOST 没被隔离"
+    assert _digest(prod) == before, "生产影子账被测试写入"
+    assert (tmp_path / "ghost_ledger" / "GHOST").is_file(), "重定向后的影子账没被写到"
+
+
 def test_secondary_state_modules_are_redirected_here(tmp_path):
     """次级状态（决策/条件位之外的 id 状态）也在 tmp 里，且**单文件跑**也成立。
 
@@ -95,6 +147,10 @@ def test_secondary_state_modules_are_redirected_here(tmp_path):
     若等函数体 import 才加载，patch 早已跑完 → 常量仍指真实 data/ 与 logs/。
     本用例自身只 import conftest（收集期）就已存在这些模块来钉这一点。
     """
+    from agent_tools.datasources import tdx_aidata
+
+    import decision_track
+    import ghost_ledger
     import live_breaker
     import live_hourly_analysis
     import live_l2_capture
@@ -107,6 +163,10 @@ def test_secondary_state_modules_are_redirected_here(tmp_path):
         "breaker_trips": live_breaker.TRIP_DIR,
         "l2_factors": live_l2_capture.FACTORS_FILE,
         "l2_state": live_l2_capture.STATE_FILE,
+        "decision_pool": decision_track.POOL,
+        "decision_scorecard": decision_track.SCORECARD,
+        "ghost_ledger": ghost_ledger.GHOST,
+        "aidata_breaker": tdx_aidata.BREAKER_FILE,
     }
     for name, path in live.items():
         assert str(path).startswith(str(tmp_path)), f"{name} 没被隔离: {path}"
@@ -120,7 +180,8 @@ def test_conftest_imports_secondary_modules_eagerly():
     """
     text = (ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
 
-    for name in ("live_hourly_analysis", "live_llm_trade", "live_breaker", "live_l2_capture"):
+    for name in ("live_hourly_analysis", "live_llm_trade", "live_breaker", "live_l2_capture",
+                 "decision_track"):
         assert f'"{name}": (' in text, f"conftest 的次级状态表里没有 {name}"
         assert f"__import__(_m)" in text, "conftest 没在收集期导入次级状态模块"
 

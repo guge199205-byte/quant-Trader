@@ -1,0 +1,175 @@
+{
+  "_note": "闸门登记表（2026-09-19，P3 影子代价账配套）。每条规则的依据/失效条件/复核日。rule id 的出处是 scripts/gate_rules.py，本表只加元数据；两边双向覆盖由 tests/test_ghost_ledger.py 强制（词表里的规则必须有条目、条目必须对应词表里的规则）。复核日过期会在 ghost_report 里显式列出——本表的作用是让规则**会过期**，而不是默认永久正确。",
+  "_review_note": "复核口径：到 review_by 当日或该规则影子样本 ≥30 条（先到者）做一次复核，结论三选一——保留（写明理由）/ 放宽 / 删除。",
+  "version": 1,
+  "rules": {
+    "halt.daily": {
+      "title": "当日熔断禁买",
+      "where": "scripts/live_breaker.py:check_and_trip → buy_gate.check_buy",
+      "kind": "veto",
+      "evidence": "当日亏损触阈值后禁止买入（卖出照常），防连续亏损日越亏越加。",
+      "falsify": "被熔断拦下的买单在其后 T+5 均超额持续为正（拦住的是机会而非损失）→ 改为降档而不是全禁。",
+      "review_by": "2026-10-19"
+    },
+    "symbol.boundary": {
+      "title": "标的边界（ST/退市/黑名单/事件风险）",
+      "where": "scripts/symbol_policy.py:check_symbol → buy_gate.check_buy",
+      "kind": "veto",
+      "evidence": "55 只永久黑名单 + ST/退市 + 解禁/负面事件风险清单；配置写坏会 fail-open 静默失效（test_config_integrity 兜底）。",
+      "falsify": "被拦标的的远期超额持续优于同期整体 → 边界过宽（逐条看是哪一类在误杀）。",
+      "review_by": "2026-10-19"
+    },
+    "pct.invalid": {
+      "title": "买入比例非法（模型吐脏值）",
+      "where": "scripts/buy_gate.py:check_buy",
+      "kind": "veto",
+      "evidence": "2026-09-12 审查 HIGH：脏 pct（如 '0.3股'）绝不按整仓/清仓兜底执行，只能跳过并留痕。",
+      "falsify": "若命中集中在单一模型/单一表述 → 是提示词或解析问题，应在产出侧修（本闸保留但读数不计入'风控成本'）。",
+      "review_by": "2026-10-19"
+    },
+    "pct.zero": {
+      "title": "买入比例缺失（pct=0/未表达）",
+      "where": "scripts/buy_gate.py:check_buy",
+      "kind": "veto",
+      "evidence": "买入必须有明确比例；'说了买但没说买多少'不可执行，跳过留痕。",
+      "falsify": "若这批标的的远期超额持续显著为正 → 模型的意向有信息量而表达缺失，该修的是产出侧格式而不是放行。",
+      "review_by": "2026-10-19"
+    },
+    "pool.not_member": {
+      "title": "非持仓且不在候选池",
+      "where": "scripts/buy_gate.py:check_buy（两条买入路径共用）",
+      "kind": "veto",
+      "evidence": "新开仓必须来自本轮研究覆盖的候选池，防止模型凭训练记忆买无研究覆盖的标的。",
+      "falsify": "被拦的池外标的远期超额持续优于池内 → 先查池子构建（覆盖/筛选）而不是直接放开。",
+      "review_by": "2026-10-19"
+    },
+    "cap.round_new_buys": {
+      "title": "单轮新开仓数上限",
+      "where": "scripts/buy_gate.py:check_buy",
+      "kind": "veto",
+      "evidence": "防一轮撒网式建仓；与当日上限同一风险预算口径。",
+      "falsify": "被拦标的远期超额持续优于同轮已建仓标的 → 上限在砍质量而不是砍数量。",
+      "review_by": "2026-10-19"
+    },
+    "cap.daily_new_buys": {
+      "title": "当日累计新开仓数上限",
+      "where": "scripts/buy_gate.py:check_buy（opened_today 口径）",
+      "kind": "veto",
+      "evidence": "风险预算口径=全天，不随轮次刷新；09:35 主入口 2026-09-08 前缺此判定，已收敛到唯一实现。",
+      "falsify": "同 cap.round_new_buys。",
+      "review_by": "2026-10-19"
+    },
+    "symbol.halted": {
+      "title": "停牌/无成交",
+      "where": "scripts/live_trade_picks.py:compute_order",
+      "kind": "veto",
+      "evidence": "停牌标的挂单无意义（成交量为 0 或 K 线缺最新 bar）。",
+      "falsify": "不适用（不可成交）。本条读数是**数据/标的池**问题：池子里有停牌股说明候选池新鲜度不够。",
+      "review_by": "2026-10-19"
+    },
+    "budget.below_min_lot": {
+      "title": "单票预算低于最小一手",
+      "where": "scripts/live_trade_picks.py:compute_order ← 两条买入路径",
+      "kind": "veto",
+      "evidence": "2026-09-09：最小可买股数（科创板 200、其余 100）×现价 > 单票预算 → 这只票该 agent 根本买不起；提示词侧 filter_affordable 同口径整行剔除，这里兜底（模型凭记忆报出的、或预算刚被成交吃掉的）。",
+      "falsify": "命中多且被拦票远期超额为正 → 单票预算/资金规模太小在错过机会（与 budget.unaffordable 合看）。",
+      "review_by": "2026-10-19"
+    },
+    "limit.down": {
+      "title": "跌停不接（买入侧）",
+      "where": "scripts/live_trade_picks.py:compute_order",
+      "kind": "veto",
+      "evidence": "跌停板上的买入单在下跌趋势中接刀，非意图性低价成交风险高。",
+      "falsify": "被拦标的次日反弹的比例持续更高 → 该闸在错过超跌反弹（但需与'跌停股次日继续跌的概率'对照）。",
+      "review_by": "2026-10-19"
+    },
+    "data.no_quote": {
+      "title": "无有效行情（K线不足/价格无效）",
+      "where": "scripts/live_trade_picks.py:compute_order",
+      "kind": "veto",
+      "evidence": "K线不足 2 根 / 价格解析失败 / 非有限数 → 无法定单量，硬拦（防瞎下）。",
+      "falsify": "不适用（数据缺失必须拦）。本条读数是**数据链路**问题：命中多说明行情源在丢数据。",
+      "review_by": "2026-10-19"
+    },
+    "data.dirty_quote": {
+      "title": "脏 K 线（与实时价偏差>40%）",
+      "where": "live_llm_trade / live_hourly_analysis 买入段（_quote_guarded_price）",
+      "kind": "veto",
+      "evidence": "2026-09-08 福恩股份事故：K线价错得离谱会超量下单，故偏差>40% 一律跳过。",
+      "falsify": "不适用（脏数据必须拦）。命中多 = 行情源质量问题，查数据源而不是查这条闸。",
+      "review_by": "2026-10-19"
+    },
+    "exec.submit_failed": {
+      "title": "下单失败（桥/柜台拒单或断链）",
+      "where": "live_llm_trade / live_hourly_analysis 下单 except 分支",
+      "kind": "veto",
+      "evidence": "桥断链/柜台判废（实录：'当前客户端行情处于断开状态'、收盘后委托被 rejected）。",
+      "falsify": "不适用（基础设施故障）。这是**纯损失**读数：本条的正超额直接等于被基础设施吃掉的钱。",
+      "review_by": "2026-10-19"
+    },
+    "cap.position": {
+      "title": "单票集中度闸（MAX_POS_PCT）",
+      "where": "scripts/buy_gate.py:position_cap_reason（两条路径执行段）",
+      "kind": "veto",
+      "evidence": "2026-09-18 机构级：per_stock_pct 只管单笔占剩余额度，同票跨轮加仓此前不封顶（仅杠杆闸兜底且不区分集中度）。",
+      "falsify": "被拦加仓的标的远期超额持续为正且与已建仓部分同向 → 上限过紧；反之若被拦标的随后回撤更大，则本闸在赚钱。",
+      "review_by": "2026-10-19"
+    },
+    "cash.insufficient": {
+      "title": "账户现金不足",
+      "where": "live_llm_trade / live_hourly_analysis 执行段",
+      "kind": "veto",
+      "evidence": "资金硬约束（不是策略选择）：下单前账户可用现金必须 ≥ 本单成本。",
+      "falsify": "不适用（硬约束）。本条的读数是**资金规模**问题：命中多且被拦标的远期超额为正 = 账户太小在错过机会。",
+      "review_by": "2026-10-19"
+    },
+    "cash.vcash": {
+      "title": "分账虚拟现金不足",
+      "where": "live_llm_trade 执行段（分账子账户）",
+      "kind": "veto",
+      "evidence": "三分账竞争不透支：子账户虚拟现金不足即拒绝，防某个 agent 借别人的额度。",
+      "falsify": "同 cash.insufficient：命中集中在某个 agent = 该 agent 额度/策略规模错配。",
+      "review_by": "2026-10-19"
+    },
+    "lev.over": {
+      "title": "加仓后杠杆超限（LEVERAGE_MAX×权益）",
+      "where": "live_llm_trade / live_hourly_analysis 执行段",
+      "kind": "veto",
+      "evidence": "现金为负时才可能触发；口径为持仓成本≤1.5×权益（09:35 成本口径、整点轮市值口径，两者同基）。",
+      "falsify": "命中为 0 说明该闸当前是死规则（不是坏事，但要登记为'从未触发'而不是假装它在保护）。",
+      "review_by": "2026-10-19"
+    },
+    "inflight.dup_buy": {
+      "title": "在途买单去重",
+      "where": "live_llm_trade / live_hourly_analysis 买入段",
+      "kind": "veto",
+      "evidence": "2026-09-11：买单挂 pending 时账本尚未扣现金/加持仓，补跑或后续轮次再决策买入同一代码 = 桥上是第二笔真委托（重复建仓）。",
+      "falsify": "若长时间零命中，说明去重生效、重复决策本身没发生（保留）。",
+      "review_by": "2026-10-19"
+    },
+    "limit.up": {
+      "title": "涨停不追（持仓内加仓）",
+      "where": "live_hourly_analysis 买入段",
+      "kind": "veto",
+      "evidence": "已封板的加仓单大概率排队不成交，且买在板上风险收益比差。",
+      "falsify": "被拦标的次日继续上涨的比例持续更高 → 说明该闸在错过强势票（但需与'板上买入的实际成交率'一起看）。",
+      "review_by": "2026-10-19"
+    },
+    "budget.unaffordable": {
+      "title": "买不起整行剔除（候选池视野）",
+      "where": "scripts/live_prompt_context.py:filter_affordable ← 两条路径",
+      "kind": "unseen",
+      "evidence": "2026-09-17 实录：20 只池剔除 11 只（含 rank 1/2/3/4/6/8）——模型压根没看见这批票。",
+      "falsify": "被剔除票的远期超额持续优于模型实际选择 → 问题在**资金规模/池子价格结构**，与分数门限无关（P2 结论）。",
+      "review_by": "2026-10-19"
+    },
+    "unknown.no_execution": {
+      "title": "历史意图无执行记录（回填占位）",
+      "where": "scripts/ghost_ledger.py:backfill_from_history",
+      "kind": "unknown",
+      "evidence": "2026-09-19 前的否决原因只进了 stdout，未落盘；回填只能判定'意图未下发'，原因不可考。",
+      "falsify": "新的一周后若该规则仍是样本主力，说明还有路径没接影子记录（查接线 lint 与覆盖计数）。",
+      "review_by": "2026-10-19"
+    }
+  }
+}

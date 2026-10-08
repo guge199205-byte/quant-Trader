@@ -26,6 +26,7 @@ import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 CN_TZ = ZoneInfo("Asia/Shanghai")
@@ -34,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "agent_tools"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import minute_feats  # noqa: E402  分钟特征的唯一口径（见该模块 docstring）
 from trading_cal import is_trading_day, why_not  # noqa: E402
 
 FACTORS_FILE = ROOT / "data" / "l2_factors_live.json"
@@ -356,20 +358,37 @@ def _atomic_write(path: Path, data) -> None:
     tmp.replace(path)
 
 
-def load_state() -> dict:
+def _read_json(path: Path) -> dict:
+    """容错读 JSON 对象：缺失/半截/写坏（盘满曾把状态文件截成 0 字节）一律 {}。"""
     try:
-        d = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
+        d = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+    return d if isinstance(d, dict) else {}
+
+
+def _as_int(v, default: int = 0) -> int:
+    """落盘 JSON 里的计数（`_read_json` 的同伴）。
+
+    裸 `int()` 在坏类型上抛出去不是「这一轮失败」，而是**永久停摆**：
+    `minute_capability` 抛 → run_pass 死在写盘前 → 产物永远留着那个坏值 →
+    下一轮读到同一份坏值再抛（自我维持，无人自愈）。JSON 的 `Infinity`/`NaN`
+    是合法 token（`int(inf)` 抛的是 OverflowError），`True` 是 int 子类但不是计数。
+    """
+    if isinstance(v, bool) or v is None:
+        return default
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def load_state() -> dict:
+    return _read_json(STATE_FILE)
 
 
 def load_factors() -> dict:
-    try:
-        d = json.loads(FACTORS_FILE.read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
+    return _read_json(FACTORS_FILE)
 
 
 # ---------- 大盘/板块上下文（桥快照，不占因子节奏） ----------
@@ -427,75 +446,119 @@ def fetch_market_context(broker, holdings_codes: list) -> dict:
     return ctx
 
 
-_TICK_OK = True  # TdxAiData 分笔权限标记（Token Insufficient 时全局置 False 快速跳过）
-_MINUTE_OK = True  # TdxAiData 分钟K限流标记（超时/失败时本轮起跳过）
+SNAPSHOT_DIR = ROOT / "logs" / "min_snapshots"
+# 快照 3 分钟没更新 = 采集器死了（采样节奏是每分钟 3 轮）。**唯一出处**在
+# minute_feats（提示词路径也要用同一个阈值判定，两处各写一个数迟早漂移）。
+SNAPSHOT_STALE_SEC = minute_feats.SNAPSHOT_STALE_SEC
+MINUTE_WARMUP_MIN = 30       # 本节时段头 30 分钟攒不满 6 根 5 分钟 bar，属预期
 
 
-def _timebox(fn, timeout_s: float = 5.0, *args, **kwargs):
-    """线程 + join 硬超时：TdxAiData 重试循环可能无限挂（限流时），必须时间盒。"""
-    import threading
+def self_minute_feats(code: str) -> dict:
+    """持仓股的分钟特征 —— 自采快照（logs/min_snapshots/）自算，**不碰任何网络**。
 
-    res: dict = {}
+    2026-09-22 起分钟因子的唯一来源：20 秒快照 → 5 分钟 bar → AiData 公式逐字重演
+    （公式与口径见 scripts/minute_feats.py，那里也是唯一实现）。
 
-    def _run():
-        try:
-            res["v"] = fn(*args, **kwargs)
-        except Exception as exc:  # noqa: BLE001
-            res["e"] = exc
+    为什么不再用 AiData 分钟K：那条链自 2026-09-02 起通道级挂死（617 轮里 502 轮
+    烧在超时上，产物 `minute_feats` 出现 0 次），而这里的自采集每轮本来就有快照，
+    自算是零额外成本且不受外部通道影响。
 
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout_s)
-    if t.is_alive():
-        raise TimeoutError("TdxAiData 调用超时（限流？）")
-    if "e" in res:
-        raise res["e"]
-    return res.get("v")
+    新鲜度按**本票**判（`minute_feats.fresh_or_stale`），不是按「快照目录里有没有
+    人在写」：后者是全局问题，别的票还在采就会把单票停采整个盖住。
+    """
+    try:
+        rows = minute_feats.load_code_rows(code, SNAPSHOT_DIR)
+    except OSError:
+        return {}
+    return minute_feats.fresh_or_stale(minute_feats.from_rows(rows), now_cn())
 
 
-def fetch_minute_tick(code: str) -> tuple[dict, dict]:
-    """TdxAiData 分钟K特征 + 分笔失衡（走 TdxAiData 官方接口，不占桥限流）。
-    分笔需额外 token 权限（实测 Token Insufficient），默认跳过——设
-    BAYMAX_TICK_ENABLED=1 才尝试；分钟K 5s 硬超时，限流时全局跳过不拖慢采集。"""
-    from agent_tools.datasources import tdx_aidata
+def minute_capability(now: datetime, produced: int, watch: int,
+                      last_sample_ts: Optional[datetime],
+                      prev: Optional[dict] = None,
+                      bars_min: Optional[int] = None,
+                      degraded: Optional[dict] = None) -> dict:
+    """分钟因子这条链的健康戳（落 `data/l2_status.json` 的 capabilities.minute_k）。
 
-    global _TICK_OK, _MINUTE_OK
-    mf: dict = {}
-    tk: dict = {}
-    if _MINUTE_OK:
-        try:
-            bars = _timebox(tdx_aidata.get_klines, 5.0, code, interval="5m", count=12) or []
-            closes = [float(b.get("close") or 0) for b in bars if b.get("close")]
-            vols = [float(b.get("volume") or 0) for b in bars if b.get("volume")]
-            if len(closes) >= 6 and closes[0] > 0:
-                mf["mom30m"] = round((closes[-1] / closes[-6] - 1) * 100, 3)
-                rets = [c2 / c1 - 1 for c1, c2 in zip(closes, closes[1:]) if c1 > 0]
-                if rets:
-                    avg = sum(rets) / len(rets)
-                    mf["vol5m"] = round((sum((r - avg) ** 2 for r in rets) / len(rets)) ** 0.5 * 100, 3)
-            if len(vols) >= 6:
-                avg = sum(vols) / len(vols)
-                mf["vol_ratio"] = round(vols[-1] / avg, 2) if avg > 0 else None
-        except Exception as exc:  # noqa: BLE001
-            _MINUTE_OK = False
-            print(f"  ⚠️ TdxAiData 分钟K不可用（限流/超时），本轮起跳过: {exc}")
-    if _TICK_OK and os.getenv("BAYMAX_TICK_ENABLED") == "1":
-        try:
-            for date_fmt in (now_cn().strftime("%Y%m%d"), now_cn().strftime("%Y-%m-%d")):
-                t = tdx_aidata.get_tick_data(code, date_fmt, wantnum=100)
-                rows = t.get("data") if isinstance(t, dict) else t
-                if not isinstance(rows, list) or not rows:
-                    continue
-                buy = sum(1 for r in rows if str(r.get("BSFlag") or "") in ("B", "1"))
-                sell = sum(1 for r in rows if str(r.get("BSFlag") or "") in ("S", "2"))
-                if buy + sell > 0:
-                    tk = {"buy": buy, "sell": sell, "ratio": round((buy - sell) / (buy + sell), 3)}
-                break
-        except Exception as exc:  # noqa: BLE001
-            if "Token" in str(exc) or "Insufficient" in str(exc) or "13" in str(exc):
-                _TICK_OK = False
-                print("  ⚠️ TdxAiData 分笔权限不足（Token Insufficient），本轮起跳过分笔")
-    return mf, tk
+    产物里「键不存在」有两种成因：今天刚开盘还没攒够样本，或采集源死了。三周没人
+    发现 AiData 静默，就是因为两者在产物里长得一样 —— 这个戳把它们分开。
+
+    ok=True 覆盖三态：`ok`（在产出）、`warmup`（本节头 30 分钟，本就不够）、
+    `idle`（非交易时段/持仓为空）。**warmup 与 idle 必须 ok=True**，否则每天开盘
+    和收盘各刷一轮假告警，运维学会忽略这块板 —— 那正是事故的成因。
+
+    `fail_streak` / `first_fail_ts` 语义对齐 scripts/rt_probe.py 的 apply_streaks：
+    首败时刻不被后续失败覆盖（= 「自 Y 时刻起持续降级」）。
+
+    ⚠️ `watch <= 0` 把两件事并成 idle（2026-09-22 审查 MEDIUM-4）：**真的没有持仓**
+    （平仓/空仓，idle 正确）与**账户通道掉线**（桥假活：asset=0、positions=[]，
+    于是 run_pass 算出的持仓集是空的）。后者由 `probe_account` + `alert_checks.
+    account_down` 专门负责（2026-09-10 实录：行情全通、账户整日 asset=0、零告警）——
+    这里**刻意不重复告警**，同一个根因两条告警只会互相稀释。要在这里分开就得把
+    「持仓是已知的」当参数传进来（改签名 + 全套用例），当前不做；排查分钟因子缺席时
+    先看 `logs/rt_status.json` 的 account 段。
+    """
+    prev = prev or {}
+    m = now.hour * 60 + now.minute
+    age: Optional[float] = None
+    if last_sample_ts is not None:
+        delta = (now - last_sample_ts).total_seconds()
+        age = delta if delta >= 0 else None   # 未来样本（时钟回拨/时区错）不算新鲜
+    error = ""
+    if not minute_feats.in_session_minutes(m) or watch <= 0:
+        state = "idle"
+    elif age is None or age > SNAPSHOT_STALE_SEC:
+        state = "stale_source"
+        if age is not None:
+            error = f"快照源停更 {age:.0f} 秒（阈值 {SNAPSHOT_STALE_SEC}s）"
+        elif last_sample_ts is not None:
+            error = "快照样本时刻晚于本机（时钟/时区异常）"
+        else:
+            error = f"无快照样本（{SNAPSHOT_DIR} 为空或缺失）"
+    elif produced >= watch:
+        state = "ok"
+    elif produced > 0:
+        # **部分产出不算 ok**（旧写法 `produced > 0` = 拿 any 当 all）：少的那几只
+        # 票的分钟特征会从产物与提示词里整块消失，而戳是绿的、告警不响。
+        state = "partial"
+        names = sorted(degraded or {})
+        shown = "、".join(names[:3]) + (f" 等 {len(names)} 只" if len(names) > 3 else "")
+        error = f"{watch - produced}/{watch} 只持仓没产出行情因子"
+        if shown:
+            error += f"（{shown}）"
+    elif m - minute_feats.session_start_minutes(m) < MINUTE_WARMUP_MIN:
+        state = "warmup"
+    else:
+        state = "no_factors"
+        error = "快照新鲜但算不出因子（连续 5 分钟 bar 不足 6 根）"
+    ok = state in ("ok", "warmup", "idle")
+    # 清零的唯一条件是 `state == "ok"`，**不是 `produced > 0`**：快照源断线后，
+    # 断线前攒下的 bar 仍躺在文件里，`from_rows` 照样算得出 mom30m（同日、同
+    # 时段、间隔合规）—— 于是 produced>0 与 stale_source 同时成立。按 produced
+    # 清零，等于每轮都把计数抹掉，那条按 fail_streak 防抖的告警**永远等不到第 N 轮**。
+    if state == "ok":                      # 真产出（快照新鲜且算得出）→ 恢复即清零
+        streak, first = 0, None
+    elif ok:                               # warmup/idle：不推高也不清零
+        streak, first = _as_int(prev.get("fail_streak")), prev.get("first_fail_ts")
+    else:
+        streak = _as_int(prev.get("fail_streak")) + 1
+        first = prev.get("first_fail_ts") or now.isoformat(timespec="seconds")
+    return {
+        "ok": ok,
+        "state": state,
+        "source": "self",
+        "error": error or None,
+        "produced": produced,
+        "watch": watch,
+        # 本轮产出里**最短**的窗口根数（是下限不是均值）：6 根是噪声地板，
+        # 光看 produced/watch 看不出「10 只里 1 只只剩 6 根」。
+        "bars_min": bars_min,
+        "snapshot_age_sec": None if age is None else int(age),
+        "fail_streak": streak,
+        "first_fail_ts": first,
+        "ts": now.timestamp(),
+        "ts_cn": now.astimezone(CN_TZ).isoformat(timespec="seconds"),
+    }
 
 
 # ---------- 单轮采集 ----------
@@ -539,6 +602,11 @@ def run_pass(broker, dry_debug: bool = False) -> int:
     now = now_cn()
     updated = 0
     calls = 0
+    mf_produced = 0          # 本轮机产出分钟因子的持仓数（**不含**降级标记）
+    mf_watch = 0             # 本轮机应当产出分钟因子的持仓数（分母）
+    mf_bars_min = None       # 本轮产出里最短的窗口根数（质量下限）
+    mf_degraded = {}         # {仓位代码: 降级原因} —— 「哪几只没数」要说得出来
+    pos_set = set(pos_codes)
     for code in codes:
         if calls >= MAX_CALLS_PER_PASS:
             break
@@ -571,13 +639,24 @@ def run_pass(broker, dry_debug: bool = False) -> int:
             "factors": fac,
             "signal_score": build_signal_score(fac),
         }
-        # 持仓股附加：分钟K特征 + 分笔失衡（TdxAiData，不占桥限流）
-        if code in set(pos_codes):
-            mf, tk = fetch_minute_tick(code)
+        # 持仓股附加：分钟特征（自采快照自算，零额外桥调用、零外部通道依赖）
+        if code in pos_set:
+            mf_watch += 1
+            mf = self_minute_feats(code)
             if mf:
+                # 降级标记也落盘（「试过、不够」比「没有这个键」信息量大），但它
+                # **不是产出** —— 否则「10 只里 0 只有数」会被计成 produced=10、报 ok。
                 factors[code]["minute_feats"] = mf
-            if tk:
-                factors[code]["tick_imb"] = tk
+                if mf.get("ok"):
+                    mf_produced += 1
+                    b = mf.get("bars")
+                    if isinstance(b, int) and (mf_bars_min is None or b < mf_bars_min):
+                        mf_bars_min = b
+                else:
+                    mf_degraded[code] = str(mf.get("reason") or "unknown")
+            else:
+                # 连标记都没有：本票一行样本都没读到（快照目录没有他/不是交易时段）
+                mf_degraded[code] = "no_samples"
         updated += 1
         time.sleep(CALL_INTERVAL_SEC)  # 桥限流节奏
     # 大盘指数 + 持仓板块（桥快照）
@@ -592,11 +671,23 @@ def run_pass(broker, dry_debug: bool = False) -> int:
     state = {c: v for c, v in state.items() if c in set(codes)}
     _atomic_write(STATE_FILE, state)
     _atomic_write(FACTORS_FILE, factors)
+    # 能力戳：把「产物里没有这个键」和「这条链坏了」分开（旧戳沿用失败计数）。
+    # 时钟必须**重新取**：上面那行 now 是轮初的，而一轮最坏约 2 分钟、快照采集器
+    # 每 20 秒写一行 —— 拿轮初的 now 去比轮内新写的样本，样本恒「来自未来」，
+    # 每轮正常采集都会误报 stale_source（错误文案还会甩锅给时钟/时区）。
+    prev_cap = (_read_json(STATUS_FILE).get("capabilities") or {}).get("minute_k") or {}
+    cap = minute_capability(now_cn(), mf_produced, mf_watch,
+                            minute_feats.latest_sample_ts(SNAPSHOT_DIR), prev_cap,
+                            bars_min=mf_bars_min, degraded=mf_degraded)
+    if not cap["ok"]:
+        print(f"  ⚠️ 分钟因子降级 [{cap['state']}] {cap['error']}"
+              f"（连续 {cap['fail_streak']} 轮，自 {cap['first_fail_ts']}）")
     _atomic_write(STATUS_FILE, {
         "last_cycle_at": now.isoformat(timespec="seconds"),
         "watchlist_size": len(codes),
         "updated": updated,
         "codes": codes,
+        "capabilities": {"minute_k": cap},
     })
     return updated
 
@@ -629,7 +720,16 @@ def main() -> int:
     if not args.force and not in_window(now):
         return 0  # 非交易时段静默退出（cron 每分钟跑，不刷屏）
     broker = _load_broker()
-    updated = run_pass(broker)
+    try:
+        updated = run_pass(broker)
+    except Exception as exc:  # noqa: BLE001
+        # 一轮崩了必须留痕。2026-09-22 盘满实录：run_pass 在写 STATE_FILE 时抛
+        # OSError(28)，异常无人接、一路穿到 sys.exit → 该轮在打印「采集完成」**之前**
+        # 就死了。于是日志里 09-21 14:35→09-22 14:45 没有一行带时间戳的输出，只剩
+        # 3492 行无主原始输出（含 158 个 traceback），四个半小时无人知。
+        # 退出码非 0 是给 cron/看门狗的非人读信号（成功路径照旧返回 0）。
+        print(f"[{now:%F %T}] ⛔ 本轮采集中止：{type(exc).__name__}: {exc}")
+        return 1
     try:
         status = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
         size = status.get("watchlist_size", 0)

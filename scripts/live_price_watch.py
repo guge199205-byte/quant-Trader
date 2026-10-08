@@ -9,8 +9,10 @@
     → 本脚本查桥日K最新价（交易时段日K最后一根=当日实时价）
     → 现价 ≤ stop_loss 减仓 pct 比例 / ≥ take_profit 止盈 pct 比例
     → 与盘中执行同一套卖出闸门（T+1 可卖量、100 股整数倍）
-    → 报**跌停保护价**（成交在盘口买一，跌停封死则挂队+告警；保护价口径见
-      ashare_rules.protect_sell_price，2026-09-11 移植 quantmind 真账户实测）
+    → 报**贴价的可成交价**（= max(跌停价, 现价×0.99)，口径见
+      ashare_rules.aggressive_sell_price）。2026-09-21 修正：旧口径「报跌停保护价」
+      越出连续竞价有效竞价范围（卖方申报不得低于基准价 98%），002074 一天 42 笔
+      真单全被柜台判废；报跌停价只在标的本身贴近跌停时才是合法报价。
     → 在途闸门：同标的有未确认卖单则不下第二笔；幂等委托号防崩溃重试重复下单
     → record_sell 分账记账 + logs/live_watch_YYYYMMDD.jsonl
     → 触发并下单成功后该条规则**保留并打标**（pending_order_id/pending_volume），
@@ -53,15 +55,21 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from trading_cal import is_trading_day, why_not  # noqa: E402
 from live_fills import (round_sell_qty, inflight, record_event,  # noqa: E402
                         CANCEL_STATUSES)
+from live_quotes import klines as lq_klines  # noqa: E402
 
-from ashare_rules import (at_limit_down, after_hours_eligible, board_of,  # noqa: E402
-                          after_hours_window, protect_sell_price)
+from ashare_rules import (aggressive_sell_price, at_limit_down,  # noqa: E402
+                          after_hours_eligible, board_of, after_hours_window)
 
 WATCH_FILE = ROOT / "data" / "live_watch.json"
+HALT_FILE = ROOT / "data" / "live_watch_halt.json"  # 当日熔断计数 sidecar（见 load_halts）
 LOG_DIR = ROOT / "logs"
 SKIP_STATE_FILE = LOG_DIR / "live_watch_notify_state.json"  # 账户级提醒的跨进程去重（见 _notify_once）
 POLL_SLEEP_SEC = 1       # 桥限流：每条规则之间隔 1 秒
 SKIP_NOTIFY_HOUR = True  # 同一规则同一小时的重复跳过只提醒一次（防刷屏）
+DUP_REARM_SEC = 180      # 「桥判重复且无法接管」持续 ≥3 分钟且无冻结 → 换号重新布防
+                         # （2026-09-18，300408 实录；见 _execute_sell 的 dup 分支）
+REJECT_HALT_N = 3        # 同规则连续 N 笔柜台废单（rejected，0 成交）→ 当日熔断，
+                         # 停止自动重下、上告警转人工（2026-09-21，002074 42 笔实录）
 
 
 def _load_dotenv() -> None:
@@ -111,6 +119,112 @@ def save_watch(rules: dict) -> None:
     tmp = WATCH_FILE.with_name(WATCH_FILE.name + ".tmp")
     tmp.write_text(json.dumps(rules, ensure_ascii=False, indent=1), encoding="utf-8")
     tmp.replace(WATCH_FILE)
+
+
+def load_halts() -> dict:
+    """{"agent:code": {"date": "YYYY-MM-DD", "streak": n}} —— 当日连续废单熔断计数。
+
+    为什么是 **sidecar** 而不是写在规则字典里（2026-09-21 审查 HIGH-1，已复现）：
+    整点轮/收盘复盘会走 `save_watch_rules → _rules_from_decisions` **整组重建**
+    live_watch.json，只保留 code/价位/pct/reason/created_ts 六个字段——写在规则上的
+    halt 标记每次重建都被抹掉，熔断退化成「每个重建周期 3 笔废单」，承诺的
+    「当日停手」名存实亡。本文件只有哨兵读写，与规则文件的生命周期解耦。
+    """
+    try:
+        doc = json.loads(HALT_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _update_halts(mutate) -> None:
+    """读-改-写熔断 sidecar（持 _watch_lock 同款跨进程锁，原子替换写）。
+
+    写失败（磁盘满/权限）不得炸掉整轮哨兵（2026-09-21 审查 LOW-2）：调用点在
+    run_watch 的 per-rule 循环里**无捕获**，抛出去本轮剩余规则全部不处理。降级为
+    打印告警——代价是这次计数没持久化（熔断晚一轮生效），比整轮不跑小。
+    """
+    try:
+        with _watch_lock():
+            doc = mutate(load_halts())
+            HALT_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = HALT_FILE.with_name(HALT_FILE.name + ".tmp")
+            tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(HALT_FILE)
+    except OSError as exc:
+        print(f"⚠️ live_price_watch: 熔断计数写失败（{exc}）——本次计数未持久化",
+              file=sys.stderr)
+
+
+def _halt_key(agent: str, code: str) -> str:
+    return f"{agent}:{code}"
+
+
+def _halted_now(agent: str, code: str, now) -> bool:
+    """该 (agent, code) 今日是否已熔断（连续废单 ≥ REJECT_HALT_N）。
+
+    日期不等即视为未熔断：熔断只约束当日，次日自动恢复（不做永久状态，避免静默
+    摘掉防守位）。"""
+    cur = load_halts().get(_halt_key(agent, code))
+    cur = cur if isinstance(cur, dict) else {}
+    return (str(cur.get("date") or "") == now.strftime("%Y-%m-%d")
+            and int(_fnum(cur.get("streak"))) >= REJECT_HALT_N)
+
+
+def _bump_reject_streak(agent: str, code: str, *, rejected: bool, now) -> int:
+    """连续废单计数 +1（rejected）/ 清零；返回新值。跨日自动从 0 起算。"""
+    today = now.strftime("%Y-%m-%d")
+    new = [0]
+
+    def _apply(doc: dict) -> dict:
+        key = _halt_key(agent, code)
+        cur = doc.get(key)
+        cur = cur if isinstance(cur, dict) else {}
+        streak = (int(_fnum(cur.get("streak")))
+                  if str(cur.get("date") or "") == today else 0)
+        streak = streak + 1 if rejected else 0
+        if streak > 0:
+            doc[key] = {"date": today, "streak": streak}
+        else:
+            doc.pop(key, None)
+        new[0] = streak
+        return doc
+
+    _update_halts(_apply)
+    return new[0]
+
+
+def _unknown_outcome(exc: BaseException) -> bool:
+    """下单异常是不是「结果未知」类（连接/超时）而非柜台明确拒单。
+
+    桥把每种失败都用 BrokerError 抛出（`tdx_bridge._place_order`）：本地价格带
+    预检与远端 rejected 是**确定性**拒单（不计入 = 无限重试）；requests 的超时/
+    连接中断则「单可能已在柜台」，计入熔断会让桥抖动误停自动防守（2026-09-21
+    审查 MEDIUM-2）。判据看异常链：`raise ... from exc` 保留的 __cause__ 是
+    requests 传输类异常（RequestException 且非 HTTPError）→ 未知态。
+    """
+    import requests
+
+    cause = exc.__cause__
+    return (isinstance(cause, requests.RequestException)
+            and not isinstance(cause, requests.HTTPError))
+
+
+def _halt_notice(agent: str, code: str, streak: int, rule: dict, detail: str) -> None:
+    """熔断告警面：QQ（每次熔断一条）+ 事件（kind+code+当日去重，一天一条）。"""
+    from push_notify import notify
+
+    notify("条件位卖出连续废单 ⛔ 当日已熔断",
+           f"[{agent}] {code} 连续 {streak} 笔委托被柜台判废单（0 成交）——"
+           f"当日停止自动重下（条件位保留，次日自动恢复）\n"
+           f"请人工核对：报价口径 / 该票是否停牌或异常 / 柜台规则\n"
+           f"{detail}；条件位: {str(rule.get('reason') or '')[:100]}")
+    record_event("watch_halt", code,
+                 f"[{agent}] {code} 连续 {streak} 笔委托被判废单（0 成交）："
+                 f"条件位当日熔断停止自动重下（规则保留、次日自动恢复）；"
+                 f"{detail}，需人工核对柜台拒单原因"
+                 f"（报价口径见 ashare_rules.aggressive_sell_price）",
+                 side="sell", alert=True)
 
 
 def _rule_key(rule: dict) -> tuple:
@@ -354,12 +468,23 @@ def save_watch_rules(agent: str, decisions: list) -> int:
 # ---------- 行情与执行 ----------
 
 def _last_price(broker, code: str):
-    """桥日K 最后两根 → (现价, 昨收)。交易时段日K最后一根的 close 即当日实时价。"""
+    """桥日K 最后两根 → (现价, 昨收)。交易时段日K最后一根的 close 即当日实时价。
+
+    2026-09-21 审查 MEDIUM-4：`live_quotes.klines` 在桥源失败时会**静默回退**另一
+    源（AiData），而日K不保证盘中含今日 bar——昨日收盘被当「现价」会凭旧价触发
+    真单（也可能反过来漏触发）。故这里校验最后一根必须是**今天**：不是今天
+    一律视为无行情（返回 None → run_watch 跳过本轮，条件位保留）。桥与兜底源同口径。
+    """
     try:
-        bars = broker.get_klines(code, interval="daily")[-2:]
+        bars = lq_klines(code, interval="daily", count=2, prefer="bridge",
+                         broker=broker)
     except Exception:  # noqa: BLE001
         return None, None
     if len(bars) < 2:
+        return None, None
+    if str(bars[-1].get("date") or "") != now_cn().strftime("%F"):
+        print(f"  ⚠️ {code}: 日K最后一根 {bars[-1].get('date')} 不是今天"
+              f"（源回退/停牌），本轮按无行情处理")
         return None, None
     try:
         price = float(bars[-1].get("close") or 0)
@@ -459,9 +584,14 @@ def classify_watch_direction(txt: str) -> tuple[str | None, str]:
     return (best[1], best[2]) if best else (None, "")
 
 
-def _discard_event(agent: str, rule: dict, why: str, persist: bool = True) -> None:
-    """条件位被作废时留痕（alert=False：规则失效本身不是资金风险，但必须可回溯——
+def _discard_event(agent: str, rule: dict, why: str, persist: bool = True,
+                   alert: bool = False) -> None:
+    """条件位被作废时留痕（默认 alert=False：规则失效本身不是资金风险，但必须可回溯——
     此前只有 print，条件位为什么消失事后无从查）。
+
+    alert=True 用于「模型给了防守位、系统直接把它丢了」这类**静默缺口**（2026-09-21：
+    方向标错侧被丢弃 4 条，人当晚才知道当天少挂了 4 个防守位）——丢弃是有意设计，
+    但知情权在人这边。
 
     persist=False（dry-run / 执行开关关闭）：规则根本没被改（见 run_watch 结尾），
     事件面也不许写——否则「试运行」在生产事件文件里留下一条从未发生的处置记录。
@@ -470,7 +600,7 @@ def _discard_event(agent: str, rule: dict, why: str, persist: bool = True) -> No
         return
     record_event("watch_discard", str(rule.get("code") or ""),
                  f"[{agent}] {rule.get('code')} 条件位作废：{why}",
-                 side="sell", alert=False)
+                 side="sell", alert=alert)
 
 
 def _direction_fix_event(agent: str, rule: dict, level: float, why: str,
@@ -524,7 +654,8 @@ def _fix_rule_direction(agent: str, rule: dict, price: float, prev: float,
             else:
                 rule["stop_loss"] = None
                 why += " → 丢弃该侧"
-                _discard_event(agent, rule, why, persist)
+                # alert=True：模型想挂的防守位被系统丢了，人必须知道（见 _discard_event）
+                _discard_event(agent, rule, why, persist, alert=True)
             _notify_skip(rule, f"🔧 [{agent}] {rule['code']}: {why}")
     if tp_f is not None:
         why = _mislabel_reason("take_profit", tp_f, price, prev, hint, kw)
@@ -536,7 +667,7 @@ def _fix_rule_direction(agent: str, rule: dict, price: float, prev: float,
             else:
                 rule["take_profit"] = None
                 why += " → 丢弃该侧"
-                _discard_event(agent, rule, why, persist)
+                _discard_event(agent, rule, why, persist, alert=True)
             _notify_skip(rule, f"🔧 [{agent}] {rule['code']}: {why}")
 
 
@@ -591,6 +722,15 @@ def _fnum(v, default: float = 0.0) -> float:
         return float(v)
     except (TypeError, ValueError):
         return default
+
+
+def _parse_dt_safe(s) -> datetime | None:
+    """规则对象里的 ISO 时间戳容错解析（脏值/缺省 → None；naive 按北京时区补）。"""
+    try:
+        dt = datetime.fromisoformat(str(s))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=CN_TZ)
 
 
 def _recover_duplicate(broker, code: str, vol: int, limit: float) -> dict:
@@ -657,7 +797,8 @@ def _recover_duplicate(broker, code: str, vol: int, limit: float) -> dict:
 def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
                   trig: str, avail, dry_run: bool = False,
                   after_hours: bool = False,
-                  trig_level: float | None = None, now=None) -> str:
+                  trig_level: float | None = None, now=None,
+                  total: int | None = None) -> str:
     """条件位触发 → 卖出（与盘中执行同一套闸门）。
 
     返回（2026-09-12 P0-3 由 bool 改为字符串——旧的两态表达不了「已下单但
@@ -676,6 +817,15 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
     # 只在写下当天能过。**取一次、传下去，别再各取各的。**
     now = now or now_cn()
     code = rule["code"]
+    # 当日熔断闸（2026-09-21）：连续废单说明报价/规则系统性失效，自动重下只是每 2 分钟
+    # 再报一笔废单 + 刷屏（002074 实录 42 笔）。熔断只约束当日（sidecar 里的日期只在
+    # 当日生效，见 _halted_now/_resolve_tagged），条件位始终保留——不做永久状态，
+    # 避免静默摘掉防守位。
+    if _halted_now(agent, code, now):
+        _notify_skip(rule, f"⏸️ [{agent}] {code}: 当日已熔断（连续废单），"
+                           f"条件位保留、不再自动下单——请人工核对柜台/报价口径后，"
+                           f"清掉 {HALT_FILE.name} 里该条再启用（次日自动恢复）")
+        return "keep"
     trig_value = trig_level if trig_level is not None else rule.get(trig)
     if avail is None:
         # 2026-09-10 实录：桥假活时 account/query 的 positions 为空，这里会把真实持仓的
@@ -707,21 +857,28 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
         return "discard"
     chg = (price - prev) / prev * 100 if prev else 0.0
     at_ld = at_limit_down(code, chg)
-    # 卖出保护价（2026-09-11 移植 quantmind 真账户实测）：报**跌停价**——挂单价只是
-    # 「愿卖的最低」，成交仍按盘口买一（挂 2.21 成交 2.34）。止损语义 = 一定要卖掉：
-    # 只要盘口有买盘就必然成交，且报价一定在合法带内（原「现价×0.99」在近跌停时会
-    # 报出低于跌停价的价，本仓桥容忍、真柜台可能废单）。
-    protect = protect_sell_price(code, prev) if not after_hours else None
+    # 卖出报单价（2026-09-21 修正）：连续竞价有效竞价范围 = [基准价×98%, 涨停价]，
+    # 报跌停价（−10%）是**越界申报** → 柜台废单。当日 002074 实录：止损触发后市价
+    # 26.26 报跌停价 23.53，42 笔真单全废 + 每 2 分钟重布防再报的死循环。
+    # 09-11 那次「报跌停价」的实测结论只对当时工况成立，已证伪（见 ashare_rules）。
+    # 现口径 = max(跌停价, 现价×0.99)：一定在合法带内、贴市价必成交。
+    protect = aggressive_sell_price(code, prev, price) if not after_hours else None
     fallback = False
     if after_hours:
         limit = price            # 盘后固定价格交易以收盘价撮合
     elif protect is not None:
         limit = protect
     else:
-        limit = round(price * 0.99, 2)   # 昨收缺失/非法：降级回原口径并留痕，不臆造价格
+        limit = round(price * 0.99, 2)   # 昨收与现价同时缺失：同口径兜底并留痕
         fallback = True
-        print(f"  ⚠️ [{agent}] {code}: 昨收缺失，取不到跌停保护价，"
+        print(f"  ⚠️ [{agent}] {code}: 昨收/现价都取不到，"
               f"降级按现价-1% ¥{limit:.2f} 报单")
+    if limit <= 0:
+        # 0/负价在桥侧 =「无价」→ 会被当成**市价单**语义发出（2026-09-21 审查 MEDIUM-5）。
+        # 行情全哑时宁可本轮不下单：条件位保留，下一轮再试。
+        _notify_skip(rule, f"⚠️ [{agent}] {code}: 算不出合法报单价（行情全哑），"
+                           f"本轮不下单，条件位保留")
+        return "keep"
     label = "跌破止损" if trig == "stop_loss" else "达到止盈"
     if dry_run:
         # 只报不卖 —— 规则**不消费**（返回 keep）。曾返回 True 当"已消费"，
@@ -735,9 +892,23 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
         result = broker.sell(None, None, code, vol, price=limit, plan_id=plan_id)
     except Exception as exc:  # noqa: BLE001
         print(f"  ❌ [{agent}] 卖出 {code} 失败: {exc}")
+        # 同步拒单也计入连续废单（2026-09-21 审查 MEDIUM-1）：桥的本地价格带预检、
+        # 风控审批门、远端立即 rejected 都以异常抛出，不进终态台账——旧实现永不计入
+        # 熔断，同一循环会无限重试。**但连接/超时不是「柜台判废」**（审查 MEDIUM-2）：
+        # 单可能已在柜台、结果未知，算进 streak 会被桥抖动误熔断、告警也指错方向。
+        unknown = _unknown_outcome(exc)
+        if unknown:
+            print(f"  ⚠️ [{agent}] {code}: 下单异常属连接/超时类（结果未知），"
+                  f"不计入连续废单计数——下一轮按 plan 号回捞/人工核对")
+        else:
+            streak = _bump_reject_streak(agent, code, rejected=True, now=now)
+            if streak >= REJECT_HALT_N:
+                _halt_notice(agent, code, streak, rule, f"最近一笔下单异常：{str(exc)[:80]}")
         record_event("sell_failed", code,
                      f"[{agent}] {code} {label}卖出下单失败：{str(exc)[:120]}"
-                     f"（条件位保留，下一分钟重试；持续失败=持仓当日无保护）")
+                     + ("（结果未知：连接/超时类，单可能已在柜台——核对后处理）"
+                        if unknown else
+                        "（条件位保留，下一分钟重试；持续失败=持仓当日无保护）"))
         _log_line({"ts": now.isoformat(), "mode": f"watch_{trig}", "agent": agent,
                    "code": code, "volume": vol, "price": limit,
                    "trigger": trig_value, "error": str(exc)})
@@ -787,7 +958,8 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
             from live_fills import add_pending
 
             add_pending(oid, agent, code, "sell", rvol, rprice,
-                        now.isoformat(), protect=at_ld)
+                        now.isoformat(), protect=at_ld,
+                        reason=str(rule.get("reason") or ""))
             _tag_pending(rule, oid, rvol, now)
         else:
             # 桥的**两处**去重都回 status=duplicate，但含义完全不同，必须让桥的原话
@@ -804,6 +976,40 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
                          f"[{agent}] {code} 卖出被桥判重复（上次已受理）但当日委托里"
                          f"找不到可接管的单：若已在柜台则成交未记账，需人工核对"
                          + (f"（桥回执：{why}）" if why else ""))
+            # 2026-09-18（300408 实录）：plan 级重复 + 回捞不到 + **没有任何股份被
+            # 在途卖单冻结**（avail >= total）＝旧单已不在柜台（被柜台判废后桥的
+            # plan 记忆还留着）→ 换 plan 号重新布防，让这条止损恢复成能真下单的
+            # 状态。此前这里只有「保留待人工」：规则卡在「触发→桥判重复→保留」的
+            # 死循环里一整天（每分钟 print 刷屏），持仓全天无有效止损。
+            # 保守三条件（缺一不可）：①桥回执是 plan 级去重（「当日同方向成交」
+            # 的变体说明今天真卖过一笔，绝不能再布防）；②账实可证无冻结
+            # （avail >= total；有在途卖单时股数会被冻结，T+1 冻结时同样不成立）；
+            # ③该状态持续 ≥DUP_REARM_SEC（防与刚提交、冻结尚未反映的单赛跑）。
+            plan_level = ("plan" in why) and ("同方向" not in why)
+            if plan_level and total is not None and avail >= total and not dry_run:
+                dup_since = _parse_dt_safe(rule.get("dup_since"))
+                if dup_since is None:
+                    rule["dup_since"] = now.isoformat()
+                    print(f"  🕐 [{agent}] {code}: 首次判重复且无冻结，"
+                          f"进入 {DUP_REARM_SEC // 60} 分钟确认期")
+                elif (now - dup_since).total_seconds() >= DUP_REARM_SEC:
+                    rule.pop("dup_since", None)
+                    rule["plan_seq"] = int(_fnum(rule.get("plan_seq"))) + 1
+                    print(f"  ♻️ [{agent}] {code}: 桥判重复且无法接管、账户无冻结 "
+                          f"≥{DUP_REARM_SEC // 60} 分钟——判定旧单已不在柜台，"
+                          f"换号重新布防（下一轮触发时真下单）")
+                    record_event("refire", code,
+                                 f"[{agent}] {code} 条件位委托被桥判重复且回捞不到、"
+                                 f"账户无冻结 → 已换号重新布防（持仓此前处于无有效"
+                                 f"止损状态；原委托若仍在柜台请核对当日委托）",
+                                 side="sell", alert=True,
+                                 key=f"refire:{code}:{now:%Y-%m-%d}")
+                    _log_line({"ts": now.isoformat(), "mode": f"watch_{trig}",
+                               "agent": agent, "code": code, "volume": vol,
+                               "price": limit, "plan_id": plan_id,
+                               "trigger": trig_value, "duplicate": True,
+                               "rearm": True, "result": result})
+                    return "keep"
         _log_line({"ts": now.isoformat(), "mode": f"watch_{trig}", "agent": agent,
                    "code": code, "volume": vol, "price": limit, "plan_id": plan_id,
                    "trigger": trig_value, "duplicate": True,
@@ -833,6 +1039,9 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
     from live_fills import ack_line
 
     print(f"  {ack_line(f'[{agent}] 卖出 {code} {vol} 股 限价 ¥{limit:.2f}', result)}")
+    # 2026-09-18：提交时刻**不再**推 QQ（此前提交即推「清仓」，随后被柜台判废的
+    # 单也推成了成功文案）。真成交由 reconcile 补记时推送（含本条规则的理由）；
+    # 失败（废单/重复无法接管）走委托事件 → alert.sh 推原因。
     if vol != raw_qty:
         print(f"  ⚖️ [{agent}] {code}: 意图 {raw_qty} 股 → 手数合规实际 {vol} 股"
               f"（{board_of(code)} 口径）")
@@ -842,11 +1051,13 @@ def _execute_sell(broker, agent: str, rule: dict, price: float, prev: float,
 
     oid = str(result.get("order_id"))
     add_pending(oid, agent, code, "sell", vol, limit,
-                now.isoformat(), protect=at_ld)
+                now.isoformat(), protect=at_ld,
+                reason=str(rule.get("reason") or ""))
     # 下单成功 ≠ 卖出完成。规则**保留并打标**，由 _resolve_tagged 等这笔委托的归宿：
     # 满额成交/持仓清零 → 消费；终态未卖完 → 换号重布防；台账缺该号 → 转人工。
     # （2026-09-12 之前这里 return True = 下单即消费，废单后持仓当日裸奔。）
     _tag_pending(rule, oid, vol, now)
+    rule.pop("dup_since", None)   # 真单已下：清掉「重复确认期」计时（见 dup 分支）
     _log_line({"ts": now.isoformat(), "mode": f"watch_{trig}", "agent": agent,
                "code": code, "volume": vol, "intent_volume": raw_qty, "price": limit,
                "plan_id": plan_id, "protect": at_ld or None,
@@ -895,7 +1106,7 @@ def _stale_outcome(rule: dict, oc: dict) -> bool:
     return oc_day.group() < fired_day.group()
 
 
-def _resolve_tagged(agent: str, rule: dict, pend_ids: set) -> str:
+def _resolve_tagged(agent: str, rule: dict, pend_ids: set, now=None) -> str:
     """已下单条件位的生命周期推进（每轮开头、不触发新单）。
 
     规则一旦打上 pending_order_id，就进入「等这笔委托的归宿」状态。2026-09-12
@@ -913,12 +1124,17 @@ def _resolve_tagged(agent: str, rule: dict, pend_ids: set) -> str:
         （状态未知不许猜）。
     返回 "keep"（等）/ "consume"（消费规则）/ "rearm"（已重布防，规则保留）。
     """
+    now = now or now_cn()
     oid = str(rule.get("pending_order_id") or "")
     code = rule["code"]
     if oid in pend_ids:
         return "keep"
     if not _ledger_holds(agent, code):
         print(f"  ✅ [{agent}] {code}: 条件位委托 {oid} 已了结且台账无此持仓，消费")
+        # 2026-09-21 审查 MEDIUM-1：清仓/满额了结 = 连续链断了 → 清零废单计数。
+        # 旧实现唯一清零点在「未卖完」分支，成交后残留的 streak 会参与下一次熔断
+        # （2 废 + 1 成交 + 1 废 = 熔断，文案还宣称「连续 3 笔废单」）。
+        _bump_reject_streak(agent, code, rejected=False, now=now)
         return "consume"
     from live_fills import load_order_outcome
 
@@ -941,6 +1157,8 @@ def _resolve_tagged(agent: str, rule: dict, pend_ids: set) -> str:
     filled = int(_fnum(oc.get("filled")))
     if filled >= wanted:
         print(f"  ✅ [{agent}] {code}: 条件位委托 {oid} 成交 {filled}/{wanted} 股，消费")
+        # 满额成交 = 连续链断了 → 清零废单计数（2026-09-21 审查 MEDIUM-1）
+        _bump_reject_streak(agent, code, rejected=False, now=now)
         # 条件位从这一刻消失，旧实现只留一行 print（001312 事后在整个事件面里查不到
         # 任何「条件位为什么没了」的记录）。落一条非告警事件当审计尾巴；alert=False：
         # 满额成交/清仓清空台账都是设计内的正常收尾，不打扰人。
@@ -952,12 +1170,36 @@ def _resolve_tagged(agent: str, rule: dict, pend_ids: set) -> str:
     # 没卖完（废单 0 成交 / 部分成交后失效）→ 重新布防。必须换 plan 号：
     # 桥的 plan 去重记在内存里，同号重下会被永久判 duplicate，规则再也拿不到真单。
     expired = str(oc.get("status") or "") == "expired"
+    status = str(oc.get("status") or "")
     rule.pop("pending_order_id", None)
     rule.pop("pending_volume", None)
     rule.pop("fired_ts", None)
     rule["plan_seq"] = int(_fnum(rule.get("plan_seq"))) + 1
+    # 连续废单熔断（2026-09-21）：终态 rejected 且 0 成交 = 柜台明确拒了这笔报价。
+    # 连续 N 笔即系统性失效（报价越界/停牌/口径错），不再自动重下——条件位保留、
+    # 告警转人工。计数落在 sidecar（load_halts）：写在规则字典上会被整点轮的整组
+    # 重建抹掉，熔断就成了「每重建周期 3 笔废单」。
+    rejected = status == "rejected" and int(_fnum(filled) or 0) <= 0
+    streak = _bump_reject_streak(agent, code, rejected=rejected, now=now)
+    halted = streak >= REJECT_HALT_N
     print(f"  ♻️ [{agent}] {code}: 条件位委托 {oid} 终态 {oc.get('status')}，"
-          f"成交 {filled}/{wanted} 股——未卖完，已重新布防（下一轮可再触发）")
+          f"成交 {filled}/{wanted} 股——未卖完，{'已熔断停手' if halted else '已重新布防'}"
+          f"（{'' if halted else '下一轮可再触发'}）")
+    if int(_fnum(filled) or 0) <= 0:
+        if halted:
+            _halt_notice(agent, code, streak, rule, f"最近一笔 {oid} 终态 {status}")
+        else:
+            # 推送去重（2026-09-21）：同规则同方向的「未卖完」30 分钟最多一条——
+            # 旧实现每笔废单推一条，002074 一天 41 条把人推到告警脱敏。
+            from live_account_cache import notify_throttled
+
+            notify_throttled(f"watch_unfilled:{agent}:{code}",
+                             "条件位卖出未成交 ⚠️",
+                             f"[{agent}] {code} 卖出委托 {oid} 终态 {status}，"
+                             f"成交 {filled}/{wanted} 股 —— 已重新布防，下一轮再触发\n"
+                             f"条件位: {str(rule.get('reason') or '')[:120]}")
+    if halted:
+        return "rearm"   # 熔断：不再写「已重新布防」的 refire 事件（避免假陈述）
     record_event("refire", code,
                  f"[{agent}] {code} 条件位委托 {oid} 终态 {oc.get('status')}："
                  f"成交 {filled}/{wanted} 股，未卖出的部分已重新布防"
@@ -974,6 +1216,61 @@ def in_close_auction(now) -> bool:
     哨兵限价单语义失效；条件保留至盘后定价窗口或明日盘中。"""
     hm = now.hour * 60 + now.minute
     return 14 * 60 + 57 <= hm < 15 * 60
+
+
+def _degraded_trigger_check(rules: dict, broker=None) -> None:
+    """桥断降级（2026-09-15）：条件位触发判断 + QQ 告警，**不执行任何下单**。
+
+    数据 = 台账持仓归属 + 桥日K现价（桥不可用才回退 AiData）；可卖量/账户真值不可用。
+    至少每 5 分钟才巡检一轮（桥断期哨兵每分钟跑一个新进程，节流落盘保证生效，
+    AiData 限流环境下降频保稳）；同规则同方向 30 分钟去重（notify_throttled）。
+
+    2026-09-21 审查 MEDIUM-4/LOW-5：①改 prefer="bridge" 并传 broker——账户通道断
+    不代表行情通道断（桥假活/分行通道），且原先 prefer="aidata" 不传 broker 在
+    `LIVE_QUOTES_DISABLE_AIDATA=1` 下两个源都抛、整条巡检**静默空转**；②日K最后一根
+    必须是今天，否则不算触发（源回退到不含今日 bar 的日K时，昨收价会凭空触发告警）。
+    """
+    state_file = ROOT / "logs" / "degraded_watch_state.json"
+    try:
+        st = json.loads(state_file.read_text(encoding="utf-8"))
+        last = float(st.get("last") or 0)
+    except (OSError, ValueError):
+        st, last = {}, 0.0
+    if time.time() - last < 300:
+        return
+    st["last"] = time.time()
+    try:
+        state_file.write_text(json.dumps(st), encoding="utf-8")
+    except OSError:
+        pass
+
+    from live_account_cache import ledger_positions, notify_throttled
+
+    held = ledger_positions()
+    hits = []
+    for agent, rs in rules.items():
+        for r in rs:
+            code = str(r.get("code") or "")
+            if not code or code not in held:
+                continue
+            bars = lq_klines(code, interval="daily", count=2, prefer="bridge",
+                             broker=broker)
+            if not bars or str(bars[-1].get("date") or "") != now_cn().strftime("%F"):
+                continue
+            px = bars[-1]["close"]
+            sl = r.get("stop_loss")
+            tp = r.get("take_profit")
+            if sl and px <= float(sl):
+                hits.append((agent, code, f"跌破止损 ¥{float(sl):.2f}", px,
+                             str(r.get("reason") or "")))
+            elif tp and px >= float(tp):
+                hits.append((agent, code, f"达到止盈 ¥{float(tp):.2f}", px,
+                             str(r.get("reason") or "")))
+    for agent, code, what, px, reason in hits:
+        notify_throttled(f"watch:{code}:{what[:10]}", "🧯 桥断降级 · 条件位触发 ⚠️",
+                         f"[{agent}] {code} 现价 {px:.2f} {what}（估算，未执行）\n"
+                         f"条件位：{reason[:80]}\n"
+                         f"桥在线前无法自动卖出，恢复后请尽快复核该持仓")
 
 
 def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None) -> dict:
@@ -1007,8 +1304,12 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
     pend_ids = {str(p.get("order_id") or "") for p in load_pending()}
     try:
         acct = broker._account_query()
-    except Exception as exc:  # noqa: BLE001  桥重启窗口/断线：本轮放弃，下分钟再守
-        print(f"  ⚠️ 账户查询失败，本轮哨兵跳过（{str(exc)[:80]}）")
+    except Exception as exc:  # noqa: BLE001  桥断：降级巡检告警，条件位保留，下分钟再守
+        print(f"  ⚠️ 账户查询失败，本轮哨兵转降级巡检（{str(exc)[:80]}）")
+        try:
+            _degraded_trigger_check(rules, broker)
+        except Exception as _dexc:  # noqa: BLE001
+            print(f"  ️ 降级巡检异常（忽略）: {_dexc}")
         return counts
     # 桥假活硬闸（2026-09-10）：HTTP 通、行情正常，但账户通道返空（交易账号未登录），
     # 空快照下每条真实规则都会被 _execute_sell 判成"已不在持仓中"销毁。
@@ -1021,6 +1322,10 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
     positions = acct.get("positions") or []
     avail_map = {p.get("stock_code"): int(p.get("available_volume") or 0)
                  for p in positions}
+    # 总持仓量（可卖+冻结）：dup 分支判「有没有股份被在途卖单冻结」用——
+    # avail >= total ⇔ 无冻结 ⇔ 旧卖单不在柜台（2026-09-18，见 _execute_sell）
+    tot_map = {p.get("stock_code"): int(p.get("total_volume") or 0)
+               for p in positions}
     for agent in list(rules):
         kept = []
         for r in rules[agent]:
@@ -1032,7 +1337,7 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
                                     f"{r['pending_order_id']}（dry-run 不推进生命周期）")
                     kept.append(r)
                     continue
-                act = _resolve_tagged(agent, r, pend_ids)
+                act = _resolve_tagged(agent, r, pend_ids, now=now)
                 if act == "consume":
                     counts["consumed"] += 1
                 else:
@@ -1104,7 +1409,7 @@ def run_watch(broker, dry_run: bool = False, after_hours: bool = False, now=None
             act = _execute_sell(broker, agent, r, price, prev, trig,
                                 avail_map.get(r["code"]), dry_run=dry_run,
                                 after_hours=after_hours, trig_level=trig_level,
-                                now=now)
+                                now=now, total=tot_map.get(r["code"]))
             if act == "discard":
                 counts["discarded"] += 1
             else:

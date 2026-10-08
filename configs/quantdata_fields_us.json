@@ -1,0 +1,5345 @@
+{
+ "datasets": [
+  {
+   "columns": [
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "ABNB",
+      "ACN"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "datetime64[ns]",
+     "name": "time",
+     "sample": [
+      "2026-09-10 00:00:00",
+      "2026-09-10 00:00:00"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "open",
+     "sample": [
+      "167.91000366210938",
+      "177.6300048828125"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "high",
+     "sample": [
+      "170.1300048828125",
+      "179.38999938964844"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "low",
+     "sample": [
+      "165.8300018310547",
+      "175.48890686035156"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "close",
+     "sample": [
+      "167.64999389648438",
+      "177.91000366210938"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "int64",
+     "name": "volume",
+     "sample": [
+      "3949620",
+      "3881883"
+     ],
+     "unit": "股",
+     "unit_source": "verified"
+    },
+    {
+     "dtype": "float64",
+     "name": "amount",
+     "sample": [
+      "662153768.8934326",
+      "690625818.7458801"
+     ],
+     "unit": "原币（美元）",
+     "unit_source": "verified"
+    },
+    {
+     "dtype": "str",
+     "name": "release_id",
+     "sample": [
+      "yahoo",
+      "yahoo"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "published_at",
+     "sample": [
+      "2026-09-11T05:47:59",
+      "2026-09-11T05:47:59"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 10,
+   "partitions": 6571,
+   "path": "1_kline_data/daily_forward",
+   "sample_file": "1_kline_data/daily_forward/dt=20260910/data.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "IXIC.US",
+      "SPX.US"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "datetime64[ns]",
+     "name": "time",
+     "sample": [
+      "2026-09-11 00:00:00",
+      "2026-09-11 00:00:00"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "open",
+     "sample": [
+      "26289.4141",
+      "7636.75"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "high",
+     "sample": [
+      "26431.2207",
+      "7677.02"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "low",
+     "sample": [
+      "26283.1113",
+      "7636.75"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "close",
+     "sample": [
+      "26333.0352",
+      "7656.98"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "int64",
+     "name": "volume",
+     "sample": [
+      "5541406666",
+      "2659812237"
+     ],
+     "unit": "股",
+     "unit_source": "verified"
+    },
+    {
+     "dtype": "int64",
+     "name": "amount",
+     "sample": [
+      "0",
+      "0"
+     ],
+     "unit": "原币（美元）",
+     "unit_source": "verified"
+    },
+    {
+     "dtype": "str",
+     "name": "release_id",
+     "sample": [
+      "akshare",
+      "akshare"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "published_at",
+     "sample": [
+      "2026-09-12T18:48:28",
+      "2026-09-12T18:48:29"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 10,
+   "partitions": 5712,
+   "path": "1_kline_data/index_daily",
+   "sample_file": "1_kline_data/index_daily/dt=20260911/data.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "name",
+     "sample": [
+      "安捷伦科技"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "market_cap",
+     "sample": [
+      "40349659136"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "pe_ratio",
+     "sample": [
+      "28.228794"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "pb_ratio",
+     "sample": [
+      "5.4807944"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "dividend_yield",
+     "sample": [
+      "0.7"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "52w_high",
+     "sample": [
+      "163.75"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "52w_low",
+     "sample": [
+      "108.35"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "avg_volume",
+     "sample": [
+      "2207275"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 10,
+   "partitions": null,
+   "path": "2_base_sector/f10",
+   "sample_file": "2_base_sector/f10/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "sector",
+     "sample": [
+      "Healthcare"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "industry",
+     "sample": [
+      "Diagnostics & Research"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 4,
+   "partitions": null,
+   "path": "2_base_sector/sector",
+   "sample_file": "2_base_sector/sector/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "AAL"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "cn_name",
+     "sample": [
+      "安捷伦科技",
+      "美国航空"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "str",
+     "name": "en_name",
+     "sample": [
+      "",
+      ""
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "tencent_quote",
+      "tencent_quote"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "updated_at",
+     "sample": [
+      "2026-09-11T05:47:31",
+      "2026-09-11T05:47:31"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 5,
+   "partitions": null,
+   "path": "2_base_sector/security_master",
+   "sample_file": "2_base_sector/security_master/data.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "datetime64[ns]",
+     "name": "report_date",
+     "sample": [
+      "2025-10-31 00:00:00",
+      "2024-10-31 00:00:00"
+     ],
+     "unit": "日期",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "Ordinary Shares Number",
+     "sample": [
+      "283054377.0",
+      "285193011.0"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "Share Issued",
+     "sample": [
+      "283054377.0",
+      "285193011.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Debt",
+     "sample": [
+      "1565000000.0",
+      "2061000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Total Debt",
+     "sample": [
+      "3354000000.0",
+      "3390000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Tangible Book Value",
+     "sample": [
+      "1823000000.0",
+      "874000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Invested Capital",
+     "sample": [
+      "10095000000.0",
+      "9288000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Working Capital",
+     "sample": [
+      "2247000000.0",
+      "2064000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Tangible Assets",
+     "sample": [
+      "1823000000.0",
+      "874000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Common Stock Equity",
+     "sample": [
+      "6741000000.0",
+      "5898000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Total Capitalization",
+     "sample": [
+      "9791000000.0",
+      "9243000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Total Equity Gross Minority Interest",
+     "sample": [
+      "6741000000.0",
+      "5898000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Stockholders Equity",
+     "sample": [
+      "6741000000.0",
+      "5898000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Gains Losses Not Affecting Retained Earnings",
+     "sample": [
+      "-226000000.0",
+      "-305000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Other Equity Adjustments",
+     "sample": [
+      "-226000000.0",
+      "-305000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Retained Earnings",
+     "sample": [
+      "1389000000.0",
+      "750000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Additional Paid In Capital",
+     "sample": [
+      "5575000000.0",
+      "5450000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Capital Stock",
+     "sample": [
+      "3000000.0",
+      "3000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Common Stock",
+     "sample": [
+      "3000000.0",
+      "3000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Preferred Stock",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Total Liabilities Net Minority Interest",
+     "sample": [
+      "5986000000.0",
+      "5948000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Total Non Current Liabilities Net Minority Interest",
+     "sample": [
+      "3639000000.0",
+      "4053000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Other Non Current Liabilities",
+     "sample": [
+      "463000000.0",
+      "578000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Employee Benefits",
+     "sample": [
+      "126000000.0",
+      "130000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Non Current Pension And Other Postretirement Benefit Plans",
+     "sample": [
+      "126000000.0",
+      "130000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Long Term Debt And Capital Lease Obligation",
+     "sample": [
+      "3050000000.0",
+      "3345000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Long Term Debt",
+     "sample": [
+      "3050000000.0",
+      "3345000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Current Liabilities",
+     "sample": [
+      "2347000000.0",
+      "1895000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Current Deferred Liabilities",
+     "sample": [
+      "624000000.0",
+      "544000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Current Deferred Revenue",
+     "sample": [
+      "624000000.0",
+      "544000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Current Debt And Capital Lease Obligation",
+     "sample": [
+      "304000000.0",
+      "45000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Current Debt",
+     "sample": [
+      "304000000.0",
+      "45000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Commercial Paper",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Pensionand Other Post Retirement Benefit Plans Current",
+     "sample": [
+      "443000000.0",
+      "368000000.0"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "Payables And Accrued Expenses",
+     "sample": [
+      "976000000.0",
+      "938000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Current Accrued Expenses",
+     "sample": [
+      "406000000.0",
+      "398000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Payables",
+     "sample": [
+      "570000000.0",
+      "540000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Accounts Payable",
+     "sample": [
+      "570000000.0",
+      "540000000.0"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "Total Assets",
+     "sample": [
+      "12727000000.0",
+      "11846000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Total Non Current Assets",
+     "sample": [
+      "8133000000.0",
+      "7887000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Other Non Current Assets",
+     "sample": [
+      "1059000000.0",
+      "910000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Investments And Advances",
+     "sample": [
+      "133000000.0",
+      "175000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Goodwill And Other Intangible Assets",
+     "sample": [
+      "4918000000.0",
+      "5024000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Other Intangible Assets",
+     "sample": [
+      "445000000.0",
+      "547000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Goodwill",
+     "sample": [
+      "4473000000.0",
+      "4477000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net PPE",
+     "sample": [
+      "2023000000.0",
+      "1778000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Accumulated Depreciation",
+     "sample": [
+      "-1423000000.0",
+      "-1304000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Gross PPE",
+     "sample": [
+      "3446000000.0",
+      "3082000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Machinery Furniture Equipment",
+     "sample": [
+      "1321000000.0",
+      "1227000000.0"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "Buildings And Improvements",
+     "sample": [
+      "2056000000.0",
+      "1786000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Land And Improvements",
+     "sample": [
+      "69000000.0",
+      "69000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Properties",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Current Assets",
+     "sample": [
+      "4594000000.0",
+      "3959000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Other Current Assets",
+     "sample": [
+      "293000000.0",
+      "334000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Inventory",
+     "sample": [
+      "1025000000.0",
+      "972000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Finished Goods",
+     "sample": [
+      "547000000.0",
+      "523000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Raw Materials",
+     "sample": [
+      "478000000.0",
+      "449000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Receivables",
+     "sample": [
+      "1487000000.0",
+      "1324000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Accounts Receivable",
+     "sample": [
+      "1487000000.0",
+      "1324000000.0"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "Cash Cash Equivalents And Short Term Investments",
+     "sample": [
+      "1789000000.0",
+      "1329000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Other Short Term Investments",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Cash And Cash Equivalents",
+     "sample": [
+      "1789000000.0",
+      "1329000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 64,
+   "partitions": null,
+   "path": "3_financial_data/balance",
+   "sample_file": "3_financial_data/balance/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "datetime64[ns]",
+     "name": "report_date",
+     "sample": [
+      "2025-10-31 00:00:00",
+      "2024-10-31 00:00:00"
+     ],
+     "unit": "日期",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "Free Cash Flow",
+     "sample": [
+      "1152000000.0",
+      "1373000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Repurchase Of Capital Stock",
+     "sample": [
+      "-425000000.0",
+      "-1150000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Repayment Of Debt",
+     "sample": [
+      "-3000000.0",
+      "-600000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Issuance Of Debt",
+     "sample": [
+      "4000000.0",
+      "1197000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Capital Expenditure",
+     "sample": [
+      "-407000000.0",
+      "-378000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Interest Paid Supplemental Data",
+     "sample": [
+      "101000000.0",
+      "80000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Income Tax Paid Supplemental Data",
+     "sample": [
+      "318000000.0",
+      "314000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "End Cash Position",
+     "sample": [
+      "1791000000.0",
+      "1332000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Beginning Cash Position",
+     "sample": [
+      "1332000000.0",
+      "1593000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Effect Of Exchange Rate Changes",
+     "sample": [
+      "9000000.0",
+      "-2000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Changes In Cash",
+     "sample": [
+      "450000000.0",
+      "-259000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Financing Cash Flow",
+     "sample": [
+      "-715000000.0",
+      "-752000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Cash Flow From Continuing Financing Activities",
+     "sample": [
+      "-715000000.0",
+      "-752000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Other Financing Charges",
+     "sample": [
+      "-39000000.0",
+      "-42000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Proceeds From Stock Option Exercised",
+     "sample": [
+      "72000000.0",
+      "77000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Cash Dividends Paid",
+     "sample": [
+      "-282000000.0",
+      "-274000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Common Stock Dividend Paid",
+     "sample": [
+      "-282000000.0",
+      "-274000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Common Stock Issuance",
+     "sample": [
+      "-425000000.0",
+      "-1150000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Common Stock Payments",
+     "sample": [
+      "-425000000.0",
+      "-1150000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Issuance Payments Of Debt",
+     "sample": [
+      "-41000000.0",
+      "637000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Short Term Debt Issuance",
+     "sample": [
+      "-42000000.0",
+      "40000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Short Term Debt Payments",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Short Term Debt Issuance",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Long Term Debt Issuance",
+     "sample": [
+      "1000000.0",
+      "597000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Long Term Debt Payments",
+     "sample": [
+      "-3000000.0",
+      "-600000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Long Term Debt Issuance",
+     "sample": [
+      "4000000.0",
+      "1197000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Investing Cash Flow",
+     "sample": [
+      "-394000000.0",
+      "-1258000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Cash Flow From Continuing Investing Activities",
+     "sample": [
+      "-394000000.0",
+      "-1258000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Other Investing Changes",
+     "sample": [
+      "1000000.0",
+      "-13000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Investment Purchase And Sale",
+     "sample": [
+      "8000000.0",
+      "-5000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Sale Of Investment",
+     "sample": [
+      "8000000.0",
+      "0.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Purchase Of Investment",
+     "sample": [
+      "0.0",
+      "-5000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Business Purchase And Sale",
+     "sample": [
+      "4000000.0",
+      "-862000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Sale Of Business",
+     "sample": [
+      "4000000.0",
+      "0.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Purchase Of Business",
+     "sample": [
+      "-862000000.0",
+      "-51000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Intangibles Purchase And Sale",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Purchase Of Intangibles",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net PPE Purchase And Sale",
+     "sample": [
+      "-407000000.0",
+      "-378000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Sale Of PPE",
+     "sample": [
+      "0.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Purchase Of PPE",
+     "sample": [
+      "-407000000.0",
+      "-378000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Operating Cash Flow",
+     "sample": [
+      "1559000000.0",
+      "1751000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Cash Flow From Continuing Operating Activities",
+     "sample": [
+      "1559000000.0",
+      "1751000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Change In Working Capital",
+     "sample": [
+      "-131000000.0",
+      "83000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Change In Other Working Capital",
+     "sample": [
+      "99000000.0",
+      "-61000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Change In Payables And Accrued Expense",
+     "sample": [
+      "16000000.0",
+      "103000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Change In Payable",
+     "sample": [
+      "16000000.0",
+      "103000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Change In Account Payable",
+     "sample": [
+      "16000000.0",
+      "103000000.0"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "Change In Inventory",
+     "sample": [
+      "-97000000.0",
+      "34000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Change In Receivables",
+     "sample": [
+      "-149000000.0",
+      "7000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Changes In Account Receivables",
+     "sample": [
+      "-149000000.0",
+      "7000000.0"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "Other Non Cash Items",
+     "sample": [
+      "50000000.0",
+      "44000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Stock Based Compensation",
+     "sample": [
+      "128000000.0",
+      "129000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Asset Impairment Charge",
+     "sample": [
+      "15000000.0",
+      "19000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Deferred Tax",
+     "sample": [
+      "-130000000.0",
+      "-64000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Deferred Income Tax",
+     "sample": [
+      "-130000000.0",
+      "-64000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Depreciation Amortization Depletion",
+     "sample": [
+      "288000000.0",
+      "257000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Depreciation And Amortization",
+     "sample": [
+      "288000000.0",
+      "257000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Operating Gains Losses",
+     "sample": [
+      "36000000.0",
+      "-6000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Gain Loss On Investment Securities",
+     "sample": [
+      "36000000.0",
+      "-6000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Gain Loss On Sale Of Business",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Income From Continuing Operations",
+     "sample": [
+      "1303000000.0",
+      "1289000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 64,
+   "partitions": null,
+   "path": "3_financial_data/cashflow",
+   "sample_file": "3_financial_data/cashflow/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "object",
+     "name": "trade_date",
+     "sample": [
+      "2006-11-01",
+      "2012-03-30"
+     ],
+     "unit": "日期",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "dividend",
+     "sample": [
+      "1.471388",
+      "0.071531"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 4,
+   "partitions": null,
+   "path": "3_financial_data/dividend",
+   "sample_file": "3_financial_data/dividend/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "datetime64[ns]",
+     "name": "report_date",
+     "sample": [
+      "2025-10-31 00:00:00",
+      "2024-10-31 00:00:00"
+     ],
+     "unit": "日期",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "Tax Effect Of Unusual Items",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Tax Rate For Calcs",
+     "sample": [
+      "0.092",
+      "0.153"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Normalized EBITDA",
+     "sample": [
+      "1835000000.0",
+      "1874000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Income From Continuing Operation Net Minority Interest",
+     "sample": [
+      "1303000000.0",
+      "1289000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Reconciled Depreciation",
+     "sample": [
+      "288000000.0",
+      "257000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Reconciled Cost Of Revenue",
+     "sample": [
+      "3305000000.0",
+      "2975000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "EBITDA",
+     "sample": [
+      "1835000000.0",
+      "1874000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "EBIT",
+     "sample": [
+      "1547000000.0",
+      "1617000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Interest Income",
+     "sample": [
+      "-50000000.0",
+      "-16000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Interest Expense",
+     "sample": [
+      "112000000.0",
+      "96000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Interest Income",
+     "sample": [
+      "62000000.0",
+      "80000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Normalized Income",
+     "sample": [
+      "1303000000.0",
+      "1289000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Income From Continuing And Discontinued Operation",
+     "sample": [
+      "1303000000.0",
+      "1289000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Total Expenses",
+     "sample": [
+      "5469000000.0",
+      "5022000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Total Operating Income As Reported",
+     "sample": [
+      "1479000000.0",
+      "1488000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Diluted Average Shares",
+     "sample": [
+      "285000000.0",
+      "291000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Basic Average Shares",
+     "sample": [
+      "284000000.0",
+      "290000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Diluted EPS",
+     "sample": [
+      "4.57",
+      "4.43"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Basic EPS",
+     "sample": [
+      "4.59",
+      "4.44"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Diluted NI Availto Com Stockholders",
+     "sample": [
+      "1303000000.0",
+      "1289000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Income Common Stockholders",
+     "sample": [
+      "1303000000.0",
+      "1289000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Income",
+     "sample": [
+      "1303000000.0",
+      "1289000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Income Including Noncontrolling Interests",
+     "sample": [
+      "1303000000.0",
+      "1289000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Income Continuous Operations",
+     "sample": [
+      "1303000000.0",
+      "1289000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Tax Provision",
+     "sample": [
+      "132000000.0",
+      "232000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Pretax Income",
+     "sample": [
+      "1435000000.0",
+      "1521000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Other Income Expense",
+     "sample": [
+      "6000000.0",
+      "49000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Other Non Operating Income Expenses",
+     "sample": [
+      "6000000.0",
+      "49000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Net Non Operating Interest Income Expense",
+     "sample": [
+      "-50000000.0",
+      "-16000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Interest Expense Non Operating",
+     "sample": [
+      "112000000.0",
+      "96000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Interest Income Non Operating",
+     "sample": [
+      "62000000.0",
+      "80000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Operating Income",
+     "sample": [
+      "1479000000.0",
+      "1488000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Operating Expense",
+     "sample": [
+      "2164000000.0",
+      "2047000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Research And Development",
+     "sample": [
+      "455000000.0",
+      "479000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Selling General And Administration",
+     "sample": [
+      "1709000000.0",
+      "1568000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Gross Profit",
+     "sample": [
+      "3643000000.0",
+      "3535000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Cost Of Revenue",
+     "sample": [
+      "3305000000.0",
+      "2975000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Total Revenue",
+     "sample": [
+      "6948000000.0",
+      "6510000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Operating Revenue",
+     "sample": [
+      "6948000000.0",
+      "6510000000.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 42,
+   "partitions": null,
+   "path": "3_financial_data/income",
+   "sample_file": "3_financial_data/income/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "object",
+     "name": "trade_date",
+     "sample": [
+      "2014-11-03"
+     ],
+     "unit": "日期",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "split_ratio",
+     "sample": [
+      "1.398"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 4,
+   "partitions": null,
+   "path": "3_financial_data/splits",
+   "sample_file": "3_financial_data/splits/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "float64",
+     "name": "current",
+     "sample": [
+      "143.12"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "high",
+     "sample": [
+      "190.0"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "low",
+     "sample": [
+      "155.0"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "mean",
+     "sample": [
+      "175.45"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "median",
+     "sample": [
+      "177.5"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 7,
+   "partitions": null,
+   "path": "4_analyst/analyst_price_targets",
+   "sample_file": "4_analyst/analyst_price_targets/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "object",
+     "name": "Dividend Date",
+     "sample": [
+      "2026-07-22"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "object",
+     "name": "Ex-Dividend Date",
+     "sample": [
+      "2026-06-30"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "object",
+     "name": "Earnings Date",
+     "sample": [
+      "[datetime.date(2026, 11, 26)]"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Earnings High",
+     "sample": [
+      "1.76"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Earnings Low",
+     "sample": [
+      "1.71"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Earnings Average",
+     "sample": [
+      "1.72719"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "Revenue High",
+     "sample": [
+      "1997000000"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "Revenue Low",
+     "sample": [
+      "1976000000"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "Revenue Average",
+     "sample": [
+      "1989226850"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 11,
+   "partitions": null,
+   "path": "4_analyst/calendar",
+   "sample_file": "4_analyst/calendar/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "datetime64[ns, America/New_York]",
+     "name": "Earnings Date",
+     "sample": [
+      "2026-11-25 15:00:00-05:00",
+      "2026-08-26 16:00:00-04:00"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "EPS Estimate",
+     "sample": [
+      "1.73",
+      "1.49"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Reported EPS",
+     "sample": [
+      "1.62",
+      "1.49"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "Surprise(%)",
+     "sample": [
+      "9.01",
+      "5.8"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 6,
+   "partitions": null,
+   "path": "4_analyst/earnings_dates",
+   "sample_file": "4_analyst/earnings_dates/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "str",
+     "name": "period",
+     "sample": [
+      "0q",
+      "+1q"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "avg",
+     "sample": [
+      "1.72719",
+      "1.50443"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "low",
+     "sample": [
+      "1.71",
+      "1.44"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "high",
+     "sample": [
+      "1.76",
+      "1.6"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "yearAgoEps",
+     "sample": [
+      "1.59",
+      "1.36"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "numberOfAnalysts",
+     "sample": [
+      "18",
+      "12"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "growth",
+     "sample": [
+      "0.0863",
+      "0.1062"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "currency",
+     "sample": [
+      "USD",
+      "USD"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 10,
+   "partitions": null,
+   "path": "4_analyst/earnings_estimate",
+   "sample_file": "4_analyst/earnings_estimate/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "datetime64[ns]",
+     "name": "quarter",
+     "sample": [
+      "2025-10-31 00:00:00",
+      "2026-01-31 00:00:00"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "epsActual",
+     "sample": [
+      "1.59",
+      "1.36"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "epsEstimate",
+     "sample": [
+      "1.58408",
+      "1.36826"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "epsDifference",
+     "sample": [
+      "0.006",
+      "-0.008"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "surprisePercent",
+     "sample": [
+      "0.0037",
+      "-0.006"
+     ],
+     "unit": "%",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 7,
+   "partitions": null,
+   "path": "4_analyst/earnings_history",
+   "sample_file": "4_analyst/earnings_history/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "str",
+     "name": "period",
+     "sample": [
+      "0q",
+      "+1q"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "stockTrend",
+     "sample": [
+      "0.0863",
+      "0.1062"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "indexTrend",
+     "sample": [
+      "0.4986",
+      "0.2393"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 5,
+   "partitions": null,
+   "path": "4_analyst/growth_estimates",
+   "sample_file": "4_analyst/growth_estimates/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "int64",
+     "name": "Shares",
+     "sample": [
+      "1600",
+      "8872"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "Value",
+     "sample": [
+      "216672",
+      "0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "URL",
+     "sample": [
+      "",
+      ""
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "Text",
+     "sample": [
+      "Sale at price 135.42 per share.",
+      "Stock Award(Grant) at price 0.00 per share."
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "Insider",
+     "sample": [
+      "DOLSTEN MIKAEL",
+      "BUCKNER MICHAEL STEVEN"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "Position",
+     "sample": [
+      "Director",
+      "Officer"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "Transaction",
+     "sample": [
+      "",
+      ""
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "datetime64[ns]",
+     "name": "Start Date",
+     "sample": [
+      "2026-05-29 00:00:00",
+      "2026-05-19 00:00:00"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "Ownership",
+     "sample": [
+      "D",
+      "D"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 11,
+   "partitions": null,
+   "path": "4_analyst/insider_transactions",
+   "sample_file": "4_analyst/insider_transactions/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "float64",
+     "name": "Value",
+     "sample": [
+      "0.00195",
+      "0.95595"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 3,
+   "partitions": null,
+   "path": "4_analyst/major_holders",
+   "sample_file": "4_analyst/major_holders/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "datetime64[ns]",
+     "name": "Date Reported",
+     "sample": [
+      "2026-06-30 00:00:00",
+      "2026-06-30 00:00:00"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "Holder",
+     "sample": [
+      "VANGUARD INDEX FUNDS-Vanguard Total Stock Market Index Fund",
+      "VANGUARD INDEX FUNDS-Vanguard 500 Index Fund"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "pctHeld",
+     "sample": [
+      "0.0318",
+      "0.025999999"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "Shares",
+     "sample": [
+      "8960777",
+      "7323357"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "Value",
+     "sample": [
+      "1282466360",
+      "1048118818"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "pctChange",
+     "sample": [
+      "-0.0022",
+      "0.0189"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 8,
+   "partitions": null,
+   "path": "4_analyst/mutual_fund_holders",
+   "sample_file": "4_analyst/mutual_fund_holders/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "int64",
+     "name": "index",
+     "sample": [
+      "0",
+      "1"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "period",
+     "sample": [
+      "0m",
+      "-1m"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "int64",
+     "name": "strongBuy",
+     "sample": [
+      "4",
+      "4"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "buy",
+     "sample": [
+      "12",
+      "12"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "hold",
+     "sample": [
+      "6",
+      "6"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "sell",
+     "sample": [
+      "0",
+      "0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "strongSell",
+     "sample": [
+      "0",
+      "0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 9,
+   "partitions": null,
+   "path": "4_analyst/recommendations",
+   "sample_file": "4_analyst/recommendations/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "str",
+     "name": "period",
+     "sample": [
+      "0q",
+      "+1q"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "int64",
+     "name": "avg",
+     "sample": [
+      "1989226850",
+      "1926196890"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "int64",
+     "name": "low",
+     "sample": [
+      "1976000000",
+      "1904000000"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "int64",
+     "name": "high",
+     "sample": [
+      "1997000000",
+      "1959400000"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "int64",
+     "name": "numberOfAnalysts",
+     "sample": [
+      "16",
+      "9"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "int64",
+     "name": "yearAgoRevenue",
+     "sample": [
+      "1861000000",
+      "1798000000"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "growth",
+     "sample": [
+      "0.0689",
+      "0.0713"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "currency",
+     "sample": [
+      "USD",
+      "USD"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 10,
+   "partitions": null,
+   "path": "4_analyst/revenue_estimate",
+   "sample_file": "4_analyst/revenue_estimate/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "datetime64[ns]",
+     "name": "GradeDate",
+     "sample": [
+      "2026-08-28 08:37:56",
+      "2026-08-27 19:37:25"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "Firm",
+     "sample": [
+      "Wells Fargo",
+      "Stifel"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "ToGrade",
+     "sample": [
+      "Overweight",
+      "Buy"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "FromGrade",
+     "sample": [
+      "Overweight",
+      "Buy"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "Action",
+     "sample": [
+      "main",
+      "main"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "priceTargetAction",
+     "sample": [
+      "Raises",
+      "Raises"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "currentPriceTarget",
+     "sample": [
+      "180.0",
+      "180.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "priorPriceTarget",
+     "sample": [
+      "160.0",
+      "170.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "str",
+     "name": "source",
+     "sample": [
+      "yahoo_finance",
+      "yahoo_finance"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 10,
+   "partitions": null,
+   "path": "4_analyst/upgrades_downgrades",
+   "sample_file": "4_analyst/upgrades_downgrades/A.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "object",
+     "name": "trade_date",
+     "sample": [
+      "1970-01-01",
+      "1970-01-02"
+     ],
+     "unit": "日期",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_pmi",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_unemployment",
+     "sample": [
+      "3.5"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_ppi",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_retail_sales",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_spcs20",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_trade_balance",
+     "sample": [
+      "2.0"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_cpi_mom",
+     "sample": [
+      "0.5"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_core_cpi_mom",
+     "sample": [
+      "0.5"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_core_ppi",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_core_pce",
+     "sample": [
+      "4.8"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_non_farm",
+     "sample": [
+      "15.3"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_initial_jobless",
+     "sample": [
+      "22.109"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_adp_employment",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_ism_pmi",
+     "sample": [
+      "52.0"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_ism_non_pmi",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_services_pmi",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_michigan_sentiment",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_gdp_monthly",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macro_durable_goods",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    }
+   ],
+   "columns_n": 20,
+   "partitions": null,
+   "path": "5_technical_derived/macro_usa",
+   "sample_file": "5_technical_derived/macro_usa/macro_usa.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "AAPL",
+      "A"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "datetime64[ns]",
+     "name": "time",
+     "sample": [
+      "2026-09-11 00:00:00",
+      "2026-09-11 00:00:00"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "close",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "object",
+     "name": "total_capital",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "object",
+     "name": "circulating_capital",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "object",
+     "name": "total_mv",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "object",
+     "name": "float_mv",
+     "sample": [],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "object",
+     "name": "net_profit_ttm",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "object",
+     "name": "revenue_ttm",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "object",
+     "name": "equity",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "object",
+     "name": "annual_net_profit",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "object",
+     "name": "pe_ttm",
+     "sample": [],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "object",
+     "name": "pe_static",
+     "sample": [],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "object",
+     "name": "pb",
+     "sample": [],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "object",
+     "name": "ps_ttm",
+     "sample": [],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "object",
+     "name": "dividend_rate",
+     "sample": [],
+     "unit": "%",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "str",
+     "name": "release_id",
+     "sample": [
+      "yahoo",
+      "yahoo"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "str",
+     "name": "published_at",
+     "sample": [
+      "2026-09-11T05:56:16",
+      "2026-09-11T05:56:17"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 18,
+   "partitions": 528,
+   "path": "5_technical_derived/valuation",
+   "sample_file": "5_technical_derived/valuation/dt=20260911/data.parquet"
+  },
+  {
+   "columns": [
+    {
+     "dtype": "str",
+     "name": "symbol",
+     "sample": [
+      "A",
+      "AAL"
+     ],
+     "unit": "代码",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "open",
+     "sample": [
+      "142.5800018310547",
+      "12.654999732971191"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "high",
+     "sample": [
+      "144.14500427246094",
+      "13.0600004196167"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "low",
+     "sample": [
+      "141.25",
+      "12.609999656677246"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "close",
+     "sample": [
+      "143.1199951171875",
+      "12.850000381469727"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "int64",
+     "name": "volume",
+     "sample": [
+      "1520258",
+      "62122636"
+     ],
+     "unit": "股",
+     "unit_source": "verified"
+    },
+    {
+     "dtype": "float64",
+     "name": "amount",
+     "sample": [
+      "217579317.53686523",
+      "798275896.297905"
+     ],
+     "unit": "原币（美元）",
+     "unit_source": "verified"
+    },
+    {
+     "dtype": "float64",
+     "name": "adj_factor",
+     "sample": [
+      "1.0",
+      "1.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "turnover_rate",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": "%",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "pe_ttm",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "pb",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "roe",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": "%",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "bp",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "ep_ttm",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "float_mv",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "total_mv",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": "报价币种",
+     "unit_source": "official"
+    },
+    {
+     "dtype": "float64",
+     "name": "ln_mv_total",
+     "sample": [
+      "19.198074020344446",
+      "20.497964830370766"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "return_1d",
+     "sample": [
+      "-0.011260828205958529",
+      "-0.0069551160612100205"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "return_5d",
+     "sample": [
+      "-0.05462715425597786",
+      "-0.019832160070959004"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "return_20d",
+     "sample": [
+      "-0.01952459329185796",
+      "-0.19385192086137226"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "ma5",
+     "sample": [
+      "147.1120002441406",
+      "12.959999961853025"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "ma20",
+     "sample": [
+      "151.24100006103515",
+      "13.775999990463257"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "ma60",
+     "sample": [
+      "139.81500002034505",
+      "15.31333333015442"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "rsi_14",
+     "sample": [
+      "42.36997314549727",
+      "34.2622037491531"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "kdj_k",
+     "sample": [
+      "13.241102294583726",
+      "13.86968183967863"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macd_hist",
+     "sample": [
+      "-1.7994907211421936",
+      "-0.04880135572623767"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_std_20",
+     "sample": [
+      "0.019853269056660173",
+      "0.027982942428398275"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_atr_14",
+     "sample": [
+      "4.733928920200891",
+      "0.36392860412597666"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "beta_20",
+     "sample": [
+      "-0.04001080741417266",
+      "-0.38077796273900905"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "flow_net_amount",
+     "sample": [
+      "-784320746.8420212",
+      "-625813320.078816"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "volume_ma_5",
+     "sample": [
+      "1811750.0",
+      "59187177.6"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "amount_ma_5",
+     "sample": [
+      "267018862.79240426",
+      "767582972.7356514"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ret_1d",
+     "sample": [
+      "-0.011260828205958529",
+      "-0.0069551160612100205"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ret_5d",
+     "sample": [
+      "-0.05462715425597786",
+      "-0.019832160070959004"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ret_10d",
+     "sample": [
+      "-0.07712151717057336",
+      "-0.0715317643446729"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ret_20d",
+     "sample": [
+      "-0.01952459329185796",
+      "-0.19385192086137226"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ma_gap_5",
+     "sample": [
+      "-0.02713582250481361",
+      "-0.00848762196813857"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ma_gap_20",
+     "sample": [
+      "-0.053695789769773516",
+      "-0.06721832241830528"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_macd_hist",
+     "sample": [
+      "-1.7994907211421936",
+      "-0.04880135572623767"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_rsi_14",
+     "sample": [
+      "42.36997314549727",
+      "34.2622037491531"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_kdj_k",
+     "sample": [
+      "13.241102294583726",
+      "13.86968183967863"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_breakout_20d",
+     "sample": [
+      "-0.09987424454599059",
+      "-0.15958140081950767"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_parkinson_20",
+     "sample": [
+      "0.017425366041349866",
+      "0.016937983271950244"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_gk_20",
+     "sample": [
+      "0.0065335281324250035",
+      "0.00988861024893151"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_rs_20",
+     "sample": [
+      "0.013792193203336564",
+      "0.009403531209883562"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_downside_20",
+     "sample": [
+      "0.011232748064840571",
+      "0.023462990540072327"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_realized_rv",
+     "sample": [
+      "0.3075792506120625",
+      "0.4655266294586552"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_jump_zadj",
+     "sample": [
+      "1.7405751345613456",
+      "1.8840393640719537"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_volume",
+     "sample": [
+      "1520258.0",
+      "62122636.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_amount",
+     "sample": [
+      "217579317.53686523",
+      "798275896.297905"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_turnover_os",
+     "sample": [
+      "0.6794341013153791",
+      "0.7213925494162308"
+     ],
+     "unit": "%",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_volume_ma_20",
+     "sample": [
+      "2265703.8",
+      "57952440.9"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_volume_ratio_5",
+     "sample": [
+      "-0.16088974748171658",
+      "0.04959618821222511"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_amount_ma_20",
+     "sample": [
+      "344991537.6031011",
+      "793948740.6734129"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_amount_ratio_5",
+     "sample": [
+      "-0.18515375557559832",
+      "0.03998645703781656"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_mfi_14",
+     "sample": [
+      "32.18642561625495",
+      "38.80564408515737"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_amihud_20",
+     "sample": [
+      "4.515478704072965e-11",
+      "2.6928014515917035e-11"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_amihud_60",
+     "sample": [
+      "4.47192849389256e-11",
+      "2.016407603133454e-11"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_accdist_20",
+     "sample": [
+      "4811816.581658228",
+      "-336016891.53337634"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "flow_net_amount_ratio",
+     "sample": [
+      "-0.1136724616915605",
+      "-0.039411443586900366"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "flow_large_net_amount",
+     "sample": [
+      "-0.0",
+      "-0.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "flow_vpin",
+     "sample": [
+      "1.0",
+      "1.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "flow_vpin_ma_5",
+     "sample": [
+      "1.0",
+      "1.0"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "flow_vpin_ma_20",
+     "sample": [
+      "1.0",
+      "1.0"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "style_ln_mv_total",
+     "sample": [
+      "19.198074020344446",
+      "20.497964830370766"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "style_ln_mv_float",
+     "sample": [
+      "17.278266618310003",
+      "18.448168347333688"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "style_beta_20",
+     "sample": [
+      "-0.04001080741417266",
+      "-0.38077796273900905"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "style_beta_60",
+     "sample": [
+      "0.08412108869256933",
+      "-0.005252898800822805"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "style_idio_vol_20",
+     "sample": [
+      "0.019853269056660173",
+      "0.027982942428398275"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "style_residual_ret_20",
+     "sample": [
+      "-0.000797728808403414",
+      "-0.010353055946514967"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "ind_ret_1d",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "ind_ret_20d",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "ind_strength_20",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "ind_momentum_rank_20",
+     "sample": [],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ret_3d",
+     "sample": [
+      "-0.051305878846695685",
+      "-0.02132518039072917"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ret_60d",
+     "sample": [
+      "0.08737270260741137",
+      "-0.042473891097635885"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ret_120d",
+     "sample": [
+      "0.27979965230427895",
+      "0.2249762041439205"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ma_gap_10",
+     "sample": [
+      "-0.04711815148858556",
+      "-0.023927048986947086"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ma_gap_60",
+     "sample": [
+      "0.02363834421458022",
+      "-0.16086196881994297"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ma_gap_120",
+     "sample": [
+      "0.10887352025315455",
+      "-0.06674128340961882"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ema_gap_12",
+     "sample": [
+      "-0.03844028317092629",
+      "-0.03514588969842358"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_ema_gap_26",
+     "sample": [
+      "-0.030076097205367747",
+      "-0.07906028981699775"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_roc_12",
+     "sample": [
+      "-0.06719679907979215",
+      "-0.057226677808530746"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_std_10",
+     "sample": [
+      "0.015268805151327912",
+      "0.01445505445011975"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_atr_20",
+     "sample": [
+      "4.552005244140624",
+      "0.46400002288818365"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_true_range",
+     "sample": [
+      "3.5",
+      "0.4500007629394531"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_parkinson_10",
+     "sample": [
+      "0.018586840972241305",
+      "0.014666723703749046"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_gk_10",
+     "sample": [
+      "0.005584098225741884",
+      "0.00525796715279299"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_rs_10",
+     "sample": [
+      "0.006377241444345779",
+      "0.005536228065730878"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_upside_20",
+     "sample": [
+      "0.012133608391047927",
+      "0.00817634441944388"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_realized_rrv",
+     "sample": [
+      "10.0",
+      "10.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_realized_rskew",
+     "sample": [
+      "-0.31648047832624043",
+      "-0.5343304112156496"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_realized_rkurt",
+     "sample": [
+      "0.33331265658345766",
+      "-1.8624224113091945"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_jump_rjv_ratio",
+     "sample": [
+      "1.7405751345613456",
+      "1.8840393640719537"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_jump_sjv_ratio",
+     "sample": [
+      "0.42547725740548575",
+      "0.4692255273060161"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_turnover_tl",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": "%",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_volume_ma_5",
+     "sample": [
+      "1811750.0",
+      "59187177.6"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_volume_ma_10",
+     "sample": [
+      "2383962.9",
+      "61016803.9"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_volume_ratio_20",
+     "sample": [
+      "-0.3290129098075396",
+      "0.07195892071562437"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_amount_ma_5",
+     "sample": [
+      "267018862.79240426",
+      "767582972.7356514"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_amount_ma_10",
+     "sample": [
+      "360225290.70720214",
+      "804301858.0148257"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_amount_ratio_20",
+     "sample": [
+      "-0.36931984173136",
+      "0.005450170020827594"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_obv_20",
+     "sample": [
+      "-3531366.3500000015",
+      "-181143993.14999998"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "liq_obv_60",
+     "sample": [
+      "1604860.833333332",
+      "-377771247.8833333"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "flow_vpin_delta_5",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "flow_net_order_count",
+     "sample": [
+      "-5407858.0",
+      "-49880852.0"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "flow_net_order_ratio",
+     "sample": [
+      "-0.1193416809381703",
+      "-0.043036023354108624"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "flow_pressure_index",
+     "sample": [
+      "0.042683461357362194",
+      "-0.28571343482330824"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "style_beta_120",
+     "sample": [
+      "0.09740105761693502",
+      "0.06836648680623078"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "style_idio_vol_60",
+     "sample": [
+      "0.018527179632687785",
+      "0.0333997166385896"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "style_bp",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "style_ep_ttm",
+     "sample": [
+      "0.0",
+      "0.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "pctchange",
+     "sample": [
+      "-0.011260828205958529",
+      "-0.0069551160612100205"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "ma_gap_5",
+     "sample": [
+      "-0.02713582250481361",
+      "-0.00848762196813857"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "ma_gap_20",
+     "sample": [
+      "-0.053695789769773516",
+      "-0.06721832241830528"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "rsi_6",
+     "sample": [
+      "23.96771744346819",
+      "27.49536649832102"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "kdj_d",
+     "sample": [
+      "20.414264970178962",
+      "11.470962358211054"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "kdj_j",
+     "sample": [
+      "-1.1052230566067465",
+      "18.66712080261378"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macd_dif",
+     "sample": [
+      "1.2835419574305433",
+      "-0.635063633735097"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "macd_dea",
+     "sample": [
+      "3.083032678572737",
+      "-0.5862622780088593"
+     ],
+     "unit": "报价币种",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_macd_dif",
+     "sample": [
+      "1.2835419574305433",
+      "-0.635063633735097"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_macd_dea",
+     "sample": [
+      "3.083032678572737",
+      "-0.5862622780088593"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_rsi_6",
+     "sample": [
+      "23.96771744346819",
+      "27.49536649832102"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_kdj_d",
+     "sample": [
+      "20.414264970178962",
+      "11.470962358211054"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_kdj_j",
+     "sample": [
+      "-1.1052230566067465",
+      "18.66712080261378"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_std_5",
+     "sample": [
+      "0.011748889436122872",
+      "0.011456065184864346"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_std_60",
+     "sample": [
+      "0.018527179632687785",
+      "0.0333997166385896"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "volume_ratio_5",
+     "sample": [
+      "0.8391102525182834",
+      "1.0495961882122251"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "volume_ratio_20",
+     "sample": [
+      "0.6709870901924604",
+      "1.0719589207156244"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "volume_ma_3",
+     "sample": [
+      "1659152.6666666667",
+      "55372945.333333336"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "kline_kmid",
+     "sample": [
+      "0.003787300317001392",
+      "0.015408980846556852"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "kline_klen",
+     "sample": [
+      "0.02030442022220812",
+      "0.03555912860013946"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "kline_kmid2",
+     "sample": [
+      "0.18652590300800623",
+      "0.4333340397575552"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "kline_kup",
+     "sample": [
+      "0.007189010675480193",
+      "0.016594234893568663"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "kline_kup2",
+     "sample": [
+      "0.35406136185150244",
+      "0.4666659602424448"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "kline_klow",
+     "sample": [
+      "0.009328109229726536",
+      "0.003555912860013946"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "kline_klow2",
+     "sample": [
+      "0.45941273514049136",
+      "0.1"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "kline_ksft",
+     "sample": [
+      "0.005926398871247735",
+      "0.0023706588130021342"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "kline_ksft2",
+     "sample": [
+      "0.29187727629699517",
+      "0.06666807951511042"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "prel_open0",
+     "sample": [
+      "0.9962269892079674",
+      "0.9848248527074183"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "prel_high0",
+     "sample": [
+      "1.0071618864606176",
+      "1.016342414934851"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "prel_low0",
+     "sample": [
+      "0.9869340750350338",
+      "0.9813229013488146"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "prel_vwap0",
+     "sample": [
+      "1.0",
+      "1.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "price_position_20",
+     "sample": [
+      "0.08311089409722222",
+      "0.07619069797920007"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "price_position_60",
+     "sample": [
+      "0.4849580605963676",
+      "0.03883506657921011"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "dist_to_high_20",
+     "sample": [
+      "-0.12598476264312974",
+      "-0.1846446458458295"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "dist_to_low_20",
+     "sample": [
+      "0.013238903484513287",
+      "0.01903257187365548"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "ret_rank_20",
+     "sample": [
+      "0.2721490683030449",
+      "0.7278224416156468"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_sharpe_5",
+     "sample": [
+      "-4.697166744119458",
+      "-1.7345835289475828"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_sharpe_20",
+     "sample": [
+      "-0.979273574943433",
+      "-7.1297344358970935"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_sharpe_60",
+     "sample": [
+      "4.69206170066248",
+      "-1.2727648395939322"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "mom_risk_adj_20",
+     "sample": [
+      "-6.057540679280528",
+      "-3.290659182788915"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "pv_corr_20",
+     "sample": [
+      "0.02141503241239561",
+      "0.22888922700738373"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "pv_corr_10",
+     "sample": [
+      "0.36667947670287593",
+      "-0.11380407831760211"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "up_volume_ratio_20",
+     "sample": [
+      "0.5149106869132674",
+      "0.35341880310687657"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "pv_divergence_20",
+     "sample": [
+      "-0.18103745506056693",
+      "-0.664932373963927"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "trend_r2_20",
+     "sample": [
+      "0.08796086188395673",
+      "0.8438915206160633"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "trend_slope_20",
+     "sample": [
+      "-0.0016392626862794517",
+      "-0.010880215958692707"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "consecutive_updown_5",
+     "sample": [
+      "-3.0",
+      "-1.0"
+     ],
+     "unit": "个/股",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "ret_1d_lag1",
+     "sample": [
+      "-0.014300347403699232",
+      "0.002323759359083466"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "ret_1d_lag2",
+     "sample": [
+      "-0.026580895508977798",
+      "-0.016755533327333705"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_smile_20",
+     "sample": [
+      "1.0801994597410338",
+      "0.3484783580967456"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_term_structure",
+     "sample": [
+      "0.9332054877114797",
+      "1.1935741469665517"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "vol_of_vol",
+     "sample": [
+      "0.00661757132854111",
+      "0.012746518382596248"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "tech_bollinger_position",
+     "sample": [
+      "-0.4857427605477926",
+      "-0.2837679762157876"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "tech_williams_r_14",
+     "sample": [
+      "-91.68891059027777",
+      "-84.46597595724003"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "tech_cci_20",
+     "sample": [
+      "-161.94659448789704",
+      "-98.6467020157067"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "alpha_decay_ret_10",
+     "sample": [
+      "-0.0057407939212238655",
+      "-0.009000532353181063"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "alpha_corr_cv_20",
+     "sample": [
+      "0.6700906109171624",
+      "-0.5802155718343794"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "alpha_tsrank_ret_20",
+     "sample": [
+      "0.3",
+      "0.6"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "alpha_tsrank_volume_20",
+     "sample": [
+      "0.25",
+      "0.55"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "alpha_high_20d_ratio",
+     "sample": [
+      "0.3",
+      "0.0"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "alpha_low_20d_ratio",
+     "sample": [
+      "0.05",
+      "0.35"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "alpha_close_open_gap",
+     "sample": [
+      "-0.01499135177164292",
+      "-0.022024718443125892"
+     ],
+     "unit": "倍/无量纲",
+     "unit_source": "inferred"
+    },
+    {
+     "dtype": "float64",
+     "name": "fund_pe_percentile",
+     "sample": [
+      "1.0",
+      "1.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    },
+    {
+     "dtype": "float64",
+     "name": "fund_pb_percentile",
+     "sample": [
+      "1.0",
+      "1.0"
+     ],
+     "unit": null,
+     "unit_source": null
+    }
+   ],
+   "columns_n": 176,
+   "partitions": 6571,
+   "path": "6_ml_datasets/l1_factors",
+   "sample_file": "6_ml_datasets/l1_factors/dt=20260910/data.parquet"
+  }
+ ],
+ "datasets_n": 25,
+ "market": "us",
+ "root": "/home/zbox/projects/quantmind/data/quantus",
+ "summary": {
+  "columns_inferred": 100,
+  "columns_unknown": 368,
+  "note": "unit_source 三级：official/verified 可采信，inferred 仅按命名推断**未经证实**，unknown 未给单位。"
+ }
+}

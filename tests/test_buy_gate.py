@@ -130,3 +130,97 @@ def test_hourly_executor_blocks_buys_when_tripped(monkeypatch):
         [{"code": "600309.SH", "avail": 1000, "day_chg": 1.0, "name": "万华化学"}],
         1e6, dry_run=True, pool_codes={"600362.SH"})
     assert [e["action"] for e in out] == ["sell"]
+
+
+# ------------------------------------------------- 单票集中度闸（2026-09-18 机构级）
+# per_stock_pct 是"单笔占剩余额度"的比例，同一标的跨轮加仓此前不封顶（只有杠杆闸
+# 兜底）。position_cap_reason：同票已有敞口 + 本单成本 ≤ cap_pct×权益。
+
+def test_position_cap_within_limit_passes():
+    from buy_gate import position_cap_reason
+
+    assert position_cap_reason(10_000, 12_000, 100_000, 0.25) == ""   # 22% < 25%
+
+
+def test_position_cap_blocks_when_projected_exceeds():
+    from buy_gate import position_cap_reason
+
+    reason = position_cap_reason(24_000, 20_000, 100_000, 0.25)
+
+    assert reason and "¥44,000" in reason and "¥24,000" in reason
+    assert "25%×权益" in reason and "¥25,000" in reason
+
+
+def test_position_cap_exactly_at_limit_passes():
+    from buy_gate import position_cap_reason
+
+    assert position_cap_reason(15_000, 10_000, 100_000, 0.25) == ""   # == 上限 → 放行
+
+
+def test_position_cap_fails_open_on_unusable_inputs():
+    """equity/cap 不可用（≤0）或脏输入 → 放行——调用方另有杠杆/现金闸兜底，
+    与杠杆闸 `if equity > 0` 同口径。"""
+    from buy_gate import position_cap_reason
+
+    assert position_cap_reason(50_000, 50_000, 0, 0.25) == ""
+    assert position_cap_reason(50_000, 50_000, -1, 0.25) == ""
+    assert position_cap_reason(50_000, 50_000, 100_000, 0) == ""
+    assert position_cap_reason("bad", 50_000, 100_000, 0.25) == ""
+    assert position_cap_reason(None, None, None, None) == ""
+
+
+def test_position_cap_fails_open_on_nan_inf_and_overflow():
+    """评审 LOW（2026-09-18）：NaN 穿过所有比较会产出假判定；超大整数强转溢出。
+    两者都必须按"判不了 → 放行"处理，绝不误拦。"""
+    from buy_gate import position_cap_reason
+
+    nan, inf = float("nan"), float("inf")
+    assert position_cap_reason(nan, 1_000, 100_000, 0.25) == ""
+    assert position_cap_reason(1_000, 1_000, nan, 0.25) == ""
+    assert position_cap_reason(1_000, 1_000, 100_000, nan) == ""
+    assert position_cap_reason(inf, 1_000, 100_000, 0.25) == ""
+    assert position_cap_reason(10 ** 400, 0, 100, 0.25) == ""   # float() 溢出
+
+
+# ------------------------------------------------- 规则标识（影子代价账，2026-09-19）
+# 中文 reason 是给人看的；影子账要按规则分组算成本，需要一个不受文案改动影响的
+# 机器可读 id（改一个字就换一条规则 = 历史样本全部断档）。
+
+def test_every_rejection_branch_carries_a_stable_rule_id():
+    import gate_rules as GR
+
+    cases = [
+        ("熔断", check_buy("600362.SH", 0.2, False, 0, set(), _gate(halted=True)), GR.HALT_DAILY),
+        ("标的边界", check_buy("600362.SH", 0.2, False, 0, set(), _gate(),
+                            name="*ST海航"), GR.SYMBOL_BOUNDARY),
+        ("pct 非法", check_buy("600362.SH", "bad", True, 0, set(), _gate()), GR.PCT_INVALID),
+        ("pct=0", check_buy("600362.SH", 0, True, 0, set(), _gate()), GR.PCT_ZERO),
+        ("池外", check_buy("000001.SZ", 0.2, False, 0, set(), _gate()), GR.POOL_NOT_MEMBER),
+        ("本轮上限", check_buy("600362.SH", 0.2, False, 3, set(), _gate(max_new_buys=3)),
+         GR.CAP_ROUND_NEW_BUYS),
+        ("当日上限", check_buy("600362.SH", 0.2, False, 0, {"002144.SZ"}, _gate(max_new_buys=1)),
+         GR.CAP_DAILY_NEW_BUYS),
+    ]
+    for label, d, want in cases:
+        assert not d.ok, label
+        assert d.rule == want, f"{label}：rule={d.rule!r}，期望 {want!r}"
+
+
+def test_rejection_rules_are_registered_in_vocabulary():
+    """闸门发出的每个 id 都必须在词表里（写死字符串 = 登记表查不到、报告分不了组）。"""
+    import gate_rules as GR
+
+    emitted = {check_buy("600362.SH", 0.2, False, 0, set(), _gate(halted=True)).rule,
+               check_buy("600362.SH", "bad", True, 0, set(), _gate()).rule,
+               check_buy("600362.SH", 0, True, 0, set(), _gate()).rule,
+               check_buy("000001.SZ", 0.2, False, 0, set(), _gate()).rule,
+               check_buy("600362.SH", 0.2, False, 3, set(), _gate(max_new_buys=3)).rule,
+               check_buy("600362.SH", 0.2, False, 0, {"002144.SZ"}, _gate(max_new_buys=1)).rule}
+    assert emitted <= set(GR.ALL)
+
+
+def test_approved_buy_has_no_rule_id():
+    """放行不是"某条规则放行"，rule 必须为空——否则影子账会把成功单也记一笔。"""
+    d = check_buy("600362.SH", 0.2, True, 0, set(), _gate())
+
+    assert d.ok and d.rule == ""

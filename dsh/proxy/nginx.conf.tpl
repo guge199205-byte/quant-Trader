@@ -15,6 +15,12 @@ server {
         proxy_pass http://127.0.0.1:3081;
         # 用 $http_host 保留端口（$host 会丢端口，dsh 的 trusted-host fence 按 host:port 精确匹配）
         proxy_set_header Host $http_host;
+        # 注入 dsh 的浏览器鉴权 cookie（$dsh_auth_cookie 由 dsh-cookies.conf 的 map 生成）。
+        # 为什么需要：dsh 0.1.5 起 web 强制 token/cookie 鉴权，而 arena 的 /harness 是
+        # src 写死、不带 token 的 iframe —— 只能靠 cookie 进门。这里替用户补上，
+        # 恢复到升级前的使用体验（外层 basic auth 不变）。
+        # ⚠️ dsh 只认 dsh-auth-* 这一个 cookie，故替换安全；重新签发见 scripts/dsh_auth_cookie.py
+        proxy_set_header Cookie $dsh_auth_cookie;
         # 禁掉上游压缩：sub_filter 只能在明文响应上替换（否则注入不了 polyfill）
         proxy_set_header Accept-Encoding "";
         proxy_set_header X-Real-IP $remote_addr;

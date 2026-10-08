@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.config import get_data_root
+from backend.services.text_io import read_text_lossy
 
 # 价格行缓存（见 _cached_price_rows）：解析结果按文件版本记忆化，避免同一市场重复解析。
 _PRICE_ROWS_CACHE: Dict[tuple, List[tuple]] = {}
@@ -177,15 +178,17 @@ def _agent_log_dir(config: dict, agent: str, market: str) -> Path:
 def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     lines = []
     try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    lines.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
+        # read_text_lossy：日志可能被截断在多字节字符中间，裸 read_text 会抛
+        # UnicodeDecodeError（非 OSError，下面接不住）→ 整个端点 500、好记录陪葬。
+        # 详见 backend/services/text_io.py。
+        for line in read_text_lossy(path).splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                lines.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
     except OSError:
         return []
     return lines

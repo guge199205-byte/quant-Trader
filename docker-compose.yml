@@ -30,9 +30,15 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./configs:/app/configs
+      # agent 工具代码与宿主**同源**（2026-09-15 卷挂载固化）：终结镜像漂移——
+      # 容器旧版缺价格保护带/断线自动发现/L2 工具等 12 天改动，宿主为唯一权威。
+      # 以后改宿主 agent_tools，容器即时生效，不再需要外科手术式热更新。
+      - ./agent_tools:/app/agent_tools
       # agent 工具读 quantdb 日K：此前容器内无此目录，工具回退到陈旧本地源
       # （glm/flash 曾误报"日线仅更新至 08-28"，实际 quantdb 到 09/03）
       - ../projects/quantmind/data/quantdb:/data/quantdb:ro
+      # TdxAiData 官方行情库（只读挂载，2026-09-15）：容器内 L2 工具/行情备胎可用
+      - /opt/tdx-aidata:/opt/tdx-aidata:ro
     environment:
       MATH_HTTP_PORT: "8100"
       SEARCH_HTTP_PORT: "8101"
@@ -41,6 +47,7 @@ services:
       MEMORY_HTTP_PORT: "8104"
       QUANTDB_HTTP_PORT: "8105"
       RUNTIME_ENV_PATH: /app/runtime_env.json
+      TDX_AIDATA_DIR: /opt/tdx-aidata
     ports:
       - "8100-8105:8100-8105"
 
@@ -53,7 +60,9 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./configs:/app/configs
+      - ./agent_tools:/app/agent_tools     # 与宿主同源（2026-09-15 固化，见 mcp-us 注释）
       - ../projects/quantmind/data/quantdb:/data/quantdb:ro
+      - /opt/tdx-aidata:/opt/tdx-aidata:ro # TdxAiData 只读（L2 工具/行情备胎）
     environment:
       MATH_HTTP_PORT: "8200"
       SEARCH_HTTP_PORT: "8201"
@@ -61,6 +70,7 @@ services:
       GETPRICE_HTTP_PORT: "8203"
       MEMORY_HTTP_PORT: "8204"
       RUNTIME_ENV_PATH: /app/runtime_env_cn.json
+      TDX_AIDATA_DIR: /opt/tdx-aidata
     ports:
       - "8200-8204:8200-8204"
 
@@ -73,6 +83,7 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./configs:/app/configs
+      - ./agent_tools:/app/agent_tools     # 与宿主同源（2026-09-15 固化，见 mcp-us 注释）
       - ../projects/quantmind/data/quantdb:/data/quantdb:ro
     environment:
       MATH_HTTP_PORT: "8300"
@@ -173,10 +184,27 @@ services:
       - path: .env
       - path: .service.env
         required: false    # 客户无 .service.env 也能启动（dsh 面板可初始化）
+    environment:
+      # 灵枢记忆（@furongjun1999/dsh-memory）的认知图根目录。
+      # 其默认值是 `data/mdcg`（**相对 cwd**，cwd 不稳定），且优先级最高的是本环境变量。
+      # 指到绑定的 DSH_HOME 下 → 数据随宿主持久化，容器重建不丢（默认落容器本地会丢）。
+      # 不设的后果：灵枢桥 spawn 的 python 子进程报「缺少 MDCG_ROOT」→ 0 秒退出 → 永久重试。
+      MDCG_ROOT: /root/.dsh/mdcg
+      # 灵枢桥 spawn `python -m md_cg.mcp_server` 时**不设 cwd 也不设 PYTHONPATH**，
+      # 而 md_cg 随插件一起装在 node_modules 下 → 默认搜索路径找不到，报
+      # `ModuleNotFoundError: No module named 'md_cg'` → 进程 0 秒退出、8 次重试后放弃。
+      # 这里替它补上模块搜索路径（实测：设了就不报，不设必报）。
+      # ⚠️ 路径含插件名，插件改名/换源时需同步。
+      PYTHONPATH: /root/.dsh/profiles/web/node_modules/@furongjun1999/dsh-memory
     restart: unless-stopped
     command: dsh --profile web --patch /app/dsh/baymax.cordis.yml --port 3081 --no-open --trusted-host ${DSH_HOST:-192.168.31.68}:3081 --trusted-host ${DSH_HOST:-192.168.31.68}:8093 --trusted-host localhost:8093 --trusted-host 127.0.0.1:8093
     volumes:
       - ./dsh:/app/dsh
+      # dsh agent 的工作区（会话 cwd = /root/quantAI，会话桶名 --root-quantAI--）。
+      # ⚠️ 必须挂出来：此前它在容器本地文件系统里，任何 `docker compose up -d dsh`
+      #    重建都会把它连同 agent 正在用的文件一起抹掉（2026-09-13 实录：抹掉后
+      #    容器内 agent 的 bash 全部 spawn 失败报 landlock-run ENOENT——因为 cwd 不存在）。
+      - ./dsh/root-quantAI:/root/quantAI
       # dsh agent 执行量化技能：工具/配置/事件缓存只读挂载 → docker cp 进 quantmind 执行
       - ./scripts:/app/quant-scripts:ro
       - ./configs:/app/quant-configs:ro
@@ -194,6 +222,9 @@ services:
       #   ③ docker CLI + socket → 技能契约「docker exec quantmind」跑重依赖取数脚本
       - /home/zbox/projects/quantmind:/quantmind:ro
       - /home/zbox/projects/quantmind/data:/data:rw
+      # 数据盘新家（2026-09-23）：data 目录已是软链 → /media/zbox/data/quantmind。
+      # 容器内按同一绝对路径挂载，保证 /quantmind/data 这条软链在容器内可解析。
+      - /media/zbox/data/quantmind:/media/zbox/data/quantmind:rw
       - /usr/bin/docker:/usr/bin/docker:ro
       - /var/run/docker.sock:/var/run/docker.sock
 
@@ -212,6 +243,9 @@ services:
       DSH_BIND_IP: ${DSH_BIND_IP:-172.17.0.1}
     volumes:
       - ./dsh/proxy/nginx.conf.tpl:/etc/nginx/conf.d/dsh.tpl:ro
+      # dsh 浏览器鉴权 cookie（dsh 0.1.5 起 web 强制 token/cookie 鉴权；本文件由
+      # scripts/dsh_auth_cookie.py 生成。缺失时 entrypoint 会写透传兜底 map，不会起不来）
+      - ./dsh/proxy/dsh-cookies.conf:/etc/nginx/conf.d/dsh-cookies.conf:ro
 
   # ---- Arena 竞技场前端（React 多阶段构建 → nginx，8092）----
   # API token 由 nginx 经 envsubst 注入反代头，浏览器无需持 token。
@@ -235,6 +269,17 @@ services:
       - ./arena/docker-entrypoint.d.sh:/docker-entrypoint.d/05-arena-envsubst.sh:ro
     depends_on:
       - api
+
+  # ---- 个股终端（独立子应用，8094）----
+  # 独立容器而非并进 arena 镜像：完全不碰正在服务 8092/8093 的 arena 容器，风险最低，
+  # 也符合本仓库既有的「一容器一职责」风格（dsh / dsh-proxy / ui-arena 各自独立）。
+  # host 网络：终端要反代到宿主 127.0.0.1:8000 的 quantmind 网关。
+  # 源码在 ./stock-terminal（从 /home/zbox/stock-terminal-local 复制而来，原件保留未动）。
+  terminal:
+    build: ./stock-terminal
+    container_name: baymax-terminal
+    network_mode: host
+    restart: unless-stopped
 
   # ---- 静态 UI（docs 快照）----
   ui:

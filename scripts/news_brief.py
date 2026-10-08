@@ -207,15 +207,29 @@ def save_state(st: dict) -> None:
         pass
 
 
-def state_after_run(st: dict, stages, until_iso: str, **extra) -> dict:
-    """状态合并：**只有跑满五段才推进 last_end 游标**。
+def state_after_run(st: dict, stages, until_iso: str, *, advance: bool = True,
+                    skip_reason: str = "", **extra) -> dict:
+    """状态合并：**只有跑满五段、无桶失败、且主编有产出才推进 last_end 游标**。
 
     `--stage X` 单跑（手动调试/补段）此前也推进游标 → 这段新闻对后续正式轮
     永久跳过。游标是「完整一轮的消费位」，单段跑不该动它。
+
+    advance=False（本窗口有桶失败，或主编截断/失败无产出）：同样不推进——
+    失败窗口没取全/没成刊，推进游标会把这批新闻**永久跳过**
+    （2026-09-18 实录：主机冻结致新闻 API 不可达、9 桶失败，空窗路径照推
+    last_end → 09:38-10:21 窗口新闻静默丢失；同日发现主编失败轮也在推进 →
+    该窗口内容同样丢失且 last_end 假装健康、停更告警看不出）。
+    下轮从旧游标重取；窗口内已处理过的条目重复进入属可接受代价（少一条新闻
+    是不可逆的，多跑一遍 gate 是可逆的）——取舍方向：宁可重复，不可丢失。
     """
     out = {**st, **extra}
-    if tuple(stages) == ALL_STAGES:
+    if tuple(stages) == ALL_STAGES and advance:
         out["last_end"] = until_iso
+    elif not advance:
+        # 原因由调用方给出（桶失败 / 主编无产出）——写死"有桶失败"会让"仅主编失败"
+        # 的排查往错误方向找（2026-09-18 评审 L-1）
+        print(f"ℹ️ {skip_reason or '本窗口有桶失败'}，游标不推进（保持 "
+              f"{_bj_fmt(_iso(st.get('last_end', '')), '%m-%d %H:%M') or '空'}，下轮重取）")
     else:
         print(f"ℹ️ 单段运行（{'/'.join(stages)}）不推进游标，last_end 保持 "
               f"{_bj_fmt(_iso(st.get('last_end', '')), '%m-%d %H:%M') or '空'}")
@@ -1223,7 +1237,8 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
           + (f" / 桶失败 {len(fails)}" if fails else ""))
 
     if not arts:
-        save_state(state_after_run(st, stages, until_iso, last_empty=now.isoformat()))
+        save_state(state_after_run(st, stages, until_iso, advance=not fails,
+                                   last_empty=now.isoformat()))
         msg = empty_window_markup(until_iso)
         print("⏭️ " + msg)
         if CHIEF in stages:
@@ -1374,7 +1389,9 @@ def run_pipeline(since_iso: str = "", stages: tuple = ALL_STAGES,
             print(brief["text"])
 
     new_st = state_after_run(
-        st, stages, until_iso,
+        st, stages, until_iso, advance=(not fails) and chief_ok is not False,
+        skip_reason=("本窗口有桶失败" if fails
+                     else "主编无产出（截断/解析失败）"),
         last_stages=list(stages), last_ok=now.isoformat(),
         last_run={**_RUN_STATS, "ts": now.isoformat(), "folder_failures": fails})
     if chief_ok:

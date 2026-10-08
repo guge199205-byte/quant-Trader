@@ -256,6 +256,16 @@ def test_discard_event_follows_persist_rule(legacy, dry):
         assert len(_by_code(legacy.rules(), "glm-5.3-flash", "000028.SZ")) == 2
     else:
         assert any(v.get("kind") == "watch_discard" for v in evs.values())
+        # 方向标错侧被**丢弃** = 模型想挂的防守位没挂上：必须上告警面
+        # （2026-09-21：4 条被静默丢弃，人当晚才知道少挂了防守位）。其余作废原因仍静默。
+        # 审查 LOW-4：断言只圈「方向标错」这一类丢弃——扩到全部 watch_discard 会把
+        # 有意静默的其它作废原因（已清仓/无合法可卖量）也绑上告警面，今后加一种静默
+        # 原因就会误报红灯。
+        mislabeled = [v for v in evs.values()
+                      if v.get("kind") == "watch_discard"
+                      and v.get("code") == "000028.SZ"
+                      and "方向标错" in str(v.get("msg") or "")]
+        assert mislabeled and all(v["alert"] is True for v in mislabeled)
         kept = _by_code(legacy.rules(), "glm-5.3-flash", "000028.SZ")
         assert [r["stop_loss"] for r in kept] == [19.3, None]   # sl 侧已丢，tp 侧留着
 

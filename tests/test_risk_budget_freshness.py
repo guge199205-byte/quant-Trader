@@ -2,15 +2,16 @@
 
 `configs/risk_budget.json` 由 cron 每交易日 09:10 重定档，是**所有实盘入口共用**
 的硬约束（live_hourly_analysis / live_llm_trade 都走 load_limits）。定档链路一
-旦静默故障（cron 没跑 / 数据源取不到 / 写入失败），当天所有入口会**无声地**沿用
-旧档位——档位偏松时等于风控半失效，且没有任何暴露面。
+旦静默故障（cron 没跑 / 数据源取不到 / 写入失败），当天所有入口会沿用旧档位
+——档位偏松时等于风控半失效，且没有任何暴露面。
 
-口径（有意为止损面最小的设计）：
-  - 只提醒，**不改行为**：过期照样返回档位（fail-open 维持，不阻断交易路径）；
-  - 应定档日 = 今天（交易日）否则最近一个交易日（周末/假期沿用上一交易日档位）；
-  - 文件缺失/损坏/结构异常同样返回 {}（由调用方各自默认），**但同样要告警**
-    （2026-09-12 审查 LOW）：读不到档位 = 当天按调用方硬编码默认跑（1.5/20%，
-    比预算档松），这正是「静默半失效」；旧实现只在 return {} 之前漏掉告警调用。
+口径（2026-09-18 机构级审计后**契约变更**）：
+  - 只提醒不改行为的 fail-open **已废弃**：档位不可信（缺失/损坏/过期/结构异常）
+    → 返回 `FALLBACK_LIMITS`（买入侧防守：单票 10% / 新开仓 1 只 / 单票上限 15%），
+    与 decide_level 的 fail-safe 同方向——风控读不到就收紧，不是放宽；
+  - **有意不含 leverage_max / leverage_trim_to**：强减是风险动作，数据故障不应
+    触发强平；fail-safe 的方向是"限制新增风险"，不是"制造新动作"；
+  - 应定档日 = 今天（交易日）否则最近一个交易日（周末/假期沿用上一交易日档位）。
 
 运行：/home/zbox/baymax/.venv/bin/python -m pytest tests/test_risk_budget_freshness.py -q
 """
@@ -35,7 +36,12 @@ FRI = date(2026, 9, 11)    # 交易日（周五）
 SAT = date(2026, 9, 12)    # 非交易日（周六）→ 应定档日 = 周五
 
 BUDGET = {"leverage_max": 1.2, "per_stock_pct": 0.15, "max_new_buys": 2,
-          "leverage_trim_to": 1.15}
+          "leverage_trim_to": 1.15, "per_stock_pos_pct": 0.25}
+#: 档位不可信时的买入侧回退（与 risk_budget_agent.FALLBACK_LIMITS 同源；2026-09-18）。
+#: 过期分支 = 买入侧三键强制回退 + **杠杆/强减键取文件原值**（评审 H-1：初版让
+#: 杠杆上限回落 1.5，是"故障放宽"，方向错误）。
+FALLBACK = {"per_stock_pct": 0.10, "max_new_buys": 1, "per_stock_pos_pct": 0.15}
+TIGHTENED = {**BUDGET, **FALLBACK}
 
 
 def _doc(d: date) -> dict:
@@ -90,15 +96,18 @@ def test_friday_budget_is_fresh_on_saturday(env, monkeypatch):
     assert _stale_events(env / "events.json") == []
 
 
-# ---------- 过期：提醒但行为不变 ----------
+# ---------- 过期/不可信：回退买入侧防守参数（fail-safe）+ 提醒 ----------
 
-def test_stale_budget_alerts_but_still_returns_limits(env, monkeypatch, capsys):
+def test_stale_budget_tightens_buy_side_but_keeps_leverage(env, monkeypatch, capsys):
+    """2026-09-18 契约变更：过期不再沿用旧档位买入侧，而是回退收紧；
+    杠杆/强减键取文件原值（不因数据故障放宽、也不制造强平——评审 H-1）。"""
     _freeze(monkeypatch, WED)
     p = _write(env / "budget.json", _doc(WED - timedelta(days=3)))
 
     lim = R.load_limits(p)
 
-    assert lim == BUDGET                                   # fail-open：不阻断
+    assert lim == TIGHTENED
+    assert lim["leverage_max"] == BUDGET["leverage_max"]       # 杠杆键取原值，未被放宽
     out = capsys.readouterr().out
     assert "风险预算异常" in out
     hits = _stale_events(env / "events.json")
@@ -119,13 +128,43 @@ def test_stale_budget_alert_is_once_per_day(env, monkeypatch):
 
 
 def test_missing_date_field_alerts(env, monkeypatch):
-    """老格式/写坏：没有日期字段同样算「不知道用的是哪天的档位」。"""
+    """老格式/写坏：没有日期字段同样算「不知道用的是哪天的档位」→ 买入侧回退。"""
     _freeze(monkeypatch, WED)
     p = _write(env / "budget.json", {"level": "caution", "budget": dict(BUDGET)})
 
-    assert R.load_limits(p) == BUDGET
+    assert R.load_limits(p) == TIGHTENED
     hits = _stale_events(env / "events.json")
     assert len(hits) == 1 and hits[0]["alert"] is True
+
+
+def test_missing_new_key_fills_buy_side_but_still_alerts(env, monkeypatch):
+    """写读键集漂移（2026-09-18 实况形态：新键 per_stock_pos_pct 已上线而
+    实盘档位文件还是旧版四键）→ 缺的买入侧键按防守补齐**且必须留痕**。
+
+    评审 MEDIUM：初版成功路径对缺键 `continue`，返回部分字典 → 新键静默不生效。
+    """
+    _freeze(monkeypatch, WED)
+    doc = {"date": WED.isoformat(), "level": "caution",
+           "budget": {k: v for k, v in BUDGET.items() if k != "per_stock_pos_pct"}}
+    p = _write(env / "budget.json", doc)
+
+    lim = R.load_limits(p)
+
+    # 已有键照旧（当天档位真实值），唯缺键按防守补齐
+    assert lim == {**{k: v for k, v in BUDGET.items() if k != "per_stock_pos_pct"},
+                   "per_stock_pos_pct": FALLBACK["per_stock_pos_pct"]}
+    hits = _stale_events(env / "events.json")
+    assert len(hits) == 1 and hits[0]["alert"] is True
+    assert "缺少键" in hits[0]["msg"] and "per_stock_pos_pct" in hits[0]["msg"]
+
+
+def test_fallback_never_contains_leverage_keys():
+    """钉死设计取舍：回退**只收紧买入侧**，不含杠杆/强减参数——数据故障不应
+    触发强平（fail-safe 的方向是限制新增风险，不是制造新动作）。"""
+    assert "leverage_max" not in R.FALLBACK_LIMITS
+    assert "leverage_trim_to" not in R.FALLBACK_LIMITS
+    assert R.FALLBACK_LIMITS["per_stock_pct"] <= 0.10
+    assert R.FALLBACK_LIMITS["max_new_buys"] <= 1
 
 
 def test_non_utf8_file_alerts_instead_of_raising(env, monkeypatch):
@@ -134,23 +173,23 @@ def test_non_utf8_file_alerts_instead_of_raising(env, monkeypatch):
 
     它是 ValueError 子类、**不是** OSError，只捕 OSError 会让它穿出 load_limits：
     无 print、无事件，退回「静默按默认档跑」——本函数要消的正是这个形态
-    （2026-09-12 复审 LOW）。"""
+    （2026-09-12 复审 LOW）。2026-09-18 起返回值改为 FALLBACK（回退收紧）。"""
     _freeze(monkeypatch, WED)
     p = env / "budget.json"
     p.write_bytes(b'{"date": "2026-09-09", "note": "\xe4\xb8')   # 多字节字符截断
 
-    assert R.load_limits(p) == {}
+    assert R.load_limits(p) == FALLBACK
     hits = _stale_events(env / "events.json")
     assert len(hits) == 1 and hits[0]["alert"] is True
     assert "UTF-8" in hits[0]["msg"]
 
 
-def test_missing_file_keeps_empty_semantics_but_alerts(env, monkeypatch):
-    """文件缺失维持 {} 语义（调用方各自默认），但必须留痕——读不到档位 =
-    当天按调用方默认档跑（可能比预算档松），不能再无声（2026-09-12 审查 LOW）。"""
+def test_missing_file_falls_back_to_buy_side_tightening(env, monkeypatch):
+    """文件缺失 → 回退 FALLBACK（买入侧收紧）并留痕——读不到档位不能再无声、
+    也不能按比预算档松的调用方默认跑（2026-09-18 契约变更）。"""
     _freeze(monkeypatch, WED)
 
-    assert R.load_limits(env / "absent.json") == {}
+    assert R.load_limits(env / "absent.json") == FALLBACK
     hits = _stale_events(env / "events.json")
     assert len(hits) == 1 and hits[0]["alert"] is True
     assert "不存在" in hits[0]["msg"] or "不可读" in hits[0]["msg"]
@@ -166,7 +205,7 @@ def test_corrupt_file_alerts_instead_of_silent_default(env, monkeypatch):
 
     for bad in ("", "{不是 JSON", '{"date":'):     # 空文件 / 垃圾 / 截断
         p.write_text(bad, encoding="utf-8")
-        assert R.load_limits(p) == {}
+        assert R.load_limits(p) == FALLBACK
 
     hits = _stale_events(env / "events.json")
     assert len(hits) == 1 and hits[0]["alert"] is True      # 同日一条（覆盖语义）
@@ -184,7 +223,7 @@ def test_non_dict_doc_does_not_raise_and_alerts(env, monkeypatch):
     for bad in ([1, 2], 5, "oops"):                # 都是合法 JSON、都不是 dict
         p = env / "budget.json"
         p.write_text(json.dumps(bad), encoding="utf-8")
-        assert R.load_limits(p) == {}
+        assert R.load_limits(p) == FALLBACK
 
     hits = _stale_events(env / "events.json")
     assert len(hits) == 1 and hits[0]["alert"] is True
@@ -197,7 +236,7 @@ def test_non_dict_budget_field_alerts(env, monkeypatch):
     _freeze(monkeypatch, WED)
     p = _write(env / "budget.json", {"date": WED.isoformat(), "budget": [1]})
 
-    assert R.load_limits(p) == {}
+    assert R.load_limits(p) == FALLBACK
     assert len(_stale_events(env / "events.json")) == 1
 
 
@@ -207,17 +246,17 @@ def test_missing_budget_field_alerts_even_with_fresh_date(env, monkeypatch):
     _freeze(monkeypatch, WED)
     p = _write(env / "budget.json", {"date": WED.isoformat(), "level": "calm"})
 
-    assert R.load_limits(p) == {}
+    assert R.load_limits(p) == FALLBACK
     hits = _stale_events(env / "events.json")
     assert len(hits) == 1 and hits[0]["alert"] is True and "budget" in hits[0]["msg"]
 
 
 def test_empty_budget_object_alerts(env, monkeypatch):
     """budget 是空对象（写入侧 bug 形态）→ 一个档位都取不到，与缺失同罪：
-    返回 {} 却无声 = 当天按调用方默认档跑。"""
+    旧行为返回 {} 却无声 = 当天按调用方默认档跑；现回退 FALLBACK。"""
     _freeze(monkeypatch, WED)
     p = _write(env / "budget.json", {"date": WED.isoformat(), "budget": {}})
 
-    assert R.load_limits(p) == {}
+    assert R.load_limits(p) == FALLBACK
     hits = _stale_events(env / "events.json")
     assert len(hits) == 1 and "可用" in hits[0]["msg"]

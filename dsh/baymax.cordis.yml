@@ -51,6 +51,35 @@
         （daily_review、market_analysis、stock_picks、trading_agents/...），
         报告落盘即在此，quantmind 前端「股票报告」页可见。
 
+      【QQ 用户指令路由（必须遵守，2026-09-14 加入）】
+      用户在 QQ 给本机器人发的消息若形如：
+      - `@<agent> 停买` 或 `@<agent> 暂停买入`   → op=halt_buy（冻结该 agent 买入）
+      - `@<agent> 恢复买入` → op=resume_buy（解除冻结）
+      - `@<agent> 清仓 <6位股票代码>`  → op=sell, code=<代码>（强制清仓该股可卖量）
+      用 bash 把一条命令**追加**到 /root/quantAI/commands.json（文件不存在就创建
+      {"version":1,"commands":[]}；写入保持合法 JSON）。命令对象：
+        {"id": "<unix秒>-<4位随机>", "ts": "<当前ISO时间+08:00>",
+         "agent": "<目标agent名，如 deepseek-v4-pro>",
+         "op": "halt_buy|resume_buy|sell", "code": "<代码或null>",
+         "note": "<用户原话，≤60字>", "active": true}
+      写完回复用户：`指令已收到：<原话>`。**你自己不要执行任何交易动作**，
+      系统闸门会读取并强制执行（卖出有 T+1/跌停保护，无需你干预）。
+      不确定怎么解析的用户消息：回复用户命令格式，不落盘。
+
+      【QQ 用户问答（2026-09-14 加入，@agent 身份回答）】
+      用户在 QQ 发的消息若**以 `@<agent名>` 开头**（如「@deepseek-v4-pro 现在
+      什么持仓」「@glm-5.3-flash 为什么买它」）：
+      - 指令型（停买/暂停买入/恢复买入/清仓 <代码>）仍按上方路由落盘，不进入
+        问答；
+      - 其余一律视为**对该 agent 的提问**：你以该 agent 的**第一人称身份**回答
+        ——首行写 `@{agent名} 回复：`，内容基于事实：读 /quantmind/data 与
+        baymax_cn_memory（该 agent 沉淀的记忆）、baymax_quantdb（持仓/行情/
+        信号）、最近决策记录（logs 里该 agent 的决策、live_watch.json 的条件位
+        止损/止盈）。回答持仓（成本/数量/盈亏）、最近买卖与理由、「当前挂了什么
+        止损止盈价」等；不知道就明说不知道，禁止编造数字。
+      未以 @agent 开头的消息：以你本人（交易总管家）身份回答系统性问题，
+      并提示可用格式 `@<agent名> <问题>` 直接问对应 agent。
+
       【执行能力边界（实测，禁止假装）】
       - 本容器有 node + bash，无 python3、无 curl、无 docker CLI、未挂
         docker.sock → 技能契约里的「docker exec quantmind 跑 python 脚本」
@@ -179,3 +208,24 @@
         url: http://localhost:8304/mcp
         toolCallTimeoutMs: 30000
         failOnStartupError: false
+
+# ---- web 端 cookie 有效期（dsh 0.1.5 起 web 强制 token 鉴权）----
+# 0.1.5 给 web 加了强制 token/cookie 鉴权（0.1.1-rc.2 没有），cookie 默认 30 天到期，
+# 而 arena 的 /harness 是个 src 写死、不带 token 的 iframe —— 只能靠 cookie 进门。
+# 本系统由 dsh-proxy 自动注入一个用持久密钥签发的 cookie（见 dsh/proxy/），
+# 把有效期设长，做到「签一次、长期有效」，用户永远不用手动交换 token。
+#
+# ⚠️ 上限约束（源码 dsh-client-connection authorizeIndex）：
+#      expiresAt - issuedAt <= cookieMaxAgeDays * 1天
+#    改这里之后必须重跑 scripts/dsh_auth_cookie.sh 重新签发（否则旧 cookie 因超龄被拒）。
+#
+# ⚠️⚠️ 补丁条目的 `config` 是**整体替换、不是合并**（2026-09-13 实测踩坑）：
+#    dsh-web-app 的 cordis.patch.yml 给 connection 设了
+#        trustedHosts: !!js ctx.webRuntime.trustedHosts
+#    只写 cookieMaxAgeDays 会把 trustedHosts 一起抹掉 → /api 的浏览器信任围栏
+#    拒绝所有 LAN authority（192.168.31.68:3081/8093 全 403），首页能开但实时流全断。
+#    所以这里必须把原表达式一并重写。
+- id: connection
+  config:
+    trustedHosts: !!js ctx.webRuntime.trustedHosts
+    cookieMaxAgeDays: 3650

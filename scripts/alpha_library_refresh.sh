@@ -60,11 +60,14 @@ if [ -n "$AL_DT" ] && [ "$AL_DT" -ge "$KL_DT" ]; then
     exit 0
 fi
 
-# 3) 写权限闸门：合并阶段要重写最终分区，非本用户可写的目录会 PermissionError 中止
-#    （白跑一整轮）。发现即跳过并留明确修法，别等 80 分钟后才失败。
-NOWRITABLE=$(find "$ALPHA_ROOT" -maxdepth 1 -type d ! -writable 2>/dev/null | head -3)
+# 3) 写权限闸门：合并阶段要重写最终分区（**dt=* 目录**），非本用户可写的 dt=* 会
+#    PermissionError 中止（白跑一整轮）。只检查 dt=* —— report/ 等旁路目录由其他
+#    工具维护，合并不写它们（2026-09-18 实录：report/ 属 root 触发本闸门连续
+#    4 夜误跳（09-15~09-18），而合并根本不碰 report/；正确修法是把检查面收窄到
+#    合并真正重写的 dt=*，同时 chown 掉旁路目录保持树整洁）。
+NOWRITABLE=$(find "$ALPHA_ROOT" -maxdepth 1 -type d -name 'dt=*' ! -writable 2>/dev/null | head -3)
 if [ -n "$NOWRITABLE" ]; then
-    log_line "跳过：最终分区有 $(find "$ALPHA_ROOT" -maxdepth 1 -type d ! -writable 2>/dev/null | wc -l) 个目录不可写（合并会 PermissionError）→ sudo chown -R $(id -un):$(id -gn) $ALPHA_ROOT；示例：$(echo "$NOWRITABLE" | tr '\n' ' ')"
+    log_line "跳过：最终分区有 $(find "$ALPHA_ROOT" -maxdepth 1 -type d -name 'dt=*' ! -writable 2>/dev/null | wc -l) 个 dt=* 目录不可写（合并会 PermissionError）→ sudo chown -R $(id -un):$(id -gn) $ALPHA_ROOT；示例：$(echo "$NOWRITABLE" | tr '\n' ' ')"
     exit 0
 fi
 

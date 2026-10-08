@@ -28,6 +28,7 @@ from backend.config import (
     get_enabled_markets,
     load_backend_config,
 )
+from backend.services.text_io import read_text_lossy
 from backend.services import agent_data
 from prompts.analysis_modes import MODES, load_selection, save_selection
 
@@ -310,7 +311,7 @@ def _merge_live_fills(agent: str, closed: list) -> list:
     items = list(closed)
     for f in sorted(logs_dir.glob("live_trade_*.jsonl")):
         try:
-            text = f.read_text(encoding="utf-8")
+            text = read_text_lossy(f)
         except OSError:
             continue
         for line in text.splitlines():
@@ -394,21 +395,18 @@ def live_account():
     except Exception:  # noqa: BLE001
         names = {}
     names = {**names, **_quantdb_stock_names()}
-    # 买入时间：从交易日志取该 code 最近成功买入的 ts
+    # 买入时间：分账账本优先（与持仓 tab 按模型显示的买入时刻同源）+ 交易日志 FIFO 兜底。
+    # 旧实现只认 execute+result 行且不辨买卖——现行成交流走 fill/fill_confirm 形状全被
+    # 跳过，持仓 buy_time 大多为空（2026-09-15 持仓页日期筛选暴露）。推导口径见
+    # backend/services/live_buy_time.py。
+    from backend.services import live_buy_time
+
     logs_dir = Path(__file__).resolve().parents[1] / "logs"
-    buy_ts: dict = {}
-    for f in sorted(logs_dir.glob("live_trade_*.jsonl")):
-        try:
-            text = f.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for line in text.splitlines():
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if rec.get("mode") == "execute" and rec.get("result") and rec.get("code"):
-                buy_ts.setdefault(rec["code"], rec.get("ts", ""))
+    try:
+        ledger = json.loads((logs_dir / "live_ledger.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        ledger = {"agents": {}}
+    buy_ts = live_buy_time.live_buy_times(ledger, live_buy_time.read_trade_records(logs_dir))
     for p in positions:
         code = p.get("stock_code") or ""
         cost = float(p.get("cost_price") or 0)
@@ -1168,7 +1166,7 @@ def live_equity():
     f = Path(__file__).resolve().parents[1] / "logs" / "live_equity.jsonl"
     total, agents = [], {}
     try:
-        text = f.read_text(encoding="utf-8")
+        text = read_text_lossy(f)
     except OSError:
         return {"success": True, "data": {"total": total, "agents": agents}}
     for line in text.splitlines():
@@ -1277,7 +1275,7 @@ def live_analyze_status(limit: int = Query(10, ge=1, le=50), type: str = Query("
     path = Path(__file__).resolve().parents[1] / "logs" / "analysis_jobs.jsonl"
     rows = []
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in read_text_lossy(path).splitlines():
             if not line.strip():
                 continue
             try:
@@ -1372,8 +1370,8 @@ def ops_submit(payload: dict):
 def ops_status(limit: int = Query(5, ge=1, le=30)):
     rows = []
     try:
-        for l in (Path(__file__).resolve().parents[1] / "logs" / "ops_cmds.jsonl") \
-                .read_text(encoding="utf-8").splitlines():
+        for l in read_text_lossy(Path(__file__).resolve().parents[1] / "logs" / "ops_cmds.jsonl") \
+                .splitlines():
             if l.strip():
                 rows.append(json.loads(l))
     except (OSError, ValueError):
@@ -1396,7 +1394,7 @@ def token_usage():
                                             "completion_tokens": 0, "total_tokens": 0,
                                             "estimated": 0, "last_ts": None})
             try:
-                text = logf.read_text(encoding="utf-8")
+                text = read_text_lossy(logf)
             except OSError:
                 continue
             for line in text.splitlines():
@@ -1428,7 +1426,7 @@ def live_trades(limit: int = Query(200, ge=1, le=5000)):
     records = []
     for f in sorted(logs_dir.glob("live_trade_*.jsonl")):
         try:
-            text = f.read_text(encoding="utf-8")
+            text = read_text_lossy(f)
         except OSError:
             continue
         for line in text.splitlines():
@@ -1502,7 +1500,7 @@ def live_closed(limit: int = Query(60, ge=1, le=300)):
         if any(m in f.name for m in ("_us_", "_hk_")):
             continue
         try:
-            text = f.read_text(encoding="utf-8")
+            text = read_text_lossy(f)
         except OSError:
             continue
         for line in text.splitlines():
@@ -1588,8 +1586,7 @@ def live_closed(limit: int = Query(60, ge=1, le=300)):
     # 带 approx 标记；与实时重建按 symbol+exit_date 去重，实时优先）
     backfill = []
     try:
-        for line in (logs_dir / "live_closed_backfill.jsonl").read_text(
-                encoding="utf-8").splitlines():
+        for line in read_text_lossy(logs_dir / "live_closed_backfill.jsonl").splitlines():
             if not line.strip():
                 continue
             try:

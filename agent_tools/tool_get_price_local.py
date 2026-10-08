@@ -318,7 +318,7 @@ def get_price_local_function(symbol: str, date: str, filename: str = "merged.jso
         Dictionary containing symbol, date and ohlcv data.
     """
     try:
-        _validate_date(date)
+        _validate_date_daily(date)   # 这里读的是日线 merged.jsonl，口径同 get_price_local_daily
     except ValueError as e:
         return {"error": str(e), "symbol": symbol, "date": date}
 
@@ -376,29 +376,51 @@ def get_l2_market_data(symbol: str, ticks: int = 100) -> Dict[str, Any]:
         ticks: 逐笔条数上限（1-500，默认 100）
 
     Returns:
-        snapshot: 五档盘口/最新价/开高低/昨收/内外盘/涨速
+        snapshot: 五档盘口/最新价/开高低/昨收/内外盘/涨速（主载荷，**逐笔失败也仍然可用**）
         ticks: 最近逐笔 [{time, price, volume, side}]
-        agg: 逐笔聚合 {buy_vol, sell_vol, net_buy_vol, buy_pct, n}
-        ok/error: 结果状态
+        agg: 逐笔聚合 {buy_vol, sell_vol, net_buy_vol, buy_pct, n}；**逐笔取不到时为 null**
+        tick_error: 只在逐笔取不到时出现（异常文本，或「无数据」说明）。
+            **它缺席 = 逐笔载荷真的到了**（哪怕里面是空数组 → agg.n=0 是真的零成交）
+        ok/error: 结果状态。`ok: True` 指**快照**取到了——逐笔是否也在看 tick_error，
+            不要把 `agg: null` 读成「没有主动成交」：那是「不知道」，与 0 相反。
     """
     now = time.time()
     cached = _l2_cache.get(symbol)
     if cached and now - cached[0] < _L2_CACHE_TTL:
         return {**cached[1], "cached": True}
     try:
-        from agent_tools.datasources.tdx_aidata import get_quote, get_tick_data
+        from agent_tools.datasources import tdx_aidata
 
         if ticks < 1 or ticks > 500:
             ticks = 100
-        q = get_quote(symbol)
+        # 前置能力检查：闸门置位/熔断打开/加载失败时给出**可行动**的说明，而不是
+        # 让调用方看到一句裸 RuntimeError（或更糟：卡在 .so 的挂死重连里不许返回）。
+        reason = tdx_aidata.gate_reason()
+        if reason:
+            return {"ok": False, "error": reason, "symbol": symbol, "src": "tdx_aidata"}
+        open_state = tdx_aidata.breaker_open()
+        if open_state:
+            return {"ok": False, "symbol": symbol, "src": "tdx_aidata",
+                    "error": (f"TdxAiData 熔断中（连续 {open_state.get('fail_streak')} 次失败，"
+                              f"自 {open_state.get('first_fail_ts')}）："
+                              f"{open_state.get('error') or ''}。"
+                              "改用 get_market_snapshot / get_exday_data（桥）取盘口与成交。")}
+        if not tdx_aidata.available():
+            return {"ok": False, "error": "TdxAiData 不可用（未加载）", "symbol": symbol,
+                    "src": "tdx_aidata"}
+        q = tdx_aidata.get_quote(symbol)
         if not isinstance(q, dict):
             return {"ok": False, "error": f"快照异常: {q}", "symbol": symbol}
         today = date.today().isoformat()
         try:
-            tk = get_tick_data(symbol, today, startxh=0, wantnum=ticks)
+            tk = tdx_aidata.get_tick_data(symbol, today, startxh=0, wantnum=ticks)
         except Exception as e:  # 盘中数据可能尚未就绪/接口限流
             tk = {"error": f"{type(e).__name__}: {e}"}
         ticks_out, buy_vol, sell_vol = [], 0, 0
+        # 逐笔取不到时**必须留下缺口标记**：旧形状把这种情况渲染成
+        # ticks=[] + agg 全 0，与「今天真的一笔主动成交都没有」逐字相同，
+        # 而异常文本被就地丢弃——两者对决策的含义相反，不能同形。
+        tick_error = None
         if isinstance(tk, dict) and "Price" in tk:
             for i, price in enumerate(tk["Price"]):
                 flag = str(tk.get("BSFlag", ["0"])[i] if i < len(tk.get("BSFlag", [])) else "0")
@@ -414,6 +436,11 @@ def get_l2_market_data(symbol: str, ticks: int = 100) -> Dict[str, Any]:
                     "volume": vol,
                     "side": side,
                 })
+        elif isinstance(tk, dict) and tk.get("error"):
+            tick_error = str(tk["error"])[:200]
+        else:
+            tick_error = ("逐笔无数据（返回空或缺少 Price 字段；可能未开盘、停牌或限流。"
+                          "agg 因此为 null——是「不知道」，不是「零成交」）")
         total = buy_vol + sell_vol
         result = {
             "ok": True,
@@ -436,7 +463,9 @@ def get_l2_market_data(symbol: str, ticks: int = 100) -> Dict[str, Any]:
                 "ask_vol": [_l2_num(v) for v in q.get("Sellv", [])[:5]],
             },
             "ticks": ticks_out[-ticks:],
-            "agg": {
+            # 逐笔取不到 → agg 是 **null**（不是一串 0）：全 0 的聚合会被读成
+            # 「真的零成交」，与「没取到」含义相反。
+            "agg": None if tick_error else {
                 "n": len(ticks_out),
                 "buy_vol": buy_vol,
                 "sell_vol": sell_vol,
@@ -444,6 +473,8 @@ def get_l2_market_data(symbol: str, ticks: int = 100) -> Dict[str, Any]:
                 "buy_pct": round(buy_vol / total * 100, 1) if total else None,
             },
         }
+        if tick_error:
+            result["tick_error"] = tick_error
         _l2_cache[symbol] = (now, result)
         return result
     except Exception as e:

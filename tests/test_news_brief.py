@@ -472,20 +472,26 @@ def test_agent_locked_idle_gate():
 
 def test_trade_recap_intent_note(monkeypatch, tmp_path):
     """回归 2026-09-08：卖出 600×33% 意图 199 → 整手合规实卖 100，模型下一轮
-    对不上账。成交日志记 intent_volume，回顾块对偏差交易注入对照说明。"""
+    对不上账。成交日志记 intent_volume，回顾块对偏差交易注入对照说明。
+
+    时间基准：build_trade_recap 只看近 7 天（cutoff = now−7d），测试数据**必须
+    相对今天生成**——此前钉死 2026-09-08，过了 09-15 就恒失败（定时炸弹测试，
+    2026-09-18 修）。"""
     import live_prompt_context as PC
+    from datetime import datetime, timedelta
 
     monkeypatch.setattr(PC, "ROOT", tmp_path)
     logs = tmp_path / "logs"
     logs.mkdir()
+    day = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     rows = [
-        {"ts": "2026-09-08T10:05:00+08:00", "agent": "t-agent", "code": "600309.SH",
+        {"ts": f"{day}T10:05:00+08:00", "agent": "t-agent", "code": "600309.SH",
          "side": "sell", "mode": "execute_intraday", "volume": 100, "price": 77.68,
          "intent_volume": 199, "fill": {"filled_volume": 100, "filled_price": 77.68}},
-        {"ts": "2026-09-08T10:06:00+08:00", "agent": "t-agent", "code": "688183.SH",
+        {"ts": f"{day}T10:06:00+08:00", "agent": "t-agent", "code": "688183.SH",
          "side": "sell", "mode": "execute_intraday", "volume": 350, "price": 131.0,
          "intent_volume": 350, "fill": {"filled_volume": 350, "filled_price": 131.0}},
-        {"ts": "2026-09-08T10:07:00+08:00", "agent": "t-agent", "code": "600309.SH",
+        {"ts": f"{day}T10:07:00+08:00", "agent": "t-agent", "code": "600309.SH",
          "side": "sell", "mode": "execute_intraday", "volume": 50, "price": 77.0,
          "fill": {"filled_volume": 50, "filled_price": 77.0}},  # 旧行无 intent → 无对照
     ]
@@ -636,7 +642,8 @@ UNTIL = "2026-09-09T14:40:00+08:00"
 PRIOR_CURSOR = "2026-09-09T13:55:00+08:00"
 
 
-def _setup_pipeline(monkeypatch, tmp_path, *, segments_ok=True, watch=None):
+def _setup_pipeline(monkeypatch, tmp_path, *, segments_ok=True, watch=None,
+                    chief_ok=True):
     """run_pipeline 全链路打桩：不碰真实 state/latest/对话日志，也不真调 LLM。
 
     返回 (calls, saved)：calls = 各段调用顺序（证明 HOLD 串行在 macro/micro 之后），
@@ -658,6 +665,8 @@ def _setup_pipeline(monkeypatch, tmp_path, *, segments_ok=True, watch=None):
             return ("H | 600309.SH | 万华化学 | 利好 | 1 | 涨价：MDI挂牌价上调→"
                     "聚氨酯龙头成本传导 | 板块传导\nC | 0.5"), None
         if stage == N.CHIEF:
+            if not chief_ok:                     # 主编截断/解析失败 → 无产出
+                return "", None
             return ("T | 化工景气 | 涨价传导\n"
                     "H | 600309.SH | 万华化学 | 利好 | 1 | 短期 | 涨价 | "
                     "MDI挂牌价上调 | 板块传导 | \n"
@@ -800,6 +809,26 @@ def test_stage_single_run_keeps_cursor(monkeypatch, tmp_path):
     assert calls == [N.HOLD]                    # 单跑只调该段
     assert saved["state"]["last_end"] == PRIOR_CURSOR
     assert "brief" not in saved                 # 单跑不经主编 → 不写 latest.json
+
+
+def test_chief_failure_does_not_advance_cursor(monkeypatch, tmp_path, capsys):
+    """主编失败（截断/无产出）的那一轮**不得推进游标**（2026-09-18）。
+
+    此前 advance=not fails 只检查桶失败：主编截断轮照推 last_end —— 该窗口
+    新闻永久丢失（下一轮从新游标起），且 last_end 假装健康，停更告警看不出
+    主编持续失败。方向与其他失败一致：宁可重复处理，不可静默丢失。
+    """
+    calls, saved = _setup_pipeline(monkeypatch, tmp_path, chief_ok=False)
+
+    assert N.run_pipeline(since_iso=SINCE, window_until=UNTIL,
+                          stages=N.ALL_STAGES, force=True) == 0
+
+    assert N.CHIEF in calls
+    assert "brief" not in saved                            # 主编无产出 → 不写分子
+    assert saved["state"]["last_end"] == PRIOR_CURSOR      # 游标不动，下轮重取
+    assert "last_chief_fail" in saved["state"]             # 且留下失败标记
+    # 日志原因必须指向主编（评审 L-1：写死"有桶失败"会把排查带偏）
+    assert "主编无产出" in capsys.readouterr().out
 
 
 def test_hold_pipe_row_parses_event_type_and_source():

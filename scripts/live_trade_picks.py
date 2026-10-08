@@ -37,7 +37,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agent_tools.brokers.tdx_bridge import TdxBridgeBroker  # noqa: E402
+import gate_rules  # noqa: E402  规则 id 词表（影子代价账的分组键）
 # 实盘分账（每 agent ¥10 万虚拟子账户）
 from live_ledger import (  # noqa: E402
     AGENT_QUOTA,
@@ -83,18 +85,23 @@ def latest_klines(broker, code: str) -> list:
 
 
 def compute_order(bars: list, cash: float, pct: float, code: str = "") -> dict:
-    """由 K 线计算下单参数：现价/涨跌幅/单量/限价（板块口径涨跌停+买入量合规化）。"""
+    """由 K 线计算下单参数：现价/涨跌幅/单量/限价（板块口径涨跌停+买入量合规化）。
+
+    拒单返回里带 `rule`：稳定的规则 id（gate_rules 词表）——`reason` 是中文
+    句子、可以改；影子代价账按 id 分组算成本，拿句子当键会在改文案那天断档
+    （同 buy_gate.BuyDecision.rule）。
+    """
     if len(bars) < 2:
-        return {"ok": False, "reason": "K线不足"}
+        return {"ok": False, "reason": "K线不足", "rule": gate_rules.DATA_NO_QUOTE}
     last, prev = bars[-1], bars[-2]
     # 桥返回字符串价格、TdxAiData 可能返回 NaN，需 float + isfinite 检查（math 顶层导入）
     try:
         price = float(last.get("close") or last.get("open") or 0)
         prev_close = float(prev.get("close") or 0)
     except (TypeError, ValueError):
-        return {"ok": False, "reason": "价格解析失败"}
+        return {"ok": False, "reason": "价格解析失败", "rule": gate_rules.DATA_NO_QUOTE}
     if not math.isfinite(price) or not math.isfinite(prev_close) or not price or not prev_close:
-        return {"ok": False, "reason": "无有效价格"}
+        return {"ok": False, "reason": "无有效价格", "rule": gate_rules.DATA_NO_QUOTE}
     chg = (price - prev_close) / prev_close * 100
     # 涨停/跌停/停牌过滤（板块口径 ±10%/±20%/±30%；停牌=无最新 bar 或成交量为 0）
     from ashare_rules import (MIN_LOT_SLACK, at_limit_down, at_limit_up,
@@ -102,11 +109,11 @@ def compute_order(bars: list, cash: float, pct: float, code: str = "") -> dict:
     from live_fills import buy_limit_and_cost          # 限价口径的唯一出处
 
     if at_limit_up(code, chg):
-        return {"ok": False, "reason": f"涨停（{chg:+.1f}%），不追"}
+        return {"ok": False, "reason": f"涨停（{chg:+.1f}%），不追", "rule": gate_rules.LIMIT_UP}
     if at_limit_down(code, chg):
-        return {"ok": False, "reason": f"跌停（{chg:+.1f}%），不接"}
+        return {"ok": False, "reason": f"跌停（{chg:+.1f}%），不接", "rule": gate_rules.LIMIT_DOWN}
     if not last.get("volume"):
-        return {"ok": False, "reason": "停牌或无成交"}
+        return {"ok": False, "reason": "停牌或无成交", "rule": gate_rules.SYMBOL_HALTED}
     budget = cash * pct
     raw_vol = round_buy_qty(code, int(budget / price))
     # 资金量判据（2026-09-09）：最小可买股数（科创板 200，其余 100）× 现价 > 单票预算
@@ -116,9 +123,11 @@ def compute_order(bars: list, cash: float, pct: float, code: str = "") -> dict:
     if raw_vol <= 0 or raw_vol * price > budget * MIN_LOT_SLACK:
         return {"ok": False,
                 "reason": f"资金不足：最小可买 {min_buy_qty(code)} 股需 ¥{need:,.0f}"
-                          f" > 单票预算 ¥{budget:,.0f}（剩余额度×{pct:.0%}）"}
+                          f" > 单票预算 ¥{budget:,.0f}（剩余额度×{pct:.0%}）",
+                "rule": gate_rules.BUDGET_BELOW_MIN_LOT}
     if raw_vol < 100:
-        return {"ok": False, "reason": "资金不足 1 手"}
+        return {"ok": False, "reason": "资金不足 1 手",
+                "rule": gate_rules.BUDGET_BELOW_MIN_LOT}
     # 限价口径成本：见 live_fills.buy_limit_and_cost（三市场唯一出处）。
     # 原先这里与美/港股各写一遍，已实测漂移（美/港股那份按现价算）——收敛到一处。
     limit_price, cost = buy_limit_and_cost(price, raw_vol, "cn")
@@ -231,7 +240,7 @@ def sell_flow(broker, args, log_line) -> int:
         chg = (price - prev_close) / prev_close * 100
         # 板块口径统一走 ashare_rules（主板 ±10 / 创业板·科创 ±20 / 北交 ±30，含 ST）：
         # 原 `chg <= -9.9` 硬编码对 20% 板块会把 -10%~-20% 的可卖仓位误判成跌停跳过
-        from ashare_rules import at_limit_down, protect_sell_price, round_sell_qty
+        from ashare_rules import aggressive_sell_price, at_limit_down, round_sell_qty
 
         if at_limit_down(code, chg):
             print(f"⏭️  {code}: 跌停（{chg:+.1f}%），卖不出，跳过")
@@ -242,11 +251,13 @@ def sell_flow(broker, args, log_line) -> int:
         if vol <= 0:
             print(f"⏭️  {code}: 卖出量不足 1 手，跳过")
             continue
-        limit = round(price * 0.99, 2)  # 限价卖：现价 -1%
-        floor = protect_sell_price(code, prev_close)   # 当日跌停价
-        if floor is not None and limit < floor:
-            # 近跌停时现价-1% 会低于跌停价 → 桥的本地价格保护带直接拒单（带外报价）
-            limit = floor
+        # 限价卖口径唯一出处（2026-09-21 审查 MEDIUM-5）：旧实现自建 round() 而非
+        # ashare_rules.limit_price 的 HALF_UP，且下限夹取各写各的。报跌停价在连续
+        # 竞价属越界申报（41 笔废单实录），统一走 max(跌停价, 现价×0.99)。
+        limit = aggressive_sell_price(code, prev_close, price)
+        if limit is None:
+            print(f"⏭️  {code}: 无法计算合法报单价，跳过")
+            continue
         print(f"📉 {code}: 现价 ¥{price:.2f} ({chg:+.2f}%) 拟卖 {vol}/{avail} 股 限价 ¥{limit:.2f}")
         if code in pending_sell:
             print(f"   ⚠️  {code}: 已有在途卖单未确认（data/live_pending_orders.json）"

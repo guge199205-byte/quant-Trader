@@ -62,6 +62,7 @@ def sample_once() -> None:
     mdir = ROOT / "logs" / "min_snapshots"
     mdir.mkdir(parents=True, exist_ok=True)
     f = mdir / f"{now:%Y-%m-%d}.jsonl"
+    fails: list = []
     for code in cs:
         try:
             r = broker.tdx_call("get_market_snapshot", {"stock_code": code}) or {}
@@ -75,8 +76,18 @@ def sample_once() -> None:
                    "open": r.get("Open"), "lastclose": r.get("LastClose")}
             with f.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            # 绝不静默丢弃。2026-09-22 上午实录：盘满后这里的写盘全部 OSError(28)，
+            # 被裸 `continue` 吞掉且**本文件没有任何 print** → min_snapshots 09-22
+            # 首行 13:45:42，上午四个半小时的快照整段缺失而零日志零告警
+            # （它正是 minute_feats 的唯一数据源）。成功路径仍不打印（cron 每分钟
+            # 跑，不刷屏），只在真失败时每次调用一行。
+            fails.append(f"{code}:{type(exc).__name__}")
             continue
+    if fails:
+        more = f" 等 {len(fails)} 只" if len(fails) > 3 else ""
+        print(f"[{now:%F %T}] ⚠️ 快照采样失败 {len(fails)}/{len(cs)} 只："
+              f"{'，'.join(fails[:3])}{more}")
 
 
 def main() -> int:

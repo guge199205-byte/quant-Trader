@@ -49,6 +49,8 @@ if [ "$API" = 1 ]; then
   # quantmind 代理（token 缓存 + 转发）：2026-09-09 死锁修复前漏在镜像里（Aug 30 构建），
   # 只改宿主不拷容器 = 白改。凡是 backend/services/ 下被 api_server 直接 import 的模块都要列在这
   docker exec -i baymax-api sh -c 'cat > /app/backend/services/quantmind_proxy.py' < backend/services/quantmind_proxy.py
+  # 实盘持仓买入时间回填（live_account 直接 import；漏拷该接口 500）
+  docker exec -i baymax-api sh -c 'cat > /app/backend/services/live_buy_time.py' < backend/services/live_buy_time.py
   # 行情实验室：服务模块 + 策略模板（Pyne 代码，运行时直接读文件）
   docker exec -i baymax-api sh -c 'cat > /app/backend/services/market_lab.py' < backend/services/market_lab.py
   # 指标捕获（K 线上的 EMA/MACD/RSI）：market_lab 直接 import，漏拷会在回测接口 500

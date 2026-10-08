@@ -155,15 +155,24 @@ def load_pool(path: Path | None = None) -> list[dict]:
     return out
 
 
-def _append(rows: list[dict], path: Path) -> None:
+def append_rows(rows: list[dict], path: Path) -> None:
+    """追加一批记录。**先整体序列化再开文件**：逐行 dumps 遇不可序列化值会
+    "前几行已落盘、后面整批丢"（09-18 审查实测：score 塞 set → 文件空虚），
+    而 pool_ctx 把调用方的池行值原样带进 JSON 后，这个面变宽了。
+
+    公开的写入原语（2026-09-19）：决策池与影子账（ghost_ledger）共用同一份
+    追加语义，**不各自实现**——"先序列化后写"这条纪律复制出去必丢。
+    """
+    if not rows:
+        return                                  # 空批不落空行（各调用点仍有 if rows 守卫）
+    payload = "\n".join(json.dumps(r, ensure_ascii=False) for r in rows)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        f.write(payload + "\n")
 
 
-def _rewrite(pool: list[dict], path: Path) -> None:
-    """原子重写（tmp + replace）：滚动更新回填远期收益。"""
+def rewrite_pool(pool: list[dict], path: Path) -> None:
+    """原子重写（tmp + replace）：滚动更新回填远期收益。同样供影子账共用。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
@@ -173,6 +182,70 @@ def _rewrite(pool: list[dict], path: Path) -> None:
 
 
 # ---------------------------------------------------------------- 入池
+
+#: 池外标的的位置戳（决策 code 既不在展示集也不在剔除名单）。
+#: 也是 pool_score_report 里 GROUP_OFF 的判据来源（state=="off"）。
+ABSENT_POS = {"state": "off", "shown": False, "rank": None, "score": None, "fusion": None}
+
+
+def pool_stamp(shown, dropped=None, full=None, pool_file: str = "") -> dict:
+    """该 agent 本轮**实际看到的**候选池 → 位置戳（P2，2026-09-18）。
+
+    返回 {"file", "n_shown", "n_dropped", "codes": {code: 位置}}；位置四键：
+      state="shown"    在模型看到的表里（filter_affordable 之后）
+      state="dropped"  池里有、被资金闸剔除（模型看不到；高分票常因贵先出局）
+      state="off"      池外标的（持仓盯盘/新闻自选）
+      rank/score/fusion 该行在池文件里的原始值（缺则 None）
+
+    state 与 rank **分开记**（09-18 审查 MEDIUM）：池行可能没有 rank
+    （select_from_reports 的 md 兜底分支就给所有行 rank=None），此时
+    "被剔除"与"池外"在 rank 上不可区分——只看 rank 会把"资金约束买不了高分票"
+    读成"模型无视分数"，方向完全相反。pool_stamp 本来就知道答案（只有出现在
+    dropped 名单里才走被剔除那支），所以在这一层写死，不让读方去反推。
+
+    整份空池（09-11/09-15 实录）是有效观测（n_shown=0），不是插桩缺失。
+    """
+    codes: dict[str, dict] = {}
+
+    def _rows(x) -> list:
+        """序列 → list；None/标量/字符串一律当空（降级而不是抛进主链路）。
+
+        收 tuple/set（09-18 审查 HIGH）：只认 `list` 会把非 list 序列静默读成
+        "空池"——而空池在本模块里是**合法观测**（n_shown=0），错读不留痕。
+        """
+        if isinstance(x, (list, tuple, set, frozenset)):
+            return list(x)
+        return []
+
+    def _code(x) -> str:
+        """键规范化：与 ingest 侧决策 code 同口径（两侧同一处 strip）。"""
+        return str(x or "").strip()
+
+    def _pos(row, state: str) -> dict:
+        row = row if isinstance(row, dict) else {}
+        return {"state": state, "shown": state == "shown", "rank": row.get("rank"),
+                "score": row.get("score"), "fusion": row.get("fusion")}
+
+    shown_rows = [r for r in _rows(shown) if isinstance(r, dict) and _code(r.get("code"))]
+    for r in shown_rows:
+        codes[_code(r["code"])] = _pos(r, "shown")
+    index = {_code(r["code"]): r for r in _rows(full)
+             if isinstance(r, dict) and _code(r.get("code"))}
+    dropped_rows = []
+    for item in _rows(dropped):
+        if isinstance(item, dict):
+            code = _code(item.get("code"))
+        elif isinstance(item, (tuple, list)):
+            code = _code(item[0] if item else "")
+        else:
+            code = _code(item)
+        if not code:
+            continue
+        dropped_rows.append(code)
+        codes.setdefault(code, _pos(index.get(code), "dropped"))
+    return {"file": str(pool_file or ""), "n_shown": len(shown_rows),
+            "n_dropped": len(dropped_rows), "codes": codes}
+
 
 def _kind_of(action: str, code: str, held: set) -> str | None:
     """决策 → 记分卡分类；None=不跟踪（hold 无收益语义）。"""
@@ -186,16 +259,31 @@ def _kind_of(action: str, code: str, held: set) -> str | None:
 
 
 def ingest_decisions(agent: str, decisions: list, ts: str, held_codes=None,
-                     source: str = "live", path: Path | None = None) -> int:
+                     source: str = "live", path: Path | None = None,
+                     pool_view: dict | None = None) -> int:
     """把一轮决策落池（幂等）。返回新增条数。
 
     只跟踪 buy/sell/watch——hold 是"不动作"，没有可验证的收益语义。
     held_codes：该 agent 当前持仓代码集合（区分看多意向 vs 持仓管理）。
+    pool_view：本轮候选池视角 {"shown"/"dropped"/"full"/"file"}，见 pool_stamp。
+      传了才写 pool_ctx（**整轮不传 = 不插桩**，旧调用方与回填路径因此不受影响）；
+      戳表内容坏 → 按"池外"降级（见 pool_stamp 的 _rows），pool_stamp 自身抛异常
+      → 整批**不写 pool_ctx**（与未插桩同形，报告会把它们计进"未插桩"）。
+      两条降级路径都不让观测层带走整批决策入库。
     """
     path = path or POOL
     day = str(ts)[:10]
     existing = {e.get("id") for e in load_pool(path)}
     held = set(held_codes or ())
+    stamp = None
+    if pool_view:      # 空 dict 视同不插桩：写成"全员池外"戳会谎报覆盖率（审查 MEDIUM）
+        try:
+            stamp = pool_stamp((pool_view or {}).get("shown"),
+                               (pool_view or {}).get("dropped"),
+                               full=(pool_view or {}).get("full"),
+                               pool_file=(pool_view or {}).get("file"))
+        except Exception:  # noqa: BLE001  戳表坏 = 观测降级，不是决策失败
+            stamp = None
     rows = []
     for d in decisions or []:
         if not isinstance(d, dict):
@@ -210,7 +298,7 @@ def ingest_decisions(agent: str, decisions: list, ts: str, held_codes=None,
         eid = make_id(agent, day, code, action)
         if eid in existing:
             continue
-        rows.append({
+        row = {
             "id": eid, "agent": agent, "date": day, "ts": str(ts),
             "action": action, "kind": kind, "code": code,
             "name": str(d.get("name") or ""),
@@ -219,9 +307,18 @@ def ingest_decisions(agent: str, decisions: list, ts: str, held_codes=None,
             "reason": str(d.get("reason") or "")[:200],
             "source": source, "entry_dt": entry_dt_of(day),
             "entry_px": None, "tradable": None, "tags": [], "fwd": {}, "updated": None,
-        })
+        }
+        if stamp is not None:
+            try:
+                row["pool_ctx"] = {
+                    **{k: stamp[k] for k in ("file", "n_shown", "n_dropped")},
+                    **stamp["codes"].get(code, ABSENT_POS),
+                }
+            except Exception:  # noqa: BLE001  戳表结构坏 → 该条不写戳，决策照常入库
+                pass
+        rows.append(row)
     if rows:
-        _append(rows, path)
+        append_rows(rows, path)
     return len(rows)
 
 
@@ -310,7 +407,7 @@ def update_forward(path: Path | None = None, days: int = PANEL_DAYS,
         e["tags"] = _tags(b, int(e["entry_dt"]))
         e["updated"] = today
         n_upd += 1
-    _rewrite(pool, path)
+    rewrite_pool(pool, path)
     return {"updated": n_upd, "n": len(pool)}
 
 
@@ -457,7 +554,7 @@ def backfill_from_agent_logs(path: Path | None = None) -> dict:
                     existing.add(eid)
                     rows.append(_row(agent, day, ts, d, "backfill_agent_log"))
     if rows:
-        _append(rows, path)
+        append_rows(rows, path)
     return {"backfilled_agent_logs": len(rows)}
 
 
@@ -541,7 +638,7 @@ def backfill_from_logs(path: Path | None = None) -> dict:
                          "entry_px": None, "tradable": None, "tags": [],
                          "fwd": {}, "updated": None})
     if rows:
-        _append(rows, path)
+        append_rows(rows, path)
     return {"backfilled": len(rows)}
 
 

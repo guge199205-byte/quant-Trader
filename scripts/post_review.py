@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT / "prompts"))
 
 from prompts.review_workbook import build_review_prompt  # noqa: E402
 from trading_cal import is_trading_day, why_not  # noqa: E402
+from live_quotes import klines as lq_klines  # noqa: E402
 
 
 def now_cn() -> datetime:
@@ -413,13 +414,14 @@ def load_yesterday_outcome(agent: str, date: str) -> str:
         ok = 0
         for code, act, price, reason in priced:
             try:
-                bars = broker.get_klines(code, interval="daily")
+                bars = lq_klines(code, interval="daily", count=3,
+                                 prefer="aidata", broker=broker)
             except Exception:  # noqa: BLE001
                 continue
             if not bars or len(bars) < 2:
                 continue
             last = bars[-1]
-            if str(last.get("date") or "")[:8] != date.replace("-", ""):
+            if str(last.get("date") or "").replace("-", "") != date.replace("-", ""):
                 lines.append(f"- {code}: 今日 bar 未就绪，无法对照")
                 continue
             low, high = float(last.get("low") or 0), float(last.get("high") or 0)

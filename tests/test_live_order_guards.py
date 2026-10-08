@@ -91,13 +91,17 @@ def _sell(broker, rule, price, prev=PREV, avail=1000, **kw):
     return W._execute_sell(broker, AGENT, rule, price, prev, "stop_loss", avail, **kw)
 
 
-# ---------- 1. 保护价（止损卖出报跌停价） ----------
+# ---------- 1. 止损卖出报价（现价-1%，且不低于跌停价） ----------
 
-def test_stop_sell_reports_limit_down_protection_price(env):
-    """常规盘中止损：报跌停保护价（不是现价-1%）——有买盘必成交，且报价一定合法。"""
+def test_stop_sell_quotes_legal_market_based_price(env):
+    """常规盘中止损：报「现价−1%」——连续竞价有效竞价范围是 [基准价×98%, 涨停]，
+    报跌停价（−10%）会废单（2026-09-21 002074 实录 42 笔全废、每 2 分钟重下循环）。"""
     broker, rule, _ = env
     assert _sell(broker, rule, 17.50) == "placed"
-    assert broker.sold[0]["price"] == LIMIT_DOWN == protect_sell_price("001312.SZ", PREV)
+    px = broker.sold[0]["price"]
+    assert px == 17.33                        # 17.50 × 0.99（HALF_UP 到分）
+    assert px >= round(17.50 * 0.98, 2)       # 落在有效竞价范围下沿之内
+    assert px != LIMIT_DOWN                   # 回归：不再是跌停价 15.50
 
 
 def test_limit_down_day_still_places_queued_order(env):
@@ -109,11 +113,182 @@ def test_limit_down_day_still_places_queued_order(env):
     assert "protect_queue" in json.dumps(events(), ensure_ascii=False)
 
 
+# ---------- 1b. 连续废单熔断（2026-09-21，002074 42 笔实录） ----------
+
+DAY1 = datetime(2026, 9, 21, 10, 0, tzinfo=CN)
+DAY2 = datetime(2026, 9, 22, 9, 35, tzinfo=CN)   # 次日（熔断应自动失效）
+
+
+def _drive_reject_rounds(env, monkeypatch, n):
+    """驱动 n 轮「下单 → 柜台判废单（0 成交）」的生命周期推进。"""
+    import live_account_cache as LAC
+    import push_notify
+
+    broker, rule, _ = env
+    sent: list = []
+    monkeypatch.setattr(push_notify, "notify", lambda t, c: sent.append(t))
+    monkeypatch.setattr(LAC, "notify_throttled",
+                        lambda k, t, c, gap_min=30: sent.append(t))
+    monkeypatch.setattr(W, "_ledger_holds", lambda a, c: True)   # 持仓仍在（否则判已清仓消费）
+    monkeypatch.setattr(F, "load_order_outcome",
+                        lambda oid: {"status": "rejected", "filled": 0, "wanted": 100})
+    for i in range(n):
+        rule["pending_order_id"] = f"T9{i}"
+        assert W._resolve_tagged(AGENT, rule, set(), now=DAY1) == "rearm"
+    return broker, rule, sent
+
+
+def test_consecutive_rejects_halt_auto_resubmit_for_the_day(env, monkeypatch):
+    """连续 3 笔柜台废单 → 当日熔断：不再自动重下（旧行为 = 每 2 分钟一笔废单 + 刷屏）。"""
+    key = f"{AGENT}:001312.SZ"
+    broker, rule, sent = _drive_reject_rounds(env, monkeypatch, 2)
+    assert W.load_halts()[key]["streak"] == 2          # 未到阈值：继续重布防
+    assert not W._halted_now(AGENT, "001312.SZ", DAY1)
+    broker, rule, sent = _drive_reject_rounds(env, monkeypatch, 1)
+    assert W.load_halts()[key] == {"date": "2026-09-21", "streak": 3}
+    assert sum(1 for t in sent if "熔断" in t) == 1
+    # 熔断后本轮触发：条件位保留但**不下单**
+    assert _sell(broker, rule, 17.50, now=DAY1) == "keep"
+    assert broker.sold == []
+
+
+def test_halt_resets_next_day(env, monkeypatch):
+    """熔断只约束当日：次日自动恢复（不做永久状态，避免静默摘掉防守位）。"""
+    broker, rule, _ = _drive_reject_rounds(env, monkeypatch, 3)
+    key = f"{AGENT}:001312.SZ"
+    assert W._halted_now(AGENT, "001312.SZ", DAY2) is False   # 日期不等 → 不熔断
+    # 次日：计数从 0 起算（当天的第一笔废单只记 1）
+    rule["pending_order_id"] = "T99"
+    assert W._resolve_tagged(AGENT, rule, set(), now=DAY2) == "rearm"
+    assert W.load_halts()[key] == {"date": "2026-09-22", "streak": 1}
+    assert _sell(broker, rule, 17.50, now=DAY2) == "placed"
+
+
+def test_halt_survives_hourly_rule_rebuild(env, monkeypatch):
+    """HIGH-1 回归（2026-09-21 审查）：整点轮整组重建 watch 文件后熔断仍生效。
+
+    熔断计数放规则字典里时，`save_watch_rules → _rules_from_decisions` 的整组重建
+    （只留 code/价位/pct/reason/created_ts）会把它抹掉 → 熔断退化成「每重建周期 3 笔
+    废单」。计数落 sidecar 后，重建不影响停手。"""
+    broker, rule, _ = _drive_reject_rounds(env, monkeypatch, 3)
+    rebuilt = {"code": "001312.SZ", "stop_loss": 16.6, "take_profit": None,
+               "pct": 0.5, "reason": "整点轮重建", "created_ts": "2026-09-21T13:35:00+08:00"}
+    W.save_watch({AGENT: [rebuilt]})                       # 生产写路径（原子写）
+    rule2 = W.load_watch()[AGENT][0]
+    assert "halt_date" not in rule2 and "reject_streak" not in rule2   # 重建确实抹掉了字段
+    assert _sell(broker, rule2, 17.50, now=DAY1) == "keep"             # 但熔断仍生效
+    assert broker.sold == []
+
+
+def test_filled_consume_resets_reject_streak(env, monkeypatch):
+    """MEDIUM-1 回归（2026-09-21 审查）：成交/清仓消费要清零连续废单计数。
+
+    旧实现唯一清零点在「未卖完」分支：2 废 + 1 成交 + 1 废 = 熔断（文案还宣称
+    「连续 3 笔废单」）。2026-09-21 002074 真成交后 sidecar 残留 streak=1 就是活体样本。
+    """
+    key = f"{AGENT}:001312.SZ"
+    broker, rule, _ = _drive_reject_rounds(env, monkeypatch, 2)
+    assert W.load_halts()[key]["streak"] == 2
+    monkeypatch.setattr(F, "load_order_outcome",
+                        lambda oid: {"status": "filled", "filled": 500, "wanted": 500})
+    rule["pending_order_id"] = "T95"
+    assert W._resolve_tagged(AGENT, rule, set(), now=DAY1) == "consume"
+    assert key not in W.load_halts()
+    assert not W._halted_now(AGENT, "001312.SZ", DAY1)
+    # 消费后重新起算：下一笔废单记 1，而不是接着旧的 2
+    monkeypatch.setattr(F, "load_order_outcome",
+                        lambda oid: {"status": "rejected", "filled": 0, "wanted": 500})
+    rule["pending_order_id"] = "T96"
+    assert W._resolve_tagged(AGENT, rule, set(), now=DAY1) == "rearm"
+    assert W.load_halts()[key] == {"date": "2026-09-21", "streak": 1}
+
+
+def test_deterministic_sell_exception_halts_after_three(env, monkeypatch):
+    """LOW-6 回归（2026-09-21 审查）：下单异常（桥本地预检/风控门/远端立即 rejected
+    都以异常抛出）也计入连续废单 → 3 笔当日熔断、次日自动恢复。
+
+    旧实现只看终态台账，异常路径永不计入 → 同一循环无限重试。"""
+    import push_notify
+    from agent_tools.brokers.base import BrokerError
+
+    broker, rule, _ = env
+    sent: list = []
+    monkeypatch.setattr(push_notify, "notify", lambda t, c: sent.append(t))
+
+    def boom(*a, **k):
+        raise BrokerError("柜台拒绝：报价越界")
+
+    monkeypatch.setattr(broker, "sell", boom)
+    assert _sell(broker, rule, 17.50, now=DAY1) == "keep"
+    assert _sell(broker, rule, 17.50, now=DAY1) == "keep"
+    assert W.load_halts()[f"{AGENT}:001312.SZ"]["streak"] == 2
+    assert _sell(broker, rule, 17.50, now=DAY1) == "keep"      # 第 3 笔 → 熔断
+    key = f"{AGENT}:001312.SZ"
+    assert W.load_halts()[key] == {"date": "2026-09-21", "streak": 3}
+    assert W._halted_now(AGENT, "001312.SZ", DAY1)
+    assert sum(1 for t in sent if "熔断" in t) == 1
+    # 熔断后触发：连 broker.sell 都不再被调用（旧行为 = 每 2 分钟一笔废单）
+    calls: list = []
+
+    def ok(*a, **k):
+        calls.append(a)
+        return {"order_id": "T2001", "status": "submitted", "message": "已受理"}
+
+    monkeypatch.setattr(broker, "sell", ok)
+    assert _sell(broker, rule, 17.50, now=DAY1) == "keep"
+    assert calls == []
+    # 次日自动恢复（熔断只约束当日）
+    assert not W._halted_now(AGENT, "001312.SZ", DAY2)
+    assert _sell(broker, rule, 17.50, now=DAY2) == "placed"
+    assert len(calls) == 1
+
+
+def test_unknown_outcome_exception_not_counted_toward_halt(env, monkeypatch):
+    """MEDIUM-2 回归（2026-09-21 审查）：连接/超时类异常（结果未知）不计入熔断。
+
+    单可能已在柜台，计入会让桥抖动一次就停掉自动防守，告警也指错方向。"""
+    import requests
+    import push_notify
+    from agent_tools.brokers.base import BrokerError
+
+    broker, rule, _ = env
+    monkeypatch.setattr(push_notify, "notify", lambda t, c: None)
+    exc = BrokerError("桥请求失败")
+    exc.__cause__ = requests.Timeout("read timeout")   # 模拟 raise ... from exc 的异常链
+
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(broker, "sell", boom)
+    for _ in range(4):
+        assert _sell(broker, rule, 17.50, now=DAY1) == "keep"
+    assert W.load_halts() == {}
+    assert not W._halted_now(AGENT, "001312.SZ", DAY1)
+
+
+def test_unfilled_push_is_throttled_per_rule(env, monkeypatch):
+    """「条件位卖出未成交」同规则 30 分钟去重——旧实现每笔废单推一条（一天 41 条）。"""
+    import live_account_cache as LAC
+    import push_notify
+
+    _, rule, _ = env
+    calls: list = []
+    monkeypatch.setattr(push_notify, "notify", lambda t, c: calls.append(("direct", t)))
+    monkeypatch.setattr(LAC, "notify_throttled",
+                        lambda k, t, c, gap_min=30: calls.append((k, gap_min)))
+    monkeypatch.setattr(W, "_ledger_holds", lambda a, c: True)
+    monkeypatch.setattr(F, "load_order_outcome",
+                        lambda oid: {"status": "rejected", "filled": 0, "wanted": 100})
+    rule["pending_order_id"] = "T91"
+    W._resolve_tagged(AGENT, rule, set(), now=DAY1)
+    assert calls == [(f"watch_unfilled:{AGENT}:001312.SZ", 30)]   # 走限频器，不直推
+
+
 def test_prev_missing_falls_back_to_minus_one_pct(env):
-    """昨收缺失（K 线不足/脏数据）：降级回现价-1% 并留痕，不臆造保护价。"""
+    """昨收缺失（K 线不足/脏数据）：无跌停价可夹取 → 纯现价-1%，不臆造价格。"""
     broker, rule, _ = env
     assert _sell(broker, rule, 17.50, prev=0) == "placed"
-    assert broker.sold[0]["price"] == round(17.50 * 0.99, 2)
+    assert broker.sold[0]["price"] == 17.33   # 现价×0.99（HALF_UP，与全仓一种口径）
 
 
 def test_placed_order_keeps_rule_tagged_with_pending_order(env):

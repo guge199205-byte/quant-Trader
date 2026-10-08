@@ -46,6 +46,8 @@ export default function Navbar() {
         <ul className="navbar-menu-center">
           <li><NavLink to="/live" className={({ isActive }) => (isActive ? 'active' : '')}>实况</NavLink></li>
           <li className="separator">|</li>
+          <li><NavLink to="/terminal" className={({ isActive }) => (isActive ? 'active' : '')}>个股终端</NavLink></li>
+          <li className="separator">|</li>
           <li><NavLink to="/leaderboard" className={({ isActive }) => (isActive ? 'active' : '')}>模型排行榜</NavLink></li>
           <li className="separator">|</li>
           <li><NavLink to="/control" className={({ isActive }) => (isActive ? 'active' : '')}>总控</NavLink></li>

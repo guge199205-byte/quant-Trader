@@ -227,6 +227,90 @@ def test_buy_partial_fill_marks_and_tracks_remainder():
     assert F.load_pending()[0]["volume_recorded"] == 100
 
 
+def test_pending_entry_carries_tca_context_ref_px_and_decided_ts():
+    """pending 条目要带 TCA 上下文：在途价 = 委托限价，另存基准价与轮级决策时刻。
+
+    余量日后由 reconcile 补记（fill_confirm 行）——那时唯一能拿到三段价的来源
+    就是这条 pending 条目；不带着走，这部分成交在 TCA 里永远不可定价。
+    """
+    L.save_ledger({"version": 1, "agents": {}})
+
+    F.settle_place_fill("B1", AGENT, "600362.SH", "buy", 200, 10.10,
+                        {"order_id": "B1", "status": "submitted",
+                         "filled_volume": 100, "filled_price": 10.05}, ts=TS,
+                        ref_px=10.0, decided_ts="2026-09-12T10:00:00+08:00")
+
+    p = F.load_pending()[0]
+    assert p["price"] == 10.10                     # 限价（两侧同义）
+    assert p["ref_px"] == 10.0                     # 基准价随单走
+    assert p["decided_ts"] == "2026-09-12T10:00:00+08:00"
+
+
+def test_unfilled_message_prints_the_limit_for_buy_side():
+    """终态未成交告警文案写「限价 ¥X」——买入侧传的必须是限价，不是基准价。"""
+    L.save_ledger({"version": 1, "agents": {}})
+
+    F.settle_place_fill("B1", AGENT, "600362.SH", "buy", 200, 10.10,
+                        {"order_id": "B1", "status": "rejected",
+                         "filled_volume": 0}, ts=TS)
+
+    msgs = [e["msg"] for e in _events().values() if e["kind"] == "unfilled"]
+    assert msgs and "限价 ¥10.1" in msgs[0]
+
+
+# ---------- TCA 端到端：内联成交 + 对账补记 → 报告可定价 ----------
+
+def test_tca_end_to_end_inline_then_reconcile_carries_three_prices():
+    """生产形态走一遍：下单内联成交 100/300 → 余量挂 pending → reconcile 补记 200。
+
+    这条链路是 TCA 接线里唯一**跨进程**的一段：三段价只能靠 pending 条目带过
+    reconcile（下单路径的成交行由调用方直接写，见 test_tca_wiring 的静态钉）。
+    本用例钉"接线在真实生命周期里成立"：对账补记的行带全三段价 → 报告可定价。
+    """
+    import json as _json
+
+    import tca_report
+
+    L.save_ledger({"version": 1, "agents": {AGENT: {
+        "virtual_cash": 100000.0, "positions": {}}}})
+
+    # 下单路径（与 live_hourly_analysis 买入段同参数形态）
+    F.settle_place_fill("B9", AGENT, "600362.SH", "buy", 300, 10.10,
+                        {"order_id": "B9", "status": "submitted",
+                         "filled_volume": 100, "filled_price": 10.05}, ts=TS,
+                        reason="整点轮加仓", source="整点轮",
+                        ref_px=10.0, decided_ts="2026-09-12T10:00:00+08:00")
+
+    class Broker:
+        def get_orders(self):
+            return [{"order_id": "B9", "status": "filled", "filled_volume": 300,
+                     "filled_price": 10.08, "total_volume": 300,
+                     "stock_code": "600362.SH"}]
+
+    F.reconcile(Broker(), now=NOW)
+
+    from live_trade_picks import LOG_DIR
+
+    rows = [r for f in LOG_DIR.glob("live_trade_*.jsonl")
+            for r in (_json.loads(ln) for ln in f.read_text(encoding="utf-8").splitlines()
+                      if ln.strip())]
+    confirm = [r for r in rows if r.get("mode") == "fill_confirm"]
+    assert len(confirm) == 1
+    c = confirm[0]
+    assert c["volume"] == 200                       # 本行只报增量
+    assert c["ref_px"] == 10.0 and c["limit_px"] == 10.10 and c["fill_px"] == 10.08
+    assert c["wanted"] == 300 and c["decided_ts"].startswith("2026-09-12")
+
+    rep = tca_report.collect(tape_dir=LOG_DIR, log_paths=[], days=0)
+    assert rep["n_priced"] == 1                     # 对账补记的成交可定价
+    row = rep["rows"][0]
+    assert row["path"] == "reconcile" and row["ref_px"] == 10.0
+    assert row["filled"] == 200 and abs(row["fill_px"] - 10.08) < 1e-9
+    # 滑点按唯一口径算（买入：成交 10.08 高于基准 10.0 = 正 = 差）
+    assert row["side"] == "buy"
+    assert abs(tca_report.exec_cost.slip_bps("buy", 10.0, row["fill_px"]) - 80.0) < 1e-9
+
+
 # ---------- 脏 pct 留痕的 persist 开关（dry-run 不写事件） ----------
 
 def test_note_pct_unparsed_persist_flag_skips_event():

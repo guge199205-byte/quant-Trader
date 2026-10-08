@@ -124,13 +124,15 @@ def _fill(volume, price):
 # ---------- 记账时机：按真实成交，不按委托限价 ----------
 
 def test_sell_flow_records_real_fill_price(manual, monkeypatch):
-    """成交 500 股 @17.30：账本按真实成交价，不按限价 ¥17.32（现价 -1%）。"""
+    """成交 500 股 @17.30：账本按真实成交价，不按限价 ¥17.33（现价 -1%）。"""
     broker = FakeBroker()
     monkeypatch.setattr(live_fills, "wait_fill", lambda b, oid, **kw: _fill(500, 17.30))
 
     assert P.sell_flow(broker, _args(), manual["logs"].append) == 0
 
-    assert broker.sold[0]["price"] == 17.32          # 委托限价（现价 17.50 -1%）
+    # 17.50×0.99 = 17.325 → HALF_UP 到分 = 17.33（2026-09-21 审查 MEDIUM-5：旧实现
+    # 用内建 round() 走二进制银行家舍入得 17.32，与哨兵/整点轮的交易所口径不一致）
+    assert broker.sold[0]["price"] == 17.33          # 委托限价（现价 17.50 -1%）
     assert manual["ledger"] == [(AGENT, CODE, 500, 17.30)]   # 记账用成交价
     assert manual["pending"] == []
     assert manual["saved"] == 1
@@ -146,7 +148,7 @@ def test_sell_flow_pends_when_not_filled(manual, monkeypatch):
     assert manual["ledger"] == []                    # 关键：没成交就不动账本
     assert manual["saved"] == 0
     assert manual["pending"] == [{"order_id": "T1001", "agent": AGENT, "code": CODE,
-                                  "side": "sell", "volume": 500, "price": 17.32}]
+                                  "side": "sell", "volume": 500, "price": 17.33}]
 
 
 def test_sell_flow_partial_fill_records_filled_only(manual, monkeypatch):

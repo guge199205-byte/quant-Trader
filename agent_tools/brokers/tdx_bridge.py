@@ -66,6 +66,11 @@ def _ashare_rules():
     return ashare_rules
 
 
+# 桥真正支持的周期（实测：count=10000 能拉全历史 1248 根日K）。
+# 白名单之外一律抛 BrokerError —— 见 get_klines 的 docstring。
+SUPPORTED_INTERVALS = {"daily": "1d", "weekly": "1w"}
+
+
 class TdxBridgeBroker(Broker):
     """通达信桥。"""
 
@@ -296,11 +301,36 @@ class TdxBridgeBroker(Broker):
         import requests
 
         try:
-            return self._post("/api/v1/account/query",
+            data = self._post("/api/v1/account/query",
                               {"account": self.account,
                                "account_type": self.account_type}, 15)
         except requests.RequestException as exc:
             raise BrokerError(f"TDX 桥账户查询失败: {exc}") from exc
+        # 快照缓存（2026-09-15）：供桥断期间的降级监控读最近一次真实账户数据。
+        # 只写不读——交易/账户真值判定绝不消费（见 scripts/live_account_cache.py 红线）。
+        try:
+            import datetime as _dt
+            import json as _json
+            import time as _time
+            from pathlib import Path as _Path
+
+            _root = _Path(__file__).resolve().parents[2]
+            _cache = _root / "logs" / "broker_account_cache.json"
+            _tmp = _cache.with_name(_cache.name + ".tmp")
+            _tmp.write_text(_json.dumps({
+                "ts": _time.time(),
+                # 2026-09-20 修复：strftime 取机器本地时间（桥宿主 JST）却标 +08:00，
+                # 与 scripts/live_account_cache.py 同一份数据，同样显式按 UTC+8 构造。
+                "ts_cn": _dt.datetime.now(
+                    _dt.timezone(_dt.timedelta(hours=8))).isoformat(timespec="seconds"),
+                "asset": data.get("asset") or {},
+                "positions": data.get("positions") or [],
+                "channel_used": data.get("channel_used"),
+            }, ensure_ascii=False), encoding="utf-8")
+            _tmp.replace(_cache)
+        except OSError:
+            pass
+        return data
 
     def get_positions(self, signature: str, today_date: str) -> Dict[str, float]:
         """实盘持仓 {symbol: total_volume}（桥 account/query 返回 Code/Cbj/TotalVol/CanUseVol）"""
@@ -364,13 +394,30 @@ class TdxBridgeBroker(Broker):
                    interval: str = "daily", market: str = "cn",
                    count: int = 250) -> List[Dict[str, Any]]:
         """经 8550 桥拉 K 线（POST /api/v1/tdx/call get_market_data）。
-        日K(1d)/周K(1w) 支持，分钟线不支持（桥限制）。
-        返回 [{"date","open","high","low","close","volume","amount"}]，按日期升序。
+
+        周期白名单只有 `daily`(1d) / `weekly`(1w)。**其它周期抛 BrokerError**，
+        不再透传给桥 —— 桥对分钟周期返回的是 `ErrorId=0` + `Value` 空数组（成功码
+        配空数据），透传出去就与「这只票停牌」不可区分，调用方会把能力缺失读成
+        「今天没数据」。分钟因子请走 scripts/minute_feats.py（桥快照自算）。
+
+        空结果按周期分级：日/周K 空 = 合法（停牌/退市/新股）→ 返回 `[]`；
+        非白名单周期 = 能力缺失 → 抛错。这是本方法的契约核心。
+
+        Returns: [{"date","open","high","low","close","volume","amount"}]，按日期升序。
         count：拉取根数（最新 N 根）；价格保护带只要最近两根。
         """
         import requests
 
-        period = {"daily": "1d", "weekly": "1w"}.get(interval, interval)
+        try:
+            period = SUPPORTED_INTERVALS[interval]
+        except KeyError:
+            raise BrokerError(
+                f"TDX 桥不支持周期 {interval!r}：可用的是 "
+                f"{'/'.join(sorted(SUPPORTED_INTERVALS))}"
+                f"（{'/'.join(SUPPORTED_INTERVALS[k] for k in sorted(SUPPORTED_INTERVALS))}）。"
+                "桥对分钟周期返回 ErrorId=0 + 空数组，与停牌无法区分；"
+                "分钟级特征请用 scripts/minute_feats.py（桥快照自算）。"
+            ) from None
         # 实测（桥调用日志 18328）：参数名是 stock_list（列表），不是 stock_code
         params: Dict[str, Any] = {
             "stock_list": [symbol],

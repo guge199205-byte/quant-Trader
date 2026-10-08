@@ -50,6 +50,37 @@ _OPTIONAL_STATE_MODULES = {
     # 一次测试就把真实 logs/night_pool/{session}.md 覆写成桩内容。
     "night_pool_agent": ("NIGHT_POOL_DIR", "PICKS_DIR"),
     "picks_source": ("PICKS_DIR",),
+    # 决策远期记分卡（2026-09-18 实录）：POOL/SCORECARD 是**生产**决策池与记分卡，
+    # 却不在隔离网里。任何走到实盘路径的用例（test_hourly_exec_settle 等调
+    # live_hourly_analysis / live_llm_trade，两处都会 ingest_decisions(path=None
+    # → 模块常量 POOL)）都会往真实 logs/decision_pool.jsonl **追加测试决策**：
+    # 记分卡的「看多意向」胜率、P2 池位置报告全被 fixture 数据污染，而 ingest
+    # 按 make_id 幂等 → 同一个用例重跑不会再加行，越跑越难察觉（实录：连跑两次
+    # 全量套件，真实池从 138 行涨到 141 行，混入 09-12/09-18 两条买入）。
+    "decision_track": ("POOL", "SCORECARD"),
+    # 主机看门狗（2026-09-18）：心跳/离线日志都是生产观测面，测试一律重定向
+    # （2026-09-21 增补留痕文件由下面的兜底网管）
+    "host_watchdog": ("HB_FILE", "GAP_LOG"),
+    # 整点轮死进程对账（2026-09-21 盘满事故）：ROUND_FILE 是生产轮状态——对账会
+    # 显式写它（收尾 failed），测试必须重定向，否则用例一跑就把真实轮状态改写
+    "round_reconcile": ("ROUND_FILE",),
+    # 影子代价账（2026-09-19）：GHOST 与 decision_track.POOL 同族——两条买入路径
+    # 的每个否决点都会往里写一行。不隔离就会重演 decision_pool 那次事故（fixture
+    # 事件混进真实影子账，且 make_id 幂等 → 越跑越难察觉），
+    # 见 tests/test_production_isolation.py 的动态回归钉。
+    # 只隔离 GHOST（状态）；REGISTRY 是 configs/ 下的只读规则表，重定向到 tmp
+    # 会让「登记表覆盖所有规则」的防线在测试里对着空表跑（假绿）。
+    "ghost_ledger": ("GHOST",),
+    # 降级通知限频状态（2026-09-21）：notify_throttled 的 key→时间戳落在生产 logs/，
+    # 用例（哨兵重布防/未成交告警）写进去会把真实告警的 30 分钟窗口提前耗掉。
+    "live_account_cache": ("_NOTIFY_STATE",),
+    # AiData 跨进程熔断器（2026-09-22）：BREAKER_FILE 落 logs/。**这条不是「怕写坏」，
+    # 是「怕读到」**——AiData 真故障期间生产文件长期是「熔断中」，用例若读到它，
+    # 每一个 tdx_aidata.available() 都会变 False，断言 AiData 路径的用例会以
+    # 「本地文件影响测试结果」这种最难查的形态变红。
+    # 注意：本模块不在 scripts/ 下 → 上面那段 startswith(ROOT/"scripts") 会跳过它，
+    # 真正接管的是文件末尾的兜底网（靠这里的登记把模块送进 mods 列表）。
+    "agent_tools.datasources.tdx_aidata": (),
 }
 for _m in _OPTIONAL_STATE_MODULES:
     try:
@@ -103,6 +134,14 @@ def _redirect_leftover_state_paths(monkeypatch, tmp_path, modules) -> list:
 
 
 @pytest.fixture(autouse=True)
+def _no_real_aidata(monkeypatch):
+    """测试默认禁用 live_quotes 的 AiData 源（2026-09-15 实录：mock broker 的
+    用例会先撞真 AiData 网络+限流退避，全量测试被拖过 timeout）。
+    要专门测 aidata 路径的用例自行 delenv（见 test_live_quotes.py 的 aidata fixture）。"""
+    monkeypatch.setenv("LIVE_QUOTES_DISABLE_AIDATA", "1")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_production_state(monkeypatch, tmp_path):
     """把生产状态文件的模块常量整体重定向到本用例的 tmp 目录。
 
@@ -144,6 +183,34 @@ def _isolate_production_state(monkeypatch, tmp_path):
                     monkeypatch.setattr(mod, attr, state_dir / attr)
 
     # 兜底网：上面清单漏掉的、或以后新加的「指向生产 logs//data/ 的模块常量」
-    mods = [live_fills, live_ledger, live_price_watch, live_trade_picks]
+    import push_notify  # 2026-09-18：测试跑 live_quotes 时经它写生产 push_notify.log
+
+    mods = [live_fills, live_ledger, live_price_watch, live_trade_picks, push_notify]
     mods += [sys.modules[m] for m in _OPTIONAL_STATE_MODULES if sys.modules.get(m)]
     _redirect_leftover_state_paths(monkeypatch, tmp_path, mods)
+
+    # 出站通知（QQ）绝不真发（2026-09-18）：settle_place_fill / reconcile 在成交后
+    # 都会推 notify_order——任何走到这两处的用例都会打真网络。统一替换为记录器：
+    #   live_fills._push_fill_notice.sent      → 本用例收到的推送 kw 列表
+    #   live_fills._push_fill_notice.original  → 原函数（要断言报文组装/转发口径的
+    #     用例自行 monkeypatch.setattr(live_fills, "_push_fill_notice", .original)，
+    #     并在 push_notify.notify_order 上再打桩）
+    sent: list = []
+
+    def _push_recorder(**kw):
+        sent.append(kw)
+
+    _push_recorder.sent = sent
+    _push_recorder.original = live_fills._push_fill_notice
+    monkeypatch.setattr(live_fills, "_push_fill_notice", _push_recorder)
+
+    # 执行时段闸门（2026-09-18）墙钟无关化：测试在任意时刻跑（含周末、收盘后）
+    # 都不该被 9:30-11:30/13:00-14:57 窗口拦住导致「不下单」的假绿/假红；
+    # 专门测窗口闸门的用例自行把这层桩改掉（见 test_exec_window_guard.py）。
+    import live_hourly_analysis
+    import live_llm_trade
+
+    monkeypatch.setattr(live_hourly_analysis, "in_continuous_auction",
+                        lambda now: True)
+    monkeypatch.setattr(live_llm_trade, "in_continuous_auction",
+                        lambda now: True)

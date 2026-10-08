@@ -1,0 +1,25 @@
+/* 极致全屏锁定 */
+html, body, #root {
+  height: 100vh !important;
+  max-height: 100vh !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Layout 跟随父容器高度，避免溢出到底部 Dock 之下 */
+.ant-layout, .ant-layout-content {
+  height: 100% !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* 极致压缩表格样式 */
+.hyper-compact-table .ant-table-thead > tr > th {
+  padding: 4px 8px !important;
+}
+.hyper-compact-table .ant-table-tbody > tr > td {
+  padding: 4px 8px !important;
+}

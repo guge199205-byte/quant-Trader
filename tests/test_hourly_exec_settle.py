@@ -293,3 +293,131 @@ def test_buy_partial_fill_tracks_remainder(env, monkeypatch):
     assert pend[0]["volume_recorded"] == 100
     fill_line = next(d for d in env.lines if d.get("fill"))
     assert fill_line["volume"] == 100 and fill_line["remaining"] == wanted - 100
+
+
+# ---------- 执行损耗 TCA：跑起来真的有值（2026-09-19 接线） ----------
+# 静态钉（test_tca_wiring）保证源码里有 tape_fields 调用；本组保证**真实路径跑起来**
+# 写出的行值与 exec_cost 口径一致（基准=取价行情 close、限价=缓冲、成交=桥回报）。
+
+def test_sell_fill_row_carries_three_prices_on_the_real_path(env, monkeypatch):
+    import exec_cost
+
+    monkeypatch.setattr(F, "wait_fill", _wait_fill_returns(
+        {"order_id": "T8001", "status": "filled",
+         "filled_volume": 300, "filled_price": 17.5}))
+    broker = FakeBroker()
+
+    env.H.execute_intraday_decision(
+        broker, AGENT,
+        [{"action": "sell", "code": SELL_CODE, "pct": 1.0, "reason": "t"}],
+        _holdings(), 50000.0, dry_run=False)
+
+    row = next(d for d in env.lines if d.get("fill"))
+    assert row["ref_px"] == 17.5                        # 取价行情的 close
+    assert row["limit_px"] == round(17.5 * 0.99, 2)     # 卖价缓冲（唯一出处）
+    assert row["fill_px"] == 17.5                       # 桥回报成交价
+    assert row["wanted"] == 300 and row["filled"] == 300
+    assert row["tca_path"] == "hourly"
+    assert row["submit_ts"] and row["fill_ts"] and row["decided_ts"]
+    # 与报告同口径：按基准价成交 = 0 bps；缓冲用尽度 0（没吃缓冲）
+    assert exec_cost.slip_bps("sell", row["ref_px"], row["fill_px"]) == 0.0
+    assert exec_cost.cushion_used_bps(
+        "sell", row["ref_px"], row["limit_px"], row["fill_px"]) == 0.0
+
+
+def test_buy_fill_row_and_pending_carry_limit_not_reference(env, monkeypatch):
+    """买入侧三段价 + pending 在途价=限价（历史漂移的钉子，两条路径同义）。"""
+    import exec_cost
+
+    monkeypatch.setattr(F, "wait_fill", _wait_fill_returns(
+        {"order_id": "B8001", "status": "submitted",
+         "filled_volume": 100, "filled_price": 10.0}))
+    broker = FakeBroker(oid="B8001")
+
+    env.H.execute_intraday_decision(
+        broker, AGENT,
+        [{"action": "buy", "code": BUY_CODE, "pct": 0.2, "reason": "加仓"}],
+        _holdings(), 50000.0, dry_run=False, pool_codes={BUY_CODE})
+
+    row = next(d for d in env.lines if d.get("fill"))
+    assert row["ref_px"] == 10.0                        # 基准（现价）
+    assert row["limit_px"] == 10.1                      # 现价 ×1.01（限价买单）
+    assert row["fill_px"] == 10.0
+    assert row["wanted"] == broker.orders[0][2]         # 委托量（本行只成交 100）
+    assert row["filled"] == 100
+    assert exec_cost.slip_bps("buy", row["ref_px"], row["fill_px"]) == 0.0
+
+    pend = F.load_pending()[0]
+    assert pend["price"] == 10.1                        # 在途价 = 限价，不是基准价
+    assert pend["ref_px"] == 10.0                       # 基准价另存（TCA 用）
+    assert pend["decided_ts"] == NOW.isoformat()
+
+
+# ---------- 单票集中度闸（2026-09-18 机构级） ----------
+# per_stock_pct 是"单笔占剩余额度"的比例，同一标的跨轮加仓此前不封顶。执行段在
+# 资金三连闸处调用 buy_gate.position_cap_reason（市值口径，与本路径杠杆闸同基）。
+
+def test_buy_blocked_when_single_name_cap_exceeded(env, monkeypatch, capsys):
+    """同票已有 3 万市值、权益 ≈13.5 万、上限 25%（≈3.38 万）→ 再加 ~1.2 万被拦。"""
+    monkeypatch.setattr(env.H, "MAX_POS_PCT", 0.25)
+    monkeypatch.setattr(env.H, "LEVERAGE_MAX", 1.5)      # 隔离线上档位，只测本闸
+    L.save_ledger({"version": 1, "agents": {AGENT: {
+        "virtual_cash": 100000.0,
+        "positions": {
+            SELL_CODE: {"volume": 300, "cost_price": 16.0, "buy_ts": TS, "last_ts": TS},
+            BUY_CODE: {"volume": 3000, "cost_price": 10.0, "buy_ts": TS, "last_ts": TS},
+        }}}})
+    holdings = _holdings()
+    holdings[1] = {**holdings[1], "volume": 3000}
+    broker = FakeBroker()
+
+    out = env.H.execute_intraday_decision(
+        broker, AGENT,
+        [{"action": "buy", "code": BUY_CODE, "pct": 0.2, "reason": "加仓"}],
+        holdings, 50000.0, dry_run=False, pool_codes={BUY_CODE})
+
+    assert out == [] and broker.orders == []             # 一单没下
+    assert "单票集中度超限" in capsys.readouterr().out     # 人可见（不是静默拦截）
+
+
+def test_buy_within_cap_still_executes(env, monkeypatch):
+    """对照组：同一路径、默认小仓位（1 千市值）→ 正常放行，不误伤。"""
+    monkeypatch.setattr(env.H, "MAX_POS_PCT", 0.25)
+    monkeypatch.setattr(F, "wait_fill", _wait_fill_returns(
+        {"order_id": "B8001", "status": "submitted",
+         "filled_volume": 100, "filled_price": 10.0}))
+    broker = FakeBroker(oid="B8001")
+
+    out = env.H.execute_intraday_decision(
+        broker, AGENT,
+        [{"action": "buy", "code": BUY_CODE, "pct": 0.2, "reason": "加仓"}],
+        _holdings(), 50000.0, dry_run=False, pool_codes={BUY_CODE})
+
+    assert [e["action"] for e in out] == ["buy"] and broker.orders
+
+
+def test_duplicate_buy_same_round_cannot_stacking_past_cap(env, monkeypatch, capsys):
+    """同轮重复决策同一代码：两笔各自在限内、合计越限 → 只允许第一笔（评审 M-3）。
+
+    账本/holdings 是整轮快照（第一笔成交后循环内不刷新），没有 round_added 累计
+    时第二笔仍按"加仓前敞口"过闸。构造：单笔成本 ¥18,180、已有 ¥1,000、
+    上限 22%×权益 ≈ ¥23,375 —— 第一笔 19,180 放行，第二笔 37,360 必须被拦。
+    第一笔用**全额成交**的 wait_fill 桩（否则 pending_buy 会先一步挡住第二笔，
+    测不到集中度闸本身）。"""
+    monkeypatch.setattr(env.H, "MAX_POS_PCT", 0.22)
+    monkeypatch.setattr(env.H, "LEVERAGE_MAX", 1.5)      # 隔离线上档位
+    broker = FakeBroker(oid="B8001")
+    # 全额成交：成交价按委托价，成交量取该笔实际委托量（broker.orders[-1][2]）
+    monkeypatch.setattr(F, "wait_fill", lambda *a, **k: {
+        "order_id": "B8001", "status": "submitted",
+        "filled_volume": broker.orders[-1][2], "filled_price": 10.1})
+
+    out = env.H.execute_intraday_decision(
+        broker, AGENT,
+        [{"action": "buy", "code": BUY_CODE, "pct": 0.2, "reason": "加仓1"},
+         {"action": "buy", "code": BUY_CODE, "pct": 0.2, "reason": "加仓2"}],
+        _holdings(), 50000.0, dry_run=False, pool_codes={BUY_CODE})
+
+    assert len(broker.orders) == 1                       # 第二笔没出去
+    assert [e["action"] for e in out] == ["buy"]
+    assert "单票集中度超限" in capsys.readouterr().out

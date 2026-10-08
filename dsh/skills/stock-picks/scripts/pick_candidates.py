@@ -216,7 +216,7 @@ def pg_connect() -> psycopg2.extensions.connection:
         host=os.getenv("POSTGRES_HOST", "127.0.0.1"),
         port=int(os.getenv("POSTGRES_PORT", "5432")),
         user=os.getenv("POSTGRES_USER", "quantmind"),
-        password=os.getenv("POSTGRES_PASSWORD", "quantmind2026"),
+        password=os.getenv("POSTGRES_PASSWORD") or os.getenv("QM_PG_PASSWORD"),
         dbname=os.getenv("POSTGRES_DB", "quantmind"),
         connect_timeout=5,
     )

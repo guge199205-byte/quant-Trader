@@ -229,7 +229,7 @@ def load_st_symbols() -> set[str]:
         host=os.getenv("POSTGRES_HOST", "quantmind-db"),
         port=int(os.getenv("POSTGRES_PORT", "5432")),
         user=os.getenv("POSTGRES_USER", "quantmind"),
-        password=os.getenv("POSTGRES_PASSWORD", "quantmind2026"),
+        password=os.getenv("POSTGRES_PASSWORD") or os.getenv("QM_PG_PASSWORD"),
         dbname=os.getenv("POSTGRES_DB", "quantmind"),
     )
     out = set()
@@ -254,7 +254,7 @@ def load_stock_names() -> dict[str, str]:
         host=os.getenv("POSTGRES_HOST", "quantmind-db"),
         port=int(os.getenv("POSTGRES_PORT", "5432")),
         user=os.getenv("POSTGRES_USER", "quantmind"),
-        password=os.getenv("POSTGRES_PASSWORD", "quantmind2026"),
+        password=os.getenv("POSTGRES_PASSWORD") or os.getenv("QM_PG_PASSWORD"),
         dbname=os.getenv("POSTGRES_DB", "quantmind"),
     )
     try:
